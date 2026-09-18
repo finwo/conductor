@@ -6,6 +6,7 @@
 
 import fs from 'node:fs/promises';
 import os from 'node:os';
+import net from 'node:net';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -65,8 +66,10 @@ export async function startHarness(options = {}) {
   const configFile = path.join(root, 'conductor.yaml');
   await fs.writeFile(configFile, [
     'server:',
-    '  port: 0',
-    '  public_url: http://conductor.test',
+    // A real port and a matching public_url are needed whenever something
+    // outside the process, such as a worker, has to reach back in.
+    `  port: ${options.port ?? 0}`,
+    `  public_url: ${options.publicUrl ?? 'http://conductor.test'}`,
     'database:',
     '  path: ./state/conductor.db',
     'storage:',
@@ -154,11 +157,27 @@ export async function startHarness(options = {}) {
     async stop() {
       await app.close();
       await services.db.close();
-      await fs.rm(root, { recursive: true, force: true });
+      // Best effort: a container that ran as root may have left files the
+      // test process cannot remove, and that must not mask a real failure.
+      await fs.rm(root, { recursive: true, force: true }).catch(() => {});
     },
   };
 }
 
 function silentLogger() {
   return { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
+}
+
+// Asks the kernel for a free port and releases it. Only needed because the
+// public_url has to be known before the server is built.
+export async function freePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address();
+      server.close(() => resolve(port));
+    });
+  });
 }

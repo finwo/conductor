@@ -30,10 +30,11 @@ Under construction. Working today:
   - local and S3 compatible object storage
   - pipeline parsing, matrix and architecture expansion, dependency graphs
   - triggers, run scheduling, the worker API, live logs, artifacts, reaping
+  - the worker: containerised jobs, services, features, caches, cleanup
 
-Not yet built: the worker agent itself, user accounts and the admin API, the
-read-api service, and the dashboard. Until the admin API exists, projects and
-worker tokens are managed with `src/admin-cli.js`.
+Not yet built: user accounts and the admin API, the read-api service, and the
+dashboard. Until the admin API exists, projects and worker tokens are managed
+with `src/admin-cli.js`.
 
 Installation
 ------------
@@ -87,6 +88,14 @@ chmod +x /srv/git/demo.git/hooks/post-receive
 and set `CONDUCTOR_URL`, `CONDUCTOR_PROJECT` and `CONDUCTOR_SECRET` for it.
 GitHub, Gitea and GitLab webhooks are accepted at the same endpoint, so a
 forge can drive it instead.
+
+Then run a worker, on this machine or any other:
+
+```sh
+node src/worker/agent.js --config worker.json
+```
+
+See [docs/worker.md](docs/worker.md), and `examples/worker.json`.
 
 Pipelines
 ---------

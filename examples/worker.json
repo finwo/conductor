@@ -1,0 +1,20 @@
+{
+  "conductor_url": "https://ci.example.com",
+  "name": "friends-pi",
+  "token_file": "/run/secrets/worker_token",
+  "arches": ["aarch64"],
+  "concurrency": 2,
+  "poll_interval": 5,
+  "docker": "docker",
+  "workspace_root": "/var/lib/conductor/work",
+  "cache_root": "/var/lib/conductor/cache",
+  "features": {
+    "dind": {
+      "privileged": true
+    },
+    "sign-key": {
+      "mounts": ["/srv/keys/build.rsa:/keys/build.rsa:ro"],
+      "env": { "SIGN_KEY": "/keys/build.rsa" }
+    }
+  }
+}

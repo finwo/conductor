@@ -73,9 +73,13 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
       job: {
         id: job.id,
         run_id: job.run_id,
+        project_id: job.project_id,
         name: job.name,
         arch: job.arch,
         image: job.image,
+        // The worker maps these onto its own local mounts, environment and
+        // privileges. Without them no feature is applied at all.
+        requires: job.requires,
         script: job.script,
         env: job.env,
         services: job.services,
@@ -84,6 +88,13 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
         timeout: job.timeout,
         attempt: job.attempt,
         sha: job.sha,
+        ref: job.ref,
+        // Values the worker must redact from the log stream. Populated
+        // once project variables exist; masking also happens on ingest.
+        masked: job.masked ?? [],
+        // Derived from the server's own timeout so a worker never has to
+        // guess how often it is expected to check in.
+        heartbeat_interval: Math.max(5, Math.floor(cfg.scheduler.heartbeat_timeout / 4)),
         // A worker fetches the tree from the conductor by default, so it
         // never needs repository credentials. Projects set to clone mode
         // get the URL instead.

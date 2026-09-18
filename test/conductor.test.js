@@ -224,6 +224,40 @@ test('a claimed job carries everything the worker needs', async () => {
     assert.equal(job.source.mode, 'archive');
     assert.match(job.source.url, /^http:\/\/conductor\.test\/api\/workers\/jobs\//);
     assert.ok(job.endpoints.log.endsWith('/log'));
+
+    // The worker resolves features and cache keys from these two, so a
+    // missing field silently disables both.
+    assert.deepEqual(job.requires, []);
+    assert.equal(job.project_id, 'demo');
+    assert.ok(Number.isInteger(job.heartbeat_interval) && job.heartbeat_interval > 0);
+    assert.deepEqual(job.masked, []);
+  });
+});
+
+test('a job that requires a feature reports it to the worker', async () => {
+  await withHarness({}, async (h) => {
+    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const roots = await drain(h, { arches: 'x86_64,aarch64' });
+    for (const job of Object.values(roots)) await finish(h, job.id, { success: true });
+
+    const pkg = (await drain(h, { arches: 'x86_64', features: 'sign-key' }))['package:arch=x86_64,pkg=musl'];
+    assert.ok(pkg);
+    assert.deepEqual(pkg.requires, ['sign-key']);
+  });
+});
+
+test('the standard conductor variables are present in the job environment', async () => {
+  await withHarness({}, async (h) => {
+    const run = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().run_id;
+    const job = await claimNamed(h, 'lint', {});
+
+    assert.equal(job.env.CONDUCTOR_PROJECT, 'demo');
+    assert.equal(job.env.CONDUCTOR_RUN_ID, run);
+    assert.equal(job.env.CONDUCTOR_RUN_NUMBER, '1');
+    assert.equal(job.env.CONDUCTOR_JOB, 'lint');
+    assert.equal(job.env.CONDUCTOR_SHA, h.sha);
+    assert.equal(job.env.CONDUCTOR_REF, 'refs/heads/main');
+    assert.equal(job.env.CONDUCTOR_ATTEMPT, '1');
   });
 });
 

@@ -33,7 +33,8 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, logger 
   // satisfied, which is the whole point of the flag.
   const ELIGIBLE = `
     SELECT j.id, j.run_id, j.name, j.arch, j.image, j.requires, j.spec,
-           j.timeout, j.attempt, j.max_attempts, r.head_sha, r.project_id
+           j.timeout, j.attempt, j.max_attempts,
+           r.head_sha, r.project_id, r.ref, r.number
       FROM jobs j
       JOIN runs r ON r.id = j.run_id
      WHERE j.state = 'queued'
@@ -233,6 +234,7 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, logger 
         if (claimed.changes !== 1) continue;
 
         const spec = JSON.parse(candidate.spec);
+        const attempt = candidate.attempt + 1;
         return {
           id: candidate.id,
           run_id: candidate.run_id,
@@ -241,12 +243,26 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, logger 
           arch: candidate.arch,
           image: candidate.image,
           sha: candidate.head_sha,
+          ref: candidate.ref,
           requires,
           timeout: candidate.timeout,
-          attempt: candidate.attempt + 1,
+          attempt,
           max_attempts: candidate.max_attempts,
           script: spec.script,
-          env: spec.env,
+          // Pipeline env, plus the facts about this run that a script
+          // should not have to be told twice. These are set last so a
+          // pipeline cannot quietly redefine them.
+          env: {
+            ...spec.env,
+            CONDUCTOR_PROJECT: candidate.project_id,
+            CONDUCTOR_RUN_ID: candidate.run_id,
+            CONDUCTOR_RUN_NUMBER: String(candidate.number),
+            CONDUCTOR_JOB: candidate.name,
+            CONDUCTOR_JOB_ID: candidate.id,
+            CONDUCTOR_SHA: candidate.head_sha,
+            CONDUCTOR_REF: candidate.ref ?? '',
+            CONDUCTOR_ATTEMPT: String(attempt),
+          },
           services: spec.services,
           artifacts: spec.artifacts,
           cache: spec.cache,
