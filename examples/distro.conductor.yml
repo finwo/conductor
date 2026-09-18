@@ -1,0 +1,64 @@
+# A source distribution building signed packages for two architectures.
+#
+# This is the shape the conductor was extracted from. Two details matter:
+#
+#   Each package job waits only for the build of its own architecture,
+#   because the dependency shares the arch dimension. The aarch64 packages
+#   do not sit behind the x86_64 build.
+#
+#   Signing happens on the worker. The worker holds the key and advertises
+#   the sign-key feature; the job asks for it by name. The conductor never
+#   sees the key, which is what makes it safe to accept build capacity from
+#   someone else's hardware.
+#
+# The package list is written out rather than discovered, since the pipeline
+# is data and the conductor does not run repository code to build the graph.
+
+version: 1
+
+defaults:
+  image: debian:bookworm-slim
+  timeout: 2h
+
+jobs:
+  check:
+    timeout: 10m
+    script:
+      - ./mk/deps.sh check
+
+  toolchain:
+    arch: [x86_64, aarch64]
+    script:
+      - ./mk/bootstrap-host.sh --check
+      - ./mk/sysroot.sh --arch $ARCH
+    artifacts:
+      paths: ['build/sysroot-$ARCH.tar.zst']
+      expire: 7d
+
+  package:
+    needs: [toolchain]
+    arch: [x86_64, aarch64]
+    matrix:
+      pkg: [musl, busybox, glibc, grub, tinyssh, base-files]
+    requires: [sign-key]
+    script:
+      - ./mk/build.sh $MATRIX_PKG $ARCH
+    artifacts:
+      paths: ['build/repo/$ARCH/$MATRIX_PKG-*.apk']
+
+  image:
+    needs: [package]
+    arch: [x86_64, aarch64]
+    script:
+      - ./mk/rootfs.sh $ARCH
+      - ./mk/make-img.sh $ARCH
+    artifacts:
+      paths: ['build/images/*-$ARCH.img']
+
+  publish:
+    # No arch of its own, so this waits for every image and every package.
+    needs: [image, check]
+    requires: [publish-key]
+    script:
+      - ./mk/repo-index.sh
+      - ./mk/publish.sh

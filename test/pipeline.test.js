@@ -91,6 +91,28 @@ jobs:
   assert.equal(jobs.c.timeout, 5400);
 });
 
+test('durations accept day and week units', () => {
+  const p = compilePipeline(`
+version: 1
+jobs:
+  a:
+    image: x
+    script: [y]
+    artifacts:
+      paths: [d]
+      expire: 30d
+  b:
+    image: x
+    script: [y]
+    artifacts:
+      paths: [d]
+      expire: 2w
+`);
+  const jobs = byName(p);
+  assert.equal(jobs.a.artifacts.expire, 30 * 86400);
+  assert.equal(jobs.b.artifacts.expire, 14 * 86400);
+});
+
 test('a malformed duration is rejected', () => {
   assert.deepEqual(
     errorPaths(() => compilePipeline('version: 1\njobs:\n  a: { image: x, script: [y], timeout: soon }\n')),

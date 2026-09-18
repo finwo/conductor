@@ -1,0 +1,118 @@
+#!/bin/sh
+# hooks/post-receive - notify a conductor of pushed commits
+#
+# Install into a bare repository as hooks/post-receive, chmod +x.
+# Reads "<old> <new> <ref>" per pushed ref on stdin.
+#
+# Required:
+#   CONDUCTOR_URL      base url, for example https://ci.example.com
+#   CONDUCTOR_PROJECT  project id registered with the conductor
+#
+# Optional:
+#   CONDUCTOR_SECRET       trigger secret, or a path to a file holding it.
+#                          Required whenever the project has one set.
+#   CONDUCTOR_REFS         space separated refs to build. Default: every
+#                          branch. Example: "refs/heads/main refs/heads/dev"
+#   CONDUCTOR_TIMEOUT      seconds to wait per request, default 10
+#
+# The hook decides nothing about the build. It reports which commit was
+# pushed and the conductor reads the pipeline from the repository itself.
+# A failure here never blocks the push.
+
+set -eu
+
+CONDUCTOR_URL="${CONDUCTOR_URL:-}"
+CONDUCTOR_PROJECT="${CONDUCTOR_PROJECT:-}"
+CONDUCTOR_SECRET="${CONDUCTOR_SECRET:-}"
+CONDUCTOR_REFS="${CONDUCTOR_REFS:-}"
+CONDUCTOR_TIMEOUT="${CONDUCTOR_TIMEOUT:-10}"
+
+ZERO="0000000000000000000000000000000000000000"
+
+log() { printf '[conductor] %s\n' "$*" >&2; }
+
+if [ -z "${CONDUCTOR_URL}" ] || [ -z "${CONDUCTOR_PROJECT}" ]; then
+  log "CONDUCTOR_URL and CONDUCTOR_PROJECT must be set; not triggering"
+  exit 0
+fi
+
+# The secret may be given inline or as a file, so it can stay out of the
+# process environment on shared hosts.
+if [ -n "${CONDUCTOR_SECRET}" ] && [ -f "${CONDUCTOR_SECRET}" ]; then
+  CONDUCTOR_SECRET=$(cat "${CONDUCTOR_SECRET}")
+fi
+
+if command -v curl >/dev/null 2>&1; then
+  http_client=curl
+elif command -v wget >/dev/null 2>&1; then
+  http_client=wget
+else
+  log "neither curl nor wget is available; not triggering"
+  exit 0
+fi
+
+want_ref() {
+  [ -z "${CONDUCTOR_REFS}" ] && case "$1" in
+    refs/heads/*) return 0 ;;
+    *) return 1 ;;
+  esac
+  for candidate in ${CONDUCTOR_REFS}; do
+    [ "${candidate}" = "$1" ] && return 0
+  done
+  return 1
+}
+
+while read -r old new ref; do
+  if [ "${new}" = "${ZERO}" ]; then
+    log "skipping ${ref}, branch deleted"
+    continue
+  fi
+
+  if ! want_ref "${ref}"; then
+    log "skipping ${ref}"
+    continue
+  fi
+
+  # A new branch reports an all zero parent, which is not a commit.
+  if [ "${old}" = "${ZERO}" ]; then
+    base=""
+  else
+    base="${old}"
+  fi
+
+  payload=$(printf '{"sha":"%s","base":"%s","ref":"%s","actor":"%s"}' \
+    "${new}" "${base}" "${ref}" "${USER:-git}")
+
+  if [ -n "${CONDUCTOR_SECRET}" ]; then
+    digest=$(printf '%s' "${payload}" | openssl dgst -sha256 -hmac "${CONDUCTOR_SECRET}" | sed 's/^.*[= ]//')
+    signature="sha256=${digest}"
+  else
+    signature=""
+    log "warning: no CONDUCTOR_SECRET set, sending unsigned"
+  fi
+
+  url="${CONDUCTOR_URL%/}/api/trigger/${CONDUCTOR_PROJECT}"
+  log "triggering ${ref} at $(echo "${new}" | cut -c1-12)"
+
+  if [ "${http_client}" = curl ]; then
+    response=$(curl -fsS -m "${CONDUCTOR_TIMEOUT}" -X POST "${url}" \
+      -H 'Content-Type: application/json' \
+      -H "X-Hub-Signature-256: ${signature}" \
+      -d "${payload}" 2>&1) || {
+      log "trigger failed for ${ref}: ${response}"
+      continue
+    }
+  else
+    response=$(wget -qO- --timeout="${CONDUCTOR_TIMEOUT}" \
+      --header='Content-Type: application/json' \
+      --header="X-Hub-Signature-256: ${signature}" \
+      --post-data="${payload}" "${url}" 2>&1) || {
+      log "trigger failed for ${ref}: ${response}"
+      continue
+    }
+  fi
+
+  log "${response}"
+done
+
+exit 0

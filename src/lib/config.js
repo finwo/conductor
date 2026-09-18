@@ -185,11 +185,13 @@ export function parseKey(value, label) {
 function validate(cfg) {
   const errors = [];
 
-  if (!Number.isInteger(cfg.server.port) || cfg.server.port < 1 || cfg.server.port > 65535) {
-    errors.push(`server.port must be between 1 and 65535, got ${cfg.server.port}`);
-  }
-  if (!Number.isInteger(cfg.read_api.port) || cfg.read_api.port < 1 || cfg.read_api.port > 65535) {
-    errors.push(`read_api.port must be between 1 and 65535, got ${cfg.read_api.port}`);
+  // Port 0 asks the operating system for a free port, which is useful in
+  // tests and for ephemeral instances.
+  for (const key of ['server.port', 'read_api.port']) {
+    const port = getPath(cfg, key);
+    if (!Number.isInteger(port) || port < 0 || port > 65535) {
+      errors.push(`${key} must be between 0 and 65535, got ${port}`);
+    }
   }
   if (cfg.database.url && dialectFromUrl(cfg.database.url) === null) {
     errors.push(

@@ -1,0 +1,164 @@
+// test/helpers/harness.js - a conductor on a temporary database
+//
+// Builds a real server against a real git repository and a real sqlite file,
+// then drives it through fastify inject. No ports are bound and no
+// background processes are started, so the tests stay deterministic.
+
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { loadConfig } from '../../src/lib/config.js';
+import { createServices, buildServer } from '../../src/conductor/app.js';
+
+const execFileAsync = promisify(execFile);
+
+export const DEFAULT_PIPELINE = `
+version: 1
+defaults:
+  image: debian:bookworm-slim
+jobs:
+  lint:
+    script: [make lint]
+  build:
+    arch: [x86_64, aarch64]
+    script: ['./build.sh $ARCH']
+    artifacts:
+      paths: [dist/**]
+  package:
+    needs: [build]
+    arch: [x86_64, aarch64]
+    matrix:
+      pkg: [musl]
+    requires: [sign-key]
+    script: ['./pkg.sh $MATRIX_PKG $ARCH']
+  publish:
+    needs: [package, lint]
+    script: [./publish.sh]
+`;
+
+export async function createRepo(dir, { pipeline = DEFAULT_PIPELINE, configPath = '.conductor.yml' } = {}) {
+  await fs.mkdir(dir, { recursive: true });
+  const git = (...args) => execFileAsync('git', ['-C', dir, ...args]);
+
+  await execFileAsync('git', ['init', '-q', '-b', 'main', dir]);
+  await git('config', 'user.email', 'test@example.invalid');
+  await git('config', 'user.name', 'Test');
+
+  await fs.mkdir(path.dirname(path.join(dir, configPath)), { recursive: true });
+  if (pipeline !== null) await fs.writeFile(path.join(dir, configPath), pipeline);
+  await fs.writeFile(path.join(dir, 'README.md'), 'test repository\n');
+
+  await git('add', '-A');
+  await git('commit', '-q', '-m', 'initial commit');
+  const { stdout } = await git('rev-parse', 'HEAD');
+  return stdout.trim();
+}
+
+export async function startHarness(options = {}) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'conductor-it-'));
+  const repoDir = path.join(root, 'repo');
+  const sha = await createRepo(repoDir, options);
+
+  const configFile = path.join(root, 'conductor.yaml');
+  await fs.writeFile(configFile, [
+    'server:',
+    '  port: 0',
+    '  public_url: http://conductor.test',
+    'database:',
+    '  path: ./state/conductor.db',
+    'storage:',
+    '  path: ./state/storage',
+    'git:',
+    '  mirror_path: ./state/mirrors',
+    '  fetch_interval: 0',
+    'log:',
+    '  spool_path: ./state/logs',
+    'secrets:',
+    `  encryption_key: ${crypto.randomBytes(32).toString('hex')}`,
+    'scheduler:',
+    '  heartbeat_timeout: 120',
+    '  reap_interval: 30',
+    '',
+  ].join('\n'));
+
+  const savedConfig = process.env.CONDUCTOR_CONFIG;
+  process.env.CONDUCTOR_CONFIG = configFile;
+  const cfg = loadConfig();
+  if (savedConfig === undefined) delete process.env.CONDUCTOR_CONFIG;
+  else process.env.CONDUCTOR_CONFIG = savedConfig;
+
+  const services = await createServices(cfg, { migrationLogger: () => {}, logger: silentLogger() });
+  const app = await buildServer(services, { logger: false });
+
+  const project = await services.projects.create({
+    id: 'demo',
+    name: 'Demo',
+    repo_url: repoDir,
+    trigger_secret: 'test-secret',
+    config_path: options.configPath ?? '.conductor.yml',
+    source_mode: options.sourceMode ?? 'archive',
+  });
+
+  const worker = await services.workerTokens.create('test-worker');
+
+  return {
+    root,
+    repoDir,
+    sha,
+    cfg,
+    app,
+    services,
+    project,
+    worker,
+    auth: { authorization: `Bearer ${worker.token}` },
+
+    // Commits a change and returns the new commit id.
+    async commit(files, message = 'update') {
+      for (const [name, content] of Object.entries(files)) {
+        await fs.mkdir(path.dirname(path.join(repoDir, name)), { recursive: true });
+        await fs.writeFile(path.join(repoDir, name), content);
+      }
+      await execFileAsync('git', ['-C', repoDir, 'add', '-A']);
+      await execFileAsync('git', ['-C', repoDir, 'commit', '-q', '-m', message]);
+      const { stdout } = await execFileAsync('git', ['-C', repoDir, 'rev-parse', 'HEAD']);
+      return stdout.trim();
+    },
+
+    sign(body) {
+      return `sha256=${crypto.createHmac('sha256', 'test-secret').update(body).digest('hex')}`;
+    },
+
+    async trigger(payload, { secret = 'test-secret' } = {}) {
+      const body = JSON.stringify(payload);
+      const signature = `sha256=${crypto.createHmac('sha256', secret).update(body).digest('hex')}`;
+      return app.inject({
+        method: 'POST',
+        url: '/api/trigger/demo',
+        headers: { 'content-type': 'application/json', 'x-hub-signature-256': signature },
+        payload: body,
+      });
+    },
+
+    async poll(query = {}) {
+      const search = new URLSearchParams(query).toString();
+      return app.inject({
+        method: 'GET',
+        url: `/api/workers/poll${search ? `?${search}` : ''}`,
+        headers: this.auth,
+      });
+    },
+
+    async stop() {
+      await app.close();
+      await services.db.close();
+      await fs.rm(root, { recursive: true, force: true });
+    },
+  };
+}
+
+function silentLogger() {
+  return { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
+}

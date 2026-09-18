@@ -156,6 +156,26 @@ export function compileCached(sql, dialect) {
   return entry;
 }
 
+// Builds the body of an IN (...) clause with generated marker names, since
+// the number of values is only known at runtime.
+//
+//   const arch = inClause('arch', ['x86_64', 'aarch64']);
+//   db.all(`... WHERE arch IN (${arch.sql})`, { ...arch.params });
+//
+// Returns a clause that matches nothing when the list is empty, which is
+// the safe reading of "none of these".
+export function inClause(prefix, values) {
+  if (!Array.isArray(values) || values.length === 0) {
+    return { sql: 'NULL', params: {}, empty: true };
+  }
+  const params = {};
+  const markers = values.map((value, i) => {
+    params[`${prefix}${i}`] = value;
+    return `{${prefix}${i}}`;
+  });
+  return { sql: markers.join(', '), params, empty: false };
+}
+
 function resolve(params, key) {
   // An exact property wins, so a pre-flattened object works unchanged.
   if (params != null && Object.hasOwn(params, key)) {

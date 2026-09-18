@@ -139,7 +139,8 @@ export function asEnvMap(problems, path, value) {
 
 export const MAX_DURATION = 7 * 24 * 60 * 60;
 
-// Accepts 90, '90s', '30m', '1h', or a composite such as '1h30m'.
+// Accepts 90, '90s', '30m', '1h', '30d', '2w', or a composite such as
+// '1h30m'. A bare number is seconds.
 export function asDuration(problems, path, value, { max = MAX_DURATION } = {}) {
   let seconds;
 
@@ -151,12 +152,15 @@ export function asDuration(problems, path, value, { max = MAX_DURATION } = {}) {
     if (/^\d+$/.test(text)) {
       seconds = parseInt(text, 10);
     } else {
-      const matches = [...text.matchAll(/(\d+)([smh])/g)];
+      const matches = [...text.matchAll(/(\d+)([smhdw])/g)];
       const consumed = matches.reduce((n, m) => n + m[0].length, 0);
       if (matches.length === 0 || consumed !== text.length) {
-        return problems.add(path, `expected a duration such as 90s, 30m or 1h30m, got ${JSON.stringify(value)}`);
+        return problems.add(
+          path,
+          `expected a duration such as 90s, 30m, 1h30m or 30d, got ${JSON.stringify(value)}`
+        );
       }
-      const unit = { s: 1, m: 60, h: 3600 };
+      const unit = { s: 1, m: 60, h: 3600, d: 86400, w: 604800 };
       seconds = matches.reduce((n, m) => n + parseInt(m[1], 10) * unit[m[2]], 0);
     }
   } else {

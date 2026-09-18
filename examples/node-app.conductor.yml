@@ -1,0 +1,55 @@
+# A typical node service: install, check, build, publish an image.
+#
+# The publish job asks for the docker feature, so it only runs on a worker
+# configured to provide a docker socket or a docker in docker service.
+
+version: 1
+
+defaults:
+  image: node:22-bookworm-slim
+  timeout: 20m
+
+jobs:
+  install:
+    script:
+      - npm ci
+    artifacts:
+      paths: [node_modules/**]
+      expire: 1h
+    cache:
+      key: npm
+      paths: [.npm]
+
+  lint:
+    needs: [install]
+    script:
+      - npm run lint
+
+  test:
+    needs: [install]
+    matrix:
+      suite: [unit, integration]
+    services:
+      - image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test
+    env:
+      DATABASE_URL: postgres://postgres:test@postgres:5432/postgres
+    script:
+      - npm run test:$MATRIX_SUITE
+    artifacts:
+      paths: [coverage/**]
+      when: always
+
+  image:
+    needs: [lint, test]
+    image: docker:27-cli
+    requires: [docker]
+    services:
+      - image: docker:27-dind
+        alias: docker
+    env:
+      DOCKER_HOST: tcp://docker:2375
+    script:
+      - docker build -t example/app:$CONDUCTOR_SHA .
+      - docker push example/app:$CONDUCTOR_SHA
