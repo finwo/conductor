@@ -1,0 +1,28 @@
+{
+  "name": "conductor",
+  "version": "0.1.0",
+  "description": "Stand-alone CI system: in-repo pipelines, containerised jobs, pull-based workers",
+  "type": "module",
+  "main": "src/conductor/index.js",
+  "scripts": {
+    "start": "node src/conductor/index.js",
+    "dev": "node --watch src/conductor/index.js",
+    "read-api": "node src/read-api/index.js",
+    "worker": "node src/worker/agent.js",
+    "migrate": "node src/lib/db/migrate-cli.js",
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.3.0",
+    "fastify": "^5.12.5",
+    "jose": "^6.2.12",
+    "yaml": "^2.8.1"
+  },
+  "optionalDependencies": {
+    "mysql2": "^3.24.4",
+    "pg": "^8.16.3"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

@@ -1,0 +1,20 @@
+# dependencies
+/node_modules/
+/package-lock.json
+
+# runtime state: sqlite db, mirrors, log spool, artifact storage
+/data/
+
+# local configuration and secrets
+/conductor.yaml
+/.env
+/secrets/
+/keys/
+
+# test scratch
+/test/tmp/
+
+# editor / os noise
+*.swp
+*~
+.DS_Store

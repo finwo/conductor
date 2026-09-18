@@ -1,0 +1,85 @@
+# conductor.example.yaml - server configuration
+#
+# Copy to conductor.yaml and edit. Every value here is a default, so an empty
+# file is a valid configuration: sqlite on disk, local object storage and
+# built-in user accounts.
+#
+# Any value can also be set from the environment, which takes precedence over
+# this file. See ENV_MAP in src/lib/config.js for the full list.
+#
+# Relative paths resolve against the directory holding this file.
+
+server:
+  host: 0.0.0.0
+  port: 8080
+  # Absolute URL this conductor is reachable at. Workers are handed callback
+  # URLs derived from it, so it must be correct behind a reverse proxy.
+  public_url: http://127.0.0.1:8080
+
+read_api:
+  host: 0.0.0.0
+  port: 8081
+
+database:
+  # Leave url unset for sqlite. Otherwise the scheme picks the dialect:
+  #   mysql://user:pass@host:3306/conductor
+  #   postgres://user:pass@host:5432/conductor
+  # The matching driver package must be installed: mysql2 or pg.
+  url: null
+  path: ./data/conductor.db
+  connection_limit: 10
+
+storage:
+  # Used when no s3 bucket is configured below.
+  path: ./data/storage
+  # Setting a bucket switches artifacts and finished logs to object storage.
+  # endpoint, bucket, access_key_id and secret_access_key are all required
+  # together. Garage and MinIO need force_path_style; AWS S3 does not.
+  s3:
+    endpoint: null
+    region: us-east-1
+    bucket: null
+    access_key_id: null
+    secret_access_key: null
+    force_path_style: true
+
+auth:
+  # Signs built-in session tokens. Generated per boot when unset, which logs
+  # everyone out on restart, so set it in production.
+  session_secret: null
+  session_ttl: 43200
+  # Setting an issuer switches admin authentication to OIDC. Built-in
+  # accounts are used when it is unset.
+  oidc:
+    issuer: null
+    audience: null
+    admin_role: conductor-admin
+  # Created on first boot, only while the users table is empty. With no
+  # password set, one is generated and written to the log once.
+  bootstrap_admin:
+    username: admin
+    password: null
+
+secrets:
+  # 32 bytes as 64 hex characters or base64, for example:
+  #   openssl rand -hex 32
+  # Without it, project variables and trigger secrets are stored in the clear
+  # and marked as such, so they can be re-sealed later.
+  encryption_key: null
+
+git:
+  mirror_path: ./data/mirrors
+  fetch_interval: 60
+  timeout: 300
+
+log:
+  spool_path: ./data/logs
+  max_size: 67108864
+
+scheduler:
+  # A claimed job whose worker stops reporting for this long is treated as
+  # lost, then retried or failed. Must exceed reap_interval.
+  heartbeat_timeout: 120
+  reap_interval: 30
+  default_job_timeout: 3600
+  max_attempts: 3
