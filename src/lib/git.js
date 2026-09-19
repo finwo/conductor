@@ -16,6 +16,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
@@ -23,15 +24,36 @@ const execFileAsync = promisify(execFile);
 export const SHA_PATTERN = /^[0-9a-f]{40}$/;
 export const SHORT_SHA_PATTERN = /^[0-9a-f]{7,40}$/;
 
-// Refuses credential prompts, so a misconfigured private repository fails
-// promptly instead of hanging until the request times out.
-const GIT_ENV = {
-  ...process.env,
-  GIT_TERMINAL_PROMPT: '0',
-  GIT_ASKPASS: '',
-  GCM_INTERACTIVE: 'never',
-  LC_ALL: 'C',
-};
+// Reading a repository owned by somebody else is the normal case here, not
+// a suspicious one: project paths belong to whoever put them on disk, and
+// the conductor is a different user again once it runs in a container.
+// Git refuses that by default with "detected dubious ownership", which is
+// the right default for a shell and the wrong one for this.
+//
+// Applied through the environment rather than a global git config, so it
+// covers both spawn and execFile below and affects nothing outside this
+// process. Anything already set in the environment is preserved, since
+// the indices have to be contiguous for git to read them.
+function gitEnv(env = process.env) {
+  const count = Number.parseInt(env.GIT_CONFIG_COUNT ?? '0', 10);
+  const base = Number.isInteger(count) && count > 0 ? count : 0;
+  return {
+    ...env,
+    // Refuses credential prompts, so a misconfigured private repository
+    // fails promptly instead of hanging until the request times out.
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_ASKPASS: '',
+    GCM_INTERACTIVE: 'never',
+    LC_ALL: 'C',
+    GIT_CONFIG_COUNT: String(base + 1),
+    [`GIT_CONFIG_KEY_${base}`]: 'safe.directory',
+    [`GIT_CONFIG_VALUE_${base}`]: '*',
+  };
+}
+
+const GIT_ENV = gitEnv();
+
+export { gitEnv };
 
 export class GitError extends Error {
   constructor(message, { stderr, code } = {}) {
@@ -99,10 +121,28 @@ export function createGit(cfg) {
     return path.join(cfg.git.mirror_path, `${projectId}.git`);
   }
 
+  // Given --git-dir explicitly, git still treats the process working
+  // directory as a work tree. That makes the result depend on whatever
+  // happens to sit in the conductor's own directory: asking for a file
+  // that is absent from a commit reports "exists on disk, but not in
+  // <sha>" rather than a plain absence, purely because a file of that
+  // name is next to the running process. Working inside the bare mirror
+  // takes the stray work tree out of the picture.
+  //
+  // Only when it is already there, since clone is told --git-dir for a
+  // directory it is about to create.
+  function repoCwd(args) {
+    const i = args.indexOf('--git-dir');
+    if (i < 0) return undefined;
+    const dir = args[i + 1];
+    return dir && existsSync(dir) ? dir : undefined;
+  }
+
   async function run(args, options = {}) {
     try {
       const { stdout, stderr } = await execFileAsync('git', args, {
         env: GIT_ENV,
+        cwd: options.cwd ?? repoCwd(args),
         timeout,
         maxBuffer: options.maxBuffer ?? 16 * 1024 * 1024,
         encoding: options.encoding ?? 'utf8',
@@ -175,7 +215,7 @@ export function createGit(cfg) {
         );
         return stdout;
       } catch (e) {
-        if (/does not exist|not a valid object name|Not a valid object/i.test(e.stderr ?? '')) return null;
+        if (/does not exist|exists on disk, but not in|not a valid object name|Not a valid object/i.test(e.stderr ?? '')) return null;
         throw e;
       }
     },
@@ -200,7 +240,7 @@ export function createGit(cfg) {
       if (prefix) args.push(`--prefix=${prefix}`);
       args.push(sha);
 
-      const child = spawn('git', args, { env: GIT_ENV, stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn('git', args, { env: GIT_ENV, cwd: repoCwd(args), stdio: ['ignore', 'pipe', 'pipe'] });
       let stderr = '';
       child.stderr.on('data', (chunk) => { stderr += chunk.toString().slice(0, 4096); });
       child.on('close', (code) => {
