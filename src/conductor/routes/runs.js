@@ -78,10 +78,7 @@ export default async function runRoutes(fastify, { db, logs, storage }) {
       { job: job.id }
     );
 
-    return reply.send({
-      job: { ...job, requires: safeJson(job.requires, []), spec: safeJson(job.spec, {}) },
-      artifacts,
-    });
+    return reply.send({ job: publicJob(job), artifacts });
   });
 
   // Incremental log tail. While a job runs the bytes come from the local
@@ -143,6 +140,29 @@ export default async function runRoutes(fastify, { db, logs, storage }) {
       throw e;
     }
   });
+}
+
+// These routes are mounted by the read-api, which is meant to be exposed
+// publicly, so the job environment is never returned. It is the one field
+// that carries project variables once a job is dispatched, and there is no
+// use for it here that is worth the risk. Everything else in the spec
+// already appears in the log or the pipeline file.
+function publicJob(job) {
+  const spec = safeJson(job.spec, {});
+  const { env, ...rest } = job;
+  return {
+    ...rest,
+    requires: safeJson(job.requires, []),
+    spec: {
+      script: spec.script ?? [],
+      needs: spec.needs ?? [],
+      matrix: spec.matrix ?? {},
+      depth: spec.depth ?? 0,
+      cache: spec.cache ? { key: spec.cache.key, paths: spec.cache.paths } : null,
+      artifacts: spec.artifacts ?? null,
+      services: (spec.services ?? []).map((s) => ({ image: s.image, alias: s.alias })),
+    },
+  };
 }
 
 function clamp(raw, min, max, fallback) {

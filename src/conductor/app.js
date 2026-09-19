@@ -24,6 +24,7 @@ import triggerRoutes from './routes/trigger.js';
 import runRoutes from './routes/runs.js';
 import authRoutes from './routes/auth.js';
 import adminRoutes from './routes/admin.js';
+import staticRoutes from '../lib/static.js';
 
 export async function createServices(cfg, options = {}) {
   ensureStateDirs(cfg);
@@ -84,6 +85,12 @@ export async function buildServer(services, options = {}) {
   await fastify.register(authRoutes, { ...services, prefix: '/api/auth' });
   await fastify.register(adminRoutes, { ...services, prefix: '/api/admin' });
   await fastify.register(runRoutes, { ...services, prefix: '/api' });
+
+  // Served here as well as by the read-api, so a single process install
+  // has a working interface without deploying both.
+  if (options.dashboard !== false) {
+    await fastify.register(staticRoutes, {});
+  }
 
   return fastify;
 }

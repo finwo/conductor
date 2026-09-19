@@ -31,10 +31,10 @@ Under construction. Working today:
   - pipeline parsing, matrix and architecture expansion, dependency graphs
   - triggers, run scheduling, the worker API, live logs, artifacts, reaping
   - the worker: containerised jobs, services, features, caches, cleanup
+  - accounts, OIDC, the admin API, and project variables
+  - the read-api and the dashboard
 
-Not yet built: user accounts and the admin API, the read-api service, and the
-dashboard. Until the admin API exists, projects and worker tokens are managed
-with `src/admin-cli.js`.
+Not yet built: container images and deployment manifests.
 
 Installation
 ------------
@@ -46,6 +46,19 @@ npm install
 cp conductor.example.yaml conductor.yaml
 npm start
 ```
+
+On first start an administrator account is created and its generated
+password written to the log once. The dashboard is on the same port.
+
+Run the public read surface separately when the write surface should not be
+exposed:
+
+```sh
+npm run read-api
+```
+
+It serves the dashboard and the read API only. The trigger, worker and admin
+routes are not registered on it at all, so no credential can reach them.
 
 `mysql2` and `pg` are optional and only needed when `database.url` points at
 one of those servers.
