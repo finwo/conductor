@@ -390,3 +390,67 @@ test('the stylesheet and htmx are served, and nothing else is', async () => {
     }
   });
 });
+
+// --- retention ---
+
+test('the project page shows retention, with server defaults as placeholders', async () => {
+  await withUi({
+    allowLocalLogin: true,
+    retention: { artifact_keep_runs: 8, artifact_keep_days: 25, log_keep_days: 11 },
+  }, async (h) => {
+    const session = await signIn(h);
+    const page = await get(h, `/projects/${h.project.id}`, session);
+
+    assert.equal(page.statusCode, 200);
+    assert.match(page.body, /Retention/);
+
+    // An unset field shows the default it inherits rather than an empty
+    // box that looks like nothing is configured.
+    assert.match(page.body, /name="artifact_keep_runs"[^>]*placeholder="8"/);
+    assert.match(page.body, /name="artifact_keep_days"[^>]*placeholder="25"/);
+    assert.match(page.body, /name="log_keep_days"[^>]*placeholder="11"/);
+  });
+});
+
+test('saving retention through the form stores it, and empty means inherit', async () => {
+  await withUi({
+    allowLocalLogin: true,
+    retention: { artifact_keep_runs: 8, artifact_keep_days: 25, log_keep_days: 11 },
+  }, async (h) => {
+    const session = await signIn(h);
+
+    const saved = await h.app.inject({
+      method: 'PATCH',
+      url: `/projects/${h.project.id}/retention`,
+      ...form(session, { artifact_keep_runs: '3', artifact_keep_days: '0', log_keep_days: '' }),
+    });
+    assert.ok(saved.statusCode < 400, `unexpected ${saved.statusCode}: ${saved.body}`);
+
+    const project = await h.services.projects.get(h.project.id);
+    assert.equal(project.artifact_keep_runs, 3);
+    // Zero and empty have to end up different, or a project cannot say
+    // "keep forever" as distinct from "use the default".
+    assert.equal(project.artifact_keep_days, 0);
+    assert.equal(project.log_keep_days, null);
+
+    const page = await get(h, `/projects/${h.project.id}`, session);
+    assert.match(page.body, /name="artifact_keep_days"[^>]*value="0"/);
+    assert.match(page.body, /name="log_keep_days"[^>]*value=""/);
+  });
+});
+
+test('a negative retention value is refused by the form', async () => {
+  await withUi({ allowLocalLogin: true }, async (h) => {
+    const session = await signIn(h);
+
+    const res = await h.app.inject({
+      method: 'PATCH',
+      url: `/projects/${h.project.id}/retention`,
+      ...form(session, { log_keep_days: '-3' }),
+    });
+
+    assert.ok(res.statusCode >= 400, 'a negative value must not be stored');
+    const project = await h.services.projects.get(h.project.id);
+    assert.equal(project.log_keep_days, null);
+  });
+});

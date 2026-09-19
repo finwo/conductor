@@ -265,6 +265,17 @@ A bare list is shorthand for `paths`. Paths are relative to the workspace;
 absolute paths are rejected. `when` is `on_success`, `on_failure` or
 `always`.
 
+`expire` sets an exact deadline for what this job produces, and overrides
+the project's retention policy in both directions: sooner than the project
+would delete, or later than it would keep. It also overrides the rule that
+protects the most recent successful run, which is the point of it. A
+node_modules tree is worth dropping within the hour whether or not its run
+was green, and without that the largest artifacts are the ones kept
+longest.
+
+Leave it out and the project's policy applies, which is the usual case.
+See [deployment.md](deployment.md) for what those policies are.
+
 Artifacts are streamed rather than buffered, so size is bounded by where
 they are stored rather than by the conductor's memory. Object storage
 receives anything over 32 MiB as a multipart upload, which keeps memory

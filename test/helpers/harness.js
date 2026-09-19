@@ -97,6 +97,9 @@ export async function startHarness(options = {}) {
     'scheduler:',
     '  heartbeat_timeout: 120',
     '  reap_interval: 30',
+    ...(options.retention
+      ? ['retention:', ...Object.entries(options.retention).map(([k, v]) => `  ${k}: ${v}`)]
+      : []),
     'auth:',
     '  session_secret: test-session-secret-not-for-real-use',
     ...(options.oidcIssuer

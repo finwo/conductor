@@ -34,6 +34,11 @@ export default async function manageRoutes(fastify, services) {
     owner_id: p.owner_id,
     has_trigger_secret: Boolean(p.trigger_secret),
     run_count: p.run_counter,
+    // Null means the server default applies, which the caller cannot see
+    // from here; GET /api/retention reports what those defaults are.
+    artifact_keep_runs: p.artifact_keep_runs ?? null,
+    artifact_keep_days: p.artifact_keep_days ?? null,
+    log_keep_days: p.log_keep_days ?? null,
     created_at: p.created_at,
   });
 
@@ -102,6 +107,17 @@ export default async function manageRoutes(fastify, services) {
     return reply.send({ project: asPublic(project), trigger_url: triggerUrl(project.id) });
   });
 
+  // What a null on a project means. Needed to render "inherited (30 days)"
+  // rather than an empty box that looks like nothing is set.
+  fastify.get('/retention', async (req, reply) => reply.send({
+    defaults: {
+      artifact_keep_runs: cfg.retention.artifact_keep_runs,
+      artifact_keep_days: cfg.retention.artifact_keep_days,
+      log_keep_days: cfg.retention.log_keep_days,
+    },
+    sweep_interval: cfg.retention.sweep_interval,
+  }));
+
   fastify.patch('/projects/:id', async (req, reply) => {
     const project = await manageable(req, reply);
     if (!project) return reply;
@@ -110,6 +126,12 @@ export default async function manageRoutes(fastify, services) {
     try {
       if (typeof body.enabled === 'boolean') await projects.setEnabled(project.id, body.enabled);
       if (typeof body.visibility === 'string') await projects.setVisibility(project.id, body.visibility);
+      const retention = {};
+      for (const key of ['artifact_keep_runs', 'artifact_keep_days', 'log_keep_days']) {
+        if (Object.hasOwn(body, key)) retention[key] = body[key];
+      }
+      if (Object.keys(retention).length > 0) await projects.setRetention(project.id, retention);
+
       if (Object.hasOwn(body, 'owner_id')) {
         if (req.user.role !== 'admin') throw new Error('only an administrator may change the owner');
         await projects.setOwner(project.id, body.owner_id ?? null);

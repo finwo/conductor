@@ -217,7 +217,7 @@ export function projectsTable(projects, user) {
   </table>`;
 }
 
-export function projectPage({ project, variables, triggerUrl, secret, user }) {
+export function projectPage({ project, variables, triggerUrl, secret, user, retention }) {
   return html`
     <h2>${project.id}</h2>
     ${secret ? oneTimeSecret(
@@ -256,6 +256,40 @@ export function projectPage({ project, variables, triggerUrl, secret, user }) {
           </label>
         </div>
         <p class="muted">A pipeline may override visibility per commit with a top level visibility key.</p>
+        <div class="actions"><button type="submit">save</button></div>
+      </form>
+    </div>
+
+    <div class="panel">
+      <h3>Retention</h3>
+      <p class="muted">
+        Leave a field empty to follow the server default, shown as the
+        placeholder. Zero keeps things forever.
+      </p>
+      <form hx-patch="/projects/${project.id}/retention" hx-target="body" hx-swap="none">
+        <div class="grid">
+          <label>keep artifacts for runs
+            <input name="artifact_keep_runs" type="number" min="0" inputmode="numeric"
+                   placeholder="${retention.artifact_keep_runs}"
+                   value="${project.artifact_keep_runs ?? ''}">
+          </label>
+          <label>keep artifacts for days
+            <input name="artifact_keep_days" type="number" min="0" inputmode="numeric"
+                   placeholder="${retention.artifact_keep_days}"
+                   value="${project.artifact_keep_days ?? ''}">
+          </label>
+          <label>keep logs for days
+            <input name="log_keep_days" type="number" min="0" inputmode="numeric"
+                   placeholder="${retention.log_keep_days}"
+                   value="${project.log_keep_days ?? ''}">
+          </label>
+        </div>
+        <p class="muted">
+          An artifact is kept if either rule wants it, so the last
+          ${project.artifact_keep_runs ?? retention.artifact_keep_runs} runs survive
+          whatever their age. The most recent successful run is always kept. A job
+          that sets artifacts.expire overrides all of this.
+        </p>
         <div class="actions"><button type="submit">save</button></div>
       </form>
     </div>

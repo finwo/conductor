@@ -79,6 +79,27 @@ log:
   spool_path: ./data/logs
   max_size: 67108864
 
+# How long build output is kept. A project may override any of these from
+# its settings page; zero means keep forever.
+#
+# Artifacts follow two rules and survive if either wants them: the last
+# artifact_keep_runs runs are kept whatever their age, and anything younger
+# than artifact_keep_days is kept however many runs have followed. The most
+# recent successful run is always kept, so a project that has gone quiet
+# still has something to download. A job that sets artifacts.expire in the
+# pipeline overrides all of it with an exact deadline.
+#
+# Logs go by age alone. They are the reason this exists: written for every
+# job, read for almost none, and otherwise never removed.
+retention:
+  artifact_keep_runs: 10
+  artifact_keep_days: 30
+  log_keep_days: 14
+  # Seconds between sweeps, and how much one sweep will delete, so a first
+  # pass over a long backlog cannot monopolise the database or the bucket.
+  sweep_interval: 3600
+  batch: 500
+
 scheduler:
   # A claimed job whose worker stops reporting for this long is treated as
   # lost, then retried or failed. Must exceed reap_interval.

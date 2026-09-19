@@ -372,6 +372,9 @@ export default async function uiRoutes(fastify, services) {
         variables: await variables.list(project.id),
         triggerUrl: `${cfg.server.public_url.replace(/\/+$/, '')}/api/trigger/${project.id}`,
         secret,
+        // What an empty field falls back to, so the form can say so
+        // rather than looking unset.
+        retention: cfg.retention,
       }),
     });
   });
@@ -385,6 +388,38 @@ export default async function uiRoutes(fastify, services) {
     try {
       if (body.visibility) await projects.setVisibility(found.project.id, body.visibility);
       if (body.enabled !== undefined) await projects.setEnabled(found.project.id, body.enabled === 'true' || body.enabled === true);
+    } catch (e) {
+      return fail(reply, e.message);
+    }
+    return refresh(reply);
+  });
+
+  fastify.patch('/projects/:id/retention', async (req, reply) => {
+    if (!fromUi(req, reply)) return reply;
+    const found = await projectFor(req, reply);
+    if (!found) return reply;
+
+    const body = req.body ?? {};
+    const values = {};
+    for (const key of ['artifact_keep_runs', 'artifact_keep_days', 'log_keep_days']) {
+      if (!Object.hasOwn(body, key)) continue;
+      const raw = String(body[key] ?? '').trim();
+      // An empty field means "follow the server default", which is a null
+      // rather than a zero. A form cannot express that difference on its
+      // own, so it is decided here.
+      if (raw === '') {
+        values[key] = null;
+        continue;
+      }
+      const parsed = Number(raw);
+      if (!Number.isInteger(parsed) || parsed < 0) {
+        return fail(reply, `${key} must be a whole number of zero or more, or empty to follow the default`);
+      }
+      values[key] = parsed;
+    }
+
+    try {
+      await projects.setRetention(found.project.id, values);
     } catch (e) {
       return fail(reply, e.message);
     }

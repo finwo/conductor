@@ -83,6 +83,24 @@ const DEFAULTS = {
     // Refuse log appends past this size, to bound a runaway job.
     max_size: 64 * 1024 * 1024,
   },
+  // What happens to build output over time. A project may override any of
+  // these; see migrations/sqlite/004_retention.sql for how the artifact
+  // rules combine. Zero means keep forever.
+  retention: {
+    // The last this many runs keep their artifacts whatever their age.
+    artifact_keep_runs: 10,
+    // Artifacts younger than this are kept whatever has followed them.
+    artifact_keep_days: 30,
+    // Logs go purely by age, and are the reason this exists at all: they
+    // are written for every job, read for almost none, and never stop.
+    log_keep_days: 14,
+    // How often to sweep. Deleting is not urgent, and a sweep walks every
+    // project, so this is deliberately not the scheduler's interval.
+    sweep_interval: 3600,
+    // How much to delete in one pass, so a first sweep over a large
+    // backlog cannot monopolise the database or the object store.
+    batch: 500,
+  },
   scheduler: {
     // A claimed job whose worker stops sending heartbeats for this long is
     // considered lost and is requeued or failed.
@@ -95,6 +113,10 @@ const DEFAULTS = {
 
 // [environment variable, dotted config path, parser]
 const ENV_MAP = [
+  ['CONDUCTOR_RETENTION_ARTIFACT_RUNS', 'retention.artifact_keep_runs', toInt],
+  ['CONDUCTOR_RETENTION_ARTIFACT_DAYS', 'retention.artifact_keep_days', toInt],
+  ['CONDUCTOR_RETENTION_LOG_DAYS',      'retention.log_keep_days',      toInt],
+  ['CONDUCTOR_RETENTION_SWEEP_INTERVAL','retention.sweep_interval',     toInt],
   ['CONDUCTOR_HOST',                 'server.host',                 String],
   ['CONDUCTOR_PORT',                 'server.port',                 toInt],
   ['CONDUCTOR_PUBLIC_URL',           'server.public_url',           String],
@@ -233,6 +255,21 @@ function validate(cfg) {
     errors.push(
       `scheduler.heartbeat_timeout (${cfg.scheduler.heartbeat_timeout}) must be greater than ` +
       `scheduler.reap_interval (${cfg.scheduler.reap_interval}), or healthy jobs will be reaped`
+    );
+  }
+
+  // Retention deletes things, so a nonsensical value here is worth
+  // refusing at startup rather than discovering from missing artifacts.
+  for (const key of ['artifact_keep_runs', 'artifact_keep_days', 'log_keep_days']) {
+    const value = cfg.retention[key];
+    if (!Number.isInteger(value) || value < 0) {
+      errors.push(`retention.${key} must be a whole number of zero or more, got ${JSON.stringify(value)}`);
+    }
+  }
+
+  if (!Number.isInteger(cfg.retention.sweep_interval) || cfg.retention.sweep_interval < 60) {
+    errors.push(
+      `retention.sweep_interval must be at least 60 seconds, got ${JSON.stringify(cfg.retention.sweep_interval)}`
     );
   }
 

@@ -34,7 +34,7 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
   // Confirms the job exists and is held by the calling worker.
   async function heldJob(req, reply) {
     const job = await db.get(
-      `SELECT j.id, j.run_id, j.name, j.state, j.worker_token_id, j.log_size,
+      `SELECT j.id, j.run_id, j.name, j.state, j.worker_token_id, j.log_size, j.spec,
               r.project_id, r.head_sha
          FROM jobs j JOIN runs r ON r.id = j.run_id
         WHERE j.id = {id}`,
@@ -174,6 +174,22 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
     }
   });
 
+  // artifacts.expire in the pipeline, as an absolute time. Returns null
+  // when the job said nothing, leaving the artifact to the project policy.
+  function artifactExpiry(specJson, now) {
+    if (!specJson) return null;
+    try {
+      const spec = typeof specJson === 'string' ? JSON.parse(specJson) : specJson;
+      const seconds = spec?.artifacts?.expire;
+      if (!Number.isFinite(seconds) || seconds <= 0) return null;
+      return now + Math.round(seconds * 1000);
+    } catch {
+      // A spec that will not parse is a problem, but not this request's
+      // problem: the artifact is already stored.
+      return null;
+    }
+  }
+
   // Upload one artifact. The path is worker supplied, so it is sanitized
   // before it can influence a storage key.
   fastify.post('/jobs/:id/artifact', async (req, reply) => {
@@ -209,9 +225,11 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
     }
 
     const digest = hasher.digest();
+    const now = Date.now();
+
     await db.run(
-      `INSERT INTO artifacts (id, job_id, run_id, path, storage_key, size, sha256, created_at)
-       VALUES ({id}, {job}, {run}, {path}, {key}, {size}, {sha}, {now})`,
+      `INSERT INTO artifacts (id, job_id, run_id, path, storage_key, size, sha256, created_at, expires_at)
+       VALUES ({id}, {job}, {run}, {path}, {key}, {size}, {sha}, {now}, {expires})`,
       {
         id: newArtifactId(),
         job: job.id,
@@ -220,7 +238,10 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
         key,
         size: stored.size ?? declared,
         sha: digest,
-        now: Date.now(),
+        now,
+        // An explicit deadline from the pipeline. Absent, the project's
+        // retention policy decides, which is the usual case.
+        expires: artifactExpiry(job.spec, now),
       }
     );
 

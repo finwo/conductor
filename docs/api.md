@@ -99,10 +99,11 @@ Any signed in user manages what they own; administrators manage everything.
 
 | Method | Path                                      | Purpose                    |
 | ------ | ----------------------------------------- | -------------------------- |
+| GET    | `/api/retention`                          | server retention defaults  |
 | GET    | `/api/projects`                           | projects you may manage    |
 | POST   | `/api/projects`                           | register one               |
 | GET    | `/api/projects/:id`                       | one project                |
-| PATCH  | `/api/projects/:id`                       | `enabled`, `visibility`, `owner_id` |
+| PATCH  | `/api/projects/:id`                       | `enabled`, `visibility`, `owner_id`, retention |
 | DELETE | `/api/projects/:id`                       | remove it and its runs     |
 | POST   | `/api/projects/:id/trigger-secret`        | rotate, returns it once    |
 | GET    | `/api/projects/:id/variables`             | names only, never values   |
@@ -117,6 +118,12 @@ Any signed in user manages what they own; administrators manage everything.
 
 Creating a project returns the trigger secret, and creating a worker token
 returns the token. Neither can be read back afterwards; rotate or reissue.
+
+Retention is set with `artifact_keep_runs`, `artifact_keep_days` and
+`log_keep_days`. Null follows the server default, zero keeps forever, and
+a number is a count of runs or of days. `GET /api/retention` reports what
+a null resolves to. See [deployment.md](deployment.md) for how the two
+artifact rules combine.
 
 `owner_id` may only be changed by an administrator, and only an
 administrator can create a shared worker (`{"shared": true}`), which is one

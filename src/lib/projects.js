@@ -20,6 +20,7 @@ export const VISIBILITIES = ['public', 'private'];
 const COLUMNS = `
   id, name, repo_url, default_branch, config_path, source_mode,
   trigger_secret, enabled, run_counter, owner_id, visibility,
+  artifact_keep_runs, artifact_keep_days, log_keep_days,
   created_at, updated_at
 `;
 
@@ -123,6 +124,34 @@ export function createProjects({ db, secrets }) {
       await db.run(
         'UPDATE projects SET visibility = {visibility}, updated_at = {now} WHERE id = {id}',
         { id, visibility, now: Date.now() }
+      );
+    },
+
+    // Retention overrides. Null hands the decision back to the server
+    // default; zero means keep forever, and has to stay distinguishable
+    // from null or a project could not opt out of a default that deletes.
+    async setRetention(id, values) {
+      const columns = ['artifact_keep_runs', 'artifact_keep_days', 'log_keep_days'];
+      const updates = [];
+      const params = { id, now: Date.now() };
+
+      for (const column of columns) {
+        if (!Object.hasOwn(values, column)) continue;
+        const value = values[column];
+
+        if (value !== null && (!Number.isInteger(value) || value < 0)) {
+          throw new Error(`${column} must be a whole number of zero or more, or null to follow the server default`);
+        }
+
+        updates.push(`${column} = {${column}}`);
+        params[column] = value;
+      }
+
+      if (updates.length === 0) return;
+
+      await db.run(
+        `UPDATE projects SET ${updates.join(', ')}, updated_at = {now} WHERE id = {id}`,
+        params
       );
     },
 

@@ -165,6 +165,81 @@ multi gigabyte build output is both slow and surprising.
 Set `CONDUCTOR_PUBLIC_URL=https://ci.example.com` to match, or workers will
 be handed callback URLs that do not work.
 
+Retention
+---------
+
+Nothing is deleted unless this says so, and logs are what fills a disk:
+written for every job, read for almost none. The defaults keep artifacts
+for 30 days or the last 10 runs, and logs for 14 days.
+
+```yaml
+retention:
+  artifact_keep_runs: 10
+  artifact_keep_days: 30
+  log_keep_days: 14
+  sweep_interval: 3600
+  batch: 500
+```
+
+A project overrides any of these from its settings page, or over the API:
+
+```sh
+curl -X PATCH https://ci.example.com/api/projects/demo \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"artifact_keep_runs": 5, "log_keep_days": 30}'
+```
+
+Three values, three meanings, and the difference matters:
+
+| Value  | Meaning                                  |
+| ------ | ---------------------------------------- |
+| `null` | follow the server default                |
+| `0`    | keep forever                             |
+| `n`    | keep that many runs, or that many days   |
+
+`GET /api/retention` reports the server defaults, so an interface can show
+what a `null` actually resolves to.
+
+### How the artifact rules combine
+
+An artifact is kept if **either** rule wants it. The last
+`artifact_keep_runs` runs keep their artifacts however old they are, and
+anything younger than `artifact_keep_days` is kept however many runs have
+followed. Setting both is therefore more generous than setting one, not
+less.
+
+The most recent **successful** run is kept regardless, so a project that
+has not built in months still has something to download. Only the latest
+one: older successes are not protected.
+
+A job that sets `artifacts.expire` in its pipeline overrides all of the
+above with an exact deadline, including the protection for the last good
+run. That is deliberate, and is how a bulky intermediate avoids becoming
+immortal by being green.
+
+Logs go by age alone. Sweeping a log deletes the bytes and leaves the job,
+so a run stays explainable after its output is gone, and the interface can
+tell an expired log apart from one that was never written.
+
+### What a first sweep will do
+
+Upgrading applies these defaults to everything already stored. On an
+installation that has been running for a while that first sweep will
+delete a great deal, so set the values you want before starting the new
+version, or set them to `0` and decide later:
+
+```sh
+CONDUCTOR_RETENTION_ARTIFACT_DAYS=0 \
+CONDUCTOR_RETENTION_LOG_DAYS=0 \
+  docker compose -f deploy/docker-compose.yml up -d
+```
+
+A sweep deletes at most `batch` artifacts and `batch` logs per project per
+pass, so a large backlog drains over several passes rather than in one
+long transaction. Objects are deleted before rows: an object left behind
+wastes space, whereas a row left behind is a download that fails.
+
 Backups
 -------
 

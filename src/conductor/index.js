@@ -5,7 +5,7 @@
 // have declared public, and nothing else.
 
 import { loadConfig } from '../lib/config.js';
-import { createServices, buildServer, startReaper } from './app.js';
+import { createServices, buildServer, startReaper, startRetention } from './app.js';
 
 const cfg = loadConfig();
 const services = await createServices(cfg);
@@ -19,10 +19,12 @@ if (!cfg.secrets.encryption_key) {
 }
 
 const stopReaper = startReaper({ ...services, logger: fastify.log });
+const stopRetention = startRetention({ ...services, logger: fastify.log });
 
 async function shutdown(signal) {
   fastify.log.info(`${signal} received, shutting down`);
   stopReaper();
+  stopRetention();
   try {
     await fastify.close();
     await services.db.close();

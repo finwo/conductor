@@ -18,6 +18,7 @@ import { createUsers } from '../lib/users.js';
 import { createVariables } from '../lib/variables.js';
 import { createAuth } from '../lib/auth/index.js';
 import { createScheduler } from './scheduler.js';
+import { createRetention } from './retention.js';
 
 import workerRoutes from './routes/workers.js';
 import triggerRoutes from './routes/trigger.js';
@@ -49,6 +50,7 @@ export async function createServices(cfg, options = {}) {
   const auth = createAuth({ cfg, users, logger });
 
   const scheduler = createScheduler({ cfg, db, git, logs, storage, projects, variables, logger });
+  const retention = createRetention({ cfg, db, storage, logs, logger });
 
   // Without a first administrator there is no way into the admin surface.
   // Only done for local accounts; with OIDC the provider owns identity.
@@ -58,7 +60,7 @@ export async function createServices(cfg, options = {}) {
 
   return {
     cfg, db, secrets, storage, logs, git,
-    projects, workerTokens, variables, users, auth, scheduler, logger,
+    projects, workerTokens, variables, users, auth, scheduler, retention, logger,
   };
 }
 
@@ -116,6 +118,29 @@ export function startReaper(services) {
       running = false;
     }
   }, cfg.scheduler.reap_interval * 1000);
+
+  timer.unref();
+  return () => clearInterval(timer);
+}
+
+// Deletes artifacts and logs past their retention. Returns a stop function.
+export function startRetention(services) {
+  const { cfg, retention, logger } = services;
+  let running = false;
+
+  const timer = setInterval(async () => {
+    // A sweep over a large backlog can outlast its interval, and running
+    // two at once would have them fight over the same rows.
+    if (running) return;
+    running = true;
+    try {
+      await retention.sweep();
+    } catch (e) {
+      logger.error?.(`retention sweep failed: ${e.message}`);
+    } finally {
+      running = false;
+    }
+  }, cfg.retention.sweep_interval * 1000);
 
   timer.unref();
   return () => clearInterval(timer);
