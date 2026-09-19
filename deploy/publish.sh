@@ -98,8 +98,20 @@ if [ "${DRY_RUN}" = 1 ]; then
     exit 0
 fi
 
-: "${REGISTRY_USERNAME:?REGISTRY_USERNAME is not set}"
-: "${REGISTRY_TOKEN:?REGISTRY_TOKEN is not set}"
+# In CI the credentials come from project variables. Run by hand on a
+# machine where somebody has already signed in, there is nothing to
+# supply, and demanding a token again would be busywork.
+if [ -n "${REGISTRY_TOKEN:-}" ]; then
+    : "${REGISTRY_USERNAME:?REGISTRY_USERNAME is set without REGISTRY_TOKEN}"
+    SIGN_IN=1
+elif docker system info 2>/dev/null | grep -q '^ *Username:'; then
+    SIGN_IN=0
+    log "using the existing docker login for $(docker system info 2>/dev/null | sed -n 's/^ *Username: *//p')"
+else
+    fail "not signed in to a registry, and REGISTRY_TOKEN is not set.
+  Either export REGISTRY_USERNAME and REGISTRY_TOKEN, or run:
+    docker login -u <user>"
+fi
 
 log "registering emulators"
 # arm64 and riscv64 are emulated unless the worker is that architecture.
@@ -151,13 +163,17 @@ builder_usable conductor-publish || fail "the builder cannot produce ${PLATFORMS
   Without it the installer above succeeds and registers nothing, and the
   build fails later with 'exec format error'."
 
-log "signing in"
-printf '%s' "${REGISTRY_TOKEN}" | docker login --username "${REGISTRY_USERNAME}" --password-stdin >/dev/null
+if [ "${SIGN_IN}" = 1 ]; then
+    log "signing in"
+    printf '%s' "${REGISTRY_TOKEN}" | docker login --username "${REGISTRY_USERNAME}" --password-stdin >/dev/null
 
-# Whatever happens next, do not leave the credentials behind on a worker
-# that is shared with other people's jobs.
-cleanup() { docker logout >/dev/null 2>&1 || true; }
-trap cleanup EXIT
+    # Whatever happens next, do not leave the credentials behind on a
+    # worker that is shared with other people's jobs. Only when this
+    # script created the session: logging out of one somebody else
+    # established would be rude, and on a workstation, baffling.
+    cleanup() { docker logout >/dev/null 2>&1 || true; }
+    trap cleanup EXIT
+fi
 
 log "building and pushing ${CONDUCTOR_IMAGE}"
 # shellcheck disable=SC2046
