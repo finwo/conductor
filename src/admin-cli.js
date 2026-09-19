@@ -120,14 +120,12 @@ try {
         repo_url: repoUrl,
         default_branch: flags.branch ? String(flags.branch) : 'main',
         config_path: flags.config ? String(flags.config) : '.conductor.yml',
-        source_mode: flags.source ? String(flags.source) : 'archive',
         trigger_secret: secret,
       });
 
       console.log(`created project ${project.id}`);
       console.log(`  repository:  ${project.repo_url}`);
       console.log(`  pipeline:    ${project.config_path}`);
-      console.log(`  source mode: ${project.source_mode}`);
       console.log(`  trigger url: ${cfg.server.public_url.replace(/\/+$/, '')}/api/trigger/${project.id}`);
       console.log(`  secret:      ${secret}`);
       break;
@@ -139,7 +137,6 @@ try {
         repo_url: p.repo_url,
         branch: p.default_branch,
         config: p.config_path,
-        source: p.source_mode,
         enabled: p.enabled ? 'yes' : 'no',
         runs: p.run_counter,
       }));

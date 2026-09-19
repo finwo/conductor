@@ -22,28 +22,66 @@ import {
   NAME_PATTERN,
 } from './schema.js';
 
-const TOP_KEYS = ['version', 'visibility', 'defaults', 'jobs'];
+const TOP_KEYS = ['version', 'visibility', 'workdir', 'defaults', 'jobs'];
 
 // A repository decides whether its own build results are readable without
 // signing in. Unset means the project's setting stands.
 export const VISIBILITIES = ['public', 'private'];
 
+// Where the tree is put inside a job container, and the directory every
+// script starts in. Unset means the project's setting stands, and failing
+// that the server default.
+export const DEFAULT_WORKDIR = '/work';
+
+// An absolute path of ordinary directory names. The tree is delivered by
+// unpacking an archive at the container's root, so the path is built from
+// the archive's own entries: anything that could climb out of it, or that
+// is not a plain name, is refused rather than sanitised.
+export function parseWorkdir(problems, path, raw) {
+  const value = asString(problems, path, raw);
+  if (typeof value !== 'string') return null;
+
+  if (!value.startsWith('/')) {
+    problems.add(path, `must be an absolute path, got ${JSON.stringify(value)}`);
+    return null;
+  }
+
+  const segments = value.split('/').filter(Boolean);
+  if (segments.length === 0) {
+    problems.add(path, 'must name a directory, not the container root');
+    return null;
+  }
+
+  for (const segment of segments) {
+    if (segment === '.' || segment === '..') {
+      problems.add(path, `must not contain ${JSON.stringify(segment)}`);
+      return null;
+    }
+    if (!/^[A-Za-z0-9._-]+$/.test(segment)) {
+      problems.add(path, `${JSON.stringify(segment)} is not a usable directory name`);
+      return null;
+    }
+  }
+
+  return `/${segments.join('/')}`;
+}
+
 const JOB_KEYS = [
   'image', 'script', 'needs', 'arch', 'matrix', 'requires', 'services',
-  'env', 'artifacts', 'cache', 'allow_failure', 'timeout', 'max_attempts',
+  'env', 'artifacts', 'allow_failure', 'timeout', 'max_attempts',
   'only',
 ];
 
 // Fields a job may inherit from defaults.
 const DEFAULT_KEYS = [
-  'image', 'arch', 'requires', 'env', 'services', 'cache',
+  'image', 'arch', 'requires', 'env', 'services',
   'allow_failure', 'timeout', 'max_attempts',
 ];
 
 const ONLY_KEYS = ['refs'];
 const ARTIFACT_KEYS = ['paths', 'expire', 'when'];
 const ARTIFACT_WHEN = ['on_success', 'on_failure', 'always'];
-const CACHE_KEYS = ['key', 'paths'];
+
 const SERVICE_KEYS = ['image', 'alias', 'env', 'entrypoint', 'command'];
 
 export const SUPPORTED_VERSION = 1;
@@ -110,8 +148,10 @@ export function parsePipeline(text, options = {}) {
     }
   }
 
+  const workdir = doc.workdir === undefined ? null : parseWorkdir(problems, 'workdir', doc.workdir);
+
   problems.throwIfAny(source);
-  return { version: SUPPORTED_VERSION, visibility, defaults, jobs, source };
+  return { version: SUPPORTED_VERSION, visibility, workdir, defaults, jobs, source };
 }
 
 function parseDefaults(problems, raw) {
@@ -121,7 +161,6 @@ function parseDefaults(problems, raw) {
     requires: [],
     env: {},
     services: [],
-    cache: null,
     allow_failure: false,
     timeout: undefined,
     max_attempts: undefined,
@@ -140,7 +179,6 @@ function parseDefaults(problems, raw) {
     requires: asStringList(problems, 'defaults.requires', raw.requires),
     env: asEnvMap(problems, 'defaults.env', raw.env),
     services: parseServices(problems, 'defaults.services', raw.services),
-    cache: parseCache(problems, 'defaults.cache', raw.cache),
     allow_failure: raw.allow_failure === undefined ? false : asBoolean(problems, 'defaults.allow_failure', raw.allow_failure) ?? false,
     timeout: raw.timeout === undefined ? undefined : asDuration(problems, 'defaults.timeout', raw.timeout),
     max_attempts: raw.max_attempts === undefined ? undefined : asInteger(problems, 'defaults.max_attempts', raw.max_attempts, { min: 1, max: 10 }),
@@ -197,7 +235,6 @@ function parseJob(problems, path, raw, defaults) {
     services: raw.services === undefined ? defaults.services : parseServices(problems, `${path}.services`, raw.services),
     env: { ...defaults.env, ...asEnvMap(problems, `${path}.env`, raw.env) },
     artifacts: parseArtifacts(problems, `${path}.artifacts`, raw.artifacts),
-    cache: raw.cache === undefined ? defaults.cache : parseCache(problems, `${path}.cache`, raw.cache),
     allow_failure: raw.allow_failure === undefined
       ? defaults.allow_failure
       : asBoolean(problems, `${path}.allow_failure`, raw.allow_failure) ?? false,
@@ -401,26 +438,4 @@ function parseArtifacts(problems, path, raw) {
   };
 }
 
-function parseCache(problems, path, raw) {
-  if (raw === undefined || raw === null) return null;
-  const spec = Array.isArray(raw) ? { paths: raw } : raw;
-  if (!isPlainObject(spec)) {
-    problems.add(path, `expected a list of paths or a mapping, got ${typeName(raw)}`);
-    return null;
-  }
-  checkUnknown(problems, path, spec, CACHE_KEYS);
 
-  const paths = asStringList(problems, `${path}.paths`, spec.paths, { max: 512 });
-  if (paths.length === 0) {
-    problems.add(`${path}.paths`, 'must list at least one path');
-    return null;
-  }
-  paths.forEach((p, i) => {
-    if (p.startsWith('/')) problems.add(`${path}.paths[${i}]`, 'must be relative to the workspace');
-  });
-
-  return {
-    key: spec.key === undefined ? 'default' : asString(problems, `${path}.key`, spec.key, { max: 128 }),
-    paths,
-  };
-}

@@ -9,7 +9,6 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { createReadStream } from 'node:fs';
-import { SCRIPT_DIR } from './script.js';
 
 const MAX_FILES = 2000;
 
@@ -33,8 +32,6 @@ export async function collectArtifacts(workspace, patterns, { logger = console }
       }
 
       const normalized = relative.split(path.sep).join('/');
-      // The generated script lives in the workspace and is not output.
-      if (normalized === SCRIPT_DIR || normalized.startsWith(`${SCRIPT_DIR}/`)) continue;
       if (seen.has(normalized)) continue;
 
       const absolute = path.join(root, relative);

@@ -6,8 +6,6 @@
   "concurrency": 2,
   "poll_interval": 5,
   "docker": "docker",
-  "workspace_root": "/var/lib/conductor/work",
-  "cache_root": "/var/lib/conductor/cache",
   "features": {
     "dind": {
       "privileged": true

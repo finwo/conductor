@@ -29,8 +29,6 @@ const DEFAULTS = {
   docker: 'docker',
   // Shell used to run a job script inside its image.
   shell: 'sh',
-  workspace_root: null,
-  cache_root: null,
   // Applied when a job does not ask for something longer.
   default_timeout: 3600,
 };
@@ -45,8 +43,6 @@ const ENV_MAP = [
   ['CONDUCTOR_WORKER_POLL_INTERVAL', 'poll_interval', toInt],
   ['CONDUCTOR_WORKER_DOCKER', 'docker', String],
   ['CONDUCTOR_WORKER_SHELL', 'shell', String],
-  ['CONDUCTOR_WORKER_WORKSPACE', 'workspace_root', String],
-  ['CONDUCTOR_WORKER_CACHE', 'cache_root', String],
 ];
 
 function splitList(value) {
@@ -199,8 +195,6 @@ export async function loadWorkerConfig(explicitPath) {
   }
   if (!cfg.token) problems.push('no worker token: set token, token_file, or CONDUCTOR_WORKER_TOKEN');
 
-  cfg.workspace_root = path.resolve(cfg.workspace_root || path.join(os.tmpdir(), 'conductor-work'));
-  cfg.cache_root = path.resolve(cfg.cache_root || path.join(os.tmpdir(), 'conductor-cache'));
   cfg.conductor_url = String(cfg.conductor_url).replace(/\/+$/, '');
 
   if (problems.length > 0) {

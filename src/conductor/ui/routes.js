@@ -19,7 +19,7 @@ import {
 import { canManageProject, canViewProject, VISIBILITIES } from '../../lib/projects.js';
 import { canManageWorker } from '../../lib/workers.js';
 import { issueToken, sessionCookie, clearedCookie } from '../../lib/auth/index.js';
-import { PipelineError } from '../../lib/pipeline/index.js';
+import { PipelineError, DEFAULT_WORKDIR } from '../../lib/pipeline/index.js';
 
 const LOG_TAIL_BYTES = 256 * 1024;
 
@@ -374,7 +374,9 @@ export default async function uiRoutes(fastify, services) {
         secret,
         // What an empty field falls back to, so the form can say so
         // rather than looking unset.
-        retention: cfg.retention,
+        // Defaults the form shows as placeholders, so an empty field
+        // reads as "inherited" rather than "unset".
+        retention: { ...cfg.retention, workdir: DEFAULT_WORKDIR },
       }),
     });
   });
@@ -388,6 +390,11 @@ export default async function uiRoutes(fastify, services) {
     try {
       if (body.visibility) await projects.setVisibility(found.project.id, body.visibility);
       if (body.enabled !== undefined) await projects.setEnabled(found.project.id, body.enabled === 'true' || body.enabled === true);
+      // An empty field means the project has no opinion, which is a null
+      // rather than an empty string.
+      if (Object.hasOwn(body, 'workdir')) {
+        await projects.setWorkdir(found.project.id, String(body.workdir ?? '').trim() || null);
+      }
     } catch (e) {
       return fail(reply, e.message);
     }

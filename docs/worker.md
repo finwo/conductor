@@ -6,16 +6,18 @@ inbound connectivity, so it can sit behind NAT, and it needs no repository
 credentials, because the conductor serves the source for the exact commit a
 job was handed.
 
-The worker has no npm dependencies. Copying `src/worker` onto a host with
-node, tar and a container runtime is enough.
+The worker has no npm dependencies and keeps no state. Copying
+`src/worker` onto a host with node and a container runtime is enough.
 
 Requirements
 ------------
 
   - node 24 or newer
   - a docker compatible CLI: docker, podman or nerdctl
-  - `tar`, to unpack job sources
-  - `git`, only for projects configured to clone rather than download
+
+That is the whole list. A job's tree is unpacked into the job's own
+container over the docker API, so the worker needs no `tar` of its own,
+and it never touches a repository, so it needs no `git` either.
 
 Getting a token
 ---------------
@@ -68,8 +70,10 @@ node src/worker/agent.js --config worker.json
 | `poll_interval`  | `5`                  | Seconds between polls when idle.                |
 | `docker`         | `docker`             | Runtime CLI. Set to `podman` or `nerdctl`.      |
 | `shell`          | `sh`                 | Shell used to run a job script in its image.    |
-| `workspace_root` | a temp directory     | Where job workspaces are created.               |
-| `cache_root`     | a temp directory     | Where job caches are kept between runs.         |
+
+There is nothing here about where jobs run or what they are given, which
+is deliberate: that is a property of the build and is decided by the
+pipeline or the project, not by the machine that happens to run it.
 
 Every key can also be set from the environment: `CONDUCTOR_URL`,
 `CONDUCTOR_WORKER_TOKEN`, `CONDUCTOR_WORKER_TOKEN_FILE`,
@@ -114,11 +118,12 @@ between the job and the host.
 What a job gets
 ---------------
 
-Each job runs in its own container, on its own network, in its own
-workspace:
+Each job runs in its own container, on its own network:
 
-  - the repository tree at the job's commit, unpacked into `/workspace`
-  - `/workspace` as the working directory
+  - the repository tree at the job's commit, unpacked into the working
+    directory, which is `/work` unless the pipeline or the project says
+    otherwise
+  - that directory as the working directory
   - the job's `env`, plus `ARCH` and `MATRIX_*` for a fanned out job
   - `CONDUCTOR_PROJECT`, `CONDUCTOR_RUN_ID`, `CONDUCTOR_RUN_NUMBER`,
     `CONDUCTOR_JOB`, `CONDUCTOR_JOB_ID`, `CONDUCTOR_SHA`, `CONDUCTOR_REF`
@@ -126,21 +131,21 @@ workspace:
   - any `services`, reachable by their alias on the job network
   - mounts and environment from the features it requires
 
-Output is streamed to the conductor as it happens. Artifacts are uploaded
-when the job finishes, and the workspace is then removed.
+Output is streamed to the conductor as it happens. Artifacts are read
+back out of the container when the job finishes, and uploaded.
 
-Caches are bind mounted from `cache_root` straight onto their path in the
-workspace. A cache is an optimisation and nothing more: a job must still work
-with an empty one, and a cache is never shared between workers.
+Nothing else is shared. The worker mounts no directory of its own into a
+job: the tree goes in over the docker API and the artifacts come back the
+same way. That is why a worker needs no volumes, no matching paths
+between itself and the host, and no storage at all.
 
 Operational notes
 -----------------
 
-**Cleanup.** Containers, networks and workspaces are removed whatever the
-outcome. Most images run as root, so files a job creates are owned by root
-while the worker usually is not. When removing the workspace fails for that
-reason, the worker empties it from inside a container first. Nothing is left
-behind either way.
+**Cleanup.** Containers and networks are removed whatever the outcome.
+There is no workspace to clean up, and so no trouble with a job having
+written files as root that the worker then cannot delete: everything the
+job wrote lived in its container and went with it.
 
 **Shutdown.** On SIGINT or SIGTERM the worker stops polling and lets running
 jobs finish. A second signal exits immediately, and the conductor will

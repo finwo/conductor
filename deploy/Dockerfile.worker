@@ -10,14 +10,13 @@
 # a tarball off download.docker.com, which has no riscv64 build at all.
 #
 # The worker runs each job in its own container, so it needs a docker
-# socket. It does not run a daemon of its own: the containers it starts are
-# siblings on the host, not children.
+# socket. It does not run a daemon of its own: the containers it starts
+# are siblings on the host, not children.
 #
-# That has one consequence worth understanding. Paths in the -v flags the
-# worker passes are resolved by the host daemon, not inside this container,
-# so the workspace directory has to exist at the same path in both. The
-# compose file in deploy/worker does that; if you run this by hand, mount
-# the workspace at the path you configure rather than somewhere convenient.
+# It shares nothing else with them. A job's tree is unpacked into its
+# container over the docker API rather than bind mounted from here, and
+# the results are read back the same way, so no directory has to mean the
+# same thing on both sides and this image needs no volumes at all.
 
 ARG ALPINE_VERSION=3.23
 
@@ -35,10 +34,10 @@ RUN npm install --omit=dev --no-audit --no-fund yaml \
 
 FROM alpine:${ALPINE_VERSION}
 
-# docker-cli to start job containers on the host daemon, git for projects
-# configured to clone rather than download an archive, and GNU tar because
-# the busybox one is not a full substitute for reading source archives.
-RUN apk add --no-cache ca-certificates docker-cli git nodejs tar
+# docker-cli to drive the host daemon, and node to run the agent. No git,
+# because the worker never touches a repository, and no tar, because
+# docker does the unpacking on the far side of the socket.
+RUN apk add --no-cache ca-certificates docker-cli nodejs
 
 WORKDIR /app
 

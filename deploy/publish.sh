@@ -193,6 +193,69 @@ docker buildx build \
     --push \
     "${ROOT}"
 
+# Pushing an image does not touch the repository page, so the readme is
+# sent separately or Docker Hub shows nothing at all. Kept next to the
+# Dockerfiles so it is reviewed with them rather than edited in a web
+# form and forgotten.
+#
+# Needs an API token rather than the registry session, so this is skipped
+# when the script is run against an existing docker login. The release
+# itself is done by then, and a stale readme is not worth failing it for.
+sync_readme() {
+    image=$1
+    file=$2
+    repo=${image#*/}
+    namespace=${image%%/*}
+
+    [ -f "${file}" ] || { log "no readme at ${file}, skipping"; return 0; }
+
+    if [ -z "${REGISTRY_TOKEN:-}" ]; then
+        log "no REGISTRY_TOKEN, leaving the ${image} readme alone"
+        return 0
+    fi
+
+    if ! command -v curl >/dev/null 2>&1; then
+        log "curl is missing, leaving the ${image} readme alone"
+        return 0
+    fi
+
+    api=$(curl -fsS -X POST https://hub.docker.com/v2/auth/token \
+        -H 'Content-Type: application/json' \
+        -d "{\"identifier\":\"${REGISTRY_USERNAME}\",\"secret\":\"${REGISTRY_TOKEN}\"}" \
+        | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+
+    [ -n "${api}" ] || { log "could not get a hub api token, leaving the readme alone"; return 0; }
+
+    # The body is json, so the markdown has to be escaped rather than
+    # pasted: it is full of quotes, backslashes and newlines.
+    payload=$(FILE="${file}" awk '
+        BEGIN { printf "{\"full_description\":\"" }
+        {
+            line = $0
+            gsub(/\\/, "\\\\", line)
+            gsub(/"/, "\\\"", line)
+            gsub(/\t/, "\\t", line)
+            printf "%s\\n", line
+        }
+        END { printf "\"}" }
+    ' "${file}")
+
+    if printf '%s' "${payload}" | curl -fsS -X PATCH \
+        "https://hub.docker.com/v2/repositories/${namespace}/${repo}/" \
+        -H 'Content-Type: application/json' \
+        -H "Authorization: Bearer ${api}" \
+        --data-binary @- >/dev/null
+    then
+        log "updated the ${image} readme"
+    else
+        log "could not update the ${image} readme"
+    fi
+}
+
+log "updating the repository pages"
+sync_readme "${CONDUCTOR_IMAGE}" "${ROOT}/deploy/hub/conductor.md"
+sync_readme "${WORKER_IMAGE}" "${ROOT}/deploy/hub/conductor-worker.md"
+
 log "verifying the manifests"
 for image in "${CONDUCTOR_IMAGE}" "${WORKER_IMAGE}"; do
     first=$(printf '%s' "${TAGS}" | head -1)

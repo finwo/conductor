@@ -16,9 +16,6 @@ jobs:
     artifacts:
       paths: [node_modules/**]
       expire: 1h
-    cache:
-      key: npm
-      paths: [.npm]
 
   lint:
     needs: [install]

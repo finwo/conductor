@@ -32,14 +32,12 @@ services:
       # jobs that declare none.
       CONDUCTOR_WORKER_ARCHES: "${CONDUCTOR_WORKER_ARCHES:-}"
       CONDUCTOR_WORKER_CONCURRENCY: "${CONDUCTOR_WORKER_CONCURRENCY:-1}"
-      # Identical inside and out, because the docker daemon resolves these
-      # paths on the host.
-      CONDUCTOR_WORKER_WORKSPACE: /var/lib/conductor/work
-      CONDUCTOR_WORKER_CACHE: /var/lib/conductor/cache
     volumes:
+      # The socket is all it needs. A job's tree is unpacked into the
+      # job's own container over this socket, and its artifacts are read
+      # back the same way, so the worker keeps nothing between jobs and
+      # shares no directory with what it runs.
       - /var/run/docker.sock:/var/run/docker.sock
-      - /var/lib/conductor/work:/var/lib/conductor/work
-      - /var/lib/conductor/cache:/var/lib/conductor/cache
       # Features are declared in a config file when a job needs something
       # from this machine, such as a signing key. See docs/worker.md.
       # - ./worker.json:/etc/conductor/worker.json:ro

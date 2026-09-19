@@ -88,7 +88,9 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
         env: job.env,
         services: job.services,
         artifacts: job.artifacts,
-        cache: job.cache,
+        // Where the tree is unpacked and the script runs. Resolved when
+        // the run was created, so it does not shift under a retry.
+        workdir: job.workdir,
         timeout: job.timeout,
         attempt: job.attempt,
         sha: job.sha,
@@ -99,13 +101,11 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
         // Derived from the server's own timeout so a worker never has to
         // guess how often it is expected to check in.
         heartbeat_interval: Math.max(5, Math.floor(cfg.scheduler.heartbeat_timeout / 4)),
-        // A worker fetches the tree from the conductor by default, so it
-        // never needs repository credentials. Projects set to clone mode
-        // get the URL instead.
-        source: project.source_mode === 'clone'
-          ? { mode: 'clone', repo_url: project.repo_url, sha: job.sha }
-          : { mode: 'archive', url: `${base}/api/workers/jobs/${encodeURIComponent(job.id)}/source.tar.gz` },
         endpoints: {
+          // The tree comes from the conductor, so a worker never needs
+          // credentials for the repository and cannot reach any commit
+          // other than the one it was given work for.
+          source: `${base}/api/workers/jobs/${encodeURIComponent(job.id)}/source.tar.gz`,
           log: `${base}/api/workers/jobs/${encodeURIComponent(job.id)}/log`,
           artifact: `${base}/api/workers/jobs/${encodeURIComponent(job.id)}/artifact`,
           heartbeat: `${base}/api/workers/jobs/${encodeURIComponent(job.id)}/heartbeat`,
@@ -123,6 +123,9 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
     const project = await projects.get(job.project_id);
     if (!project) return reply.code(404).send({ error: 'unknown project' });
 
+    // The tree rooted at the archive, with no wrapping directory: a
+    // worker extracts it at whatever path the job is to run in, and
+    // docker creates that path on the way.
     reply.header('content-type', 'application/gzip');
     reply.header('content-disposition', `attachment; filename="${job.head_sha.slice(0, 12)}.tar.gz"`);
     return reply.send(git.archiveStream(project, job.head_sha));

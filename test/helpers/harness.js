@@ -139,7 +139,7 @@ export async function startHarness(options = {}) {
     repo_url: repoDir,
     trigger_secret: 'test-secret',
     config_path: options.configPath ?? '.conductor.yml',
-    source_mode: options.sourceMode ?? 'archive',
+
     // Public by default so that tests about scheduling can read runs back
     // without signing in. Visibility itself is covered by its own suite,
     // which creates private projects explicitly.

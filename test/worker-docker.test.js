@@ -54,8 +54,6 @@ async function listening(options = {}) {
     poll_interval: 1,
     docker: 'docker',
     shell: 'sh',
-    workspace_root: `${h.root}/work`,
-    cache_root: `${h.root}/cache`,
     default_timeout: 300,
     ...(options?.worker ?? {}),
   };
@@ -331,9 +329,99 @@ jobs:
     assert.equal(await exists('network', containerName('conductor-net', job.id)), false,
       'the job network should be gone');
 
+    // The worker keeps nothing between jobs, so there is no workspace
+    // left to remove: what it wrote lived in a temporary directory that
+    // goes with the job.
     const fs = await import('node:fs/promises');
-    const left = await fs.readdir(`${h.root}/work`).catch(() => []);
-    assert.deepEqual(left, [], 'the workspace should be removed');
+    const os = await import('node:os');
+    const scratch = (await fs.readdir(os.tmpdir())).filter((n) => n.startsWith('conductor-job-'));
+    assert.deepEqual(scratch, [], 'the job scratch directory should be removed');
+  } finally {
+    await h.stop();
+  }
+});
+
+test('a job runs with no mounts, and nothing of the worker is shared with it', opts, async () => {
+  // The point of copying the tree in rather than bind mounting it: the
+  // container gets no path belonging to the worker, so nothing has to
+  // line up between the two and the worker needs no storage at all.
+  const pipeline = `
+version: 1
+jobs:
+  isolated:
+    image: ${IMAGE}
+    script:
+      - pwd
+      - cat README.md
+      - cat /proc/mounts
+`;
+  const h = await listening({ pipeline });
+  try {
+    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const job = await h.client.poll({ arches: [], features: [], name: 'test' });
+
+    const created = h.runtime.buildCreateArgs({
+      name: 'inspect', image: IMAGE, workdir: job.workdir, entrypoint: 'sh', command: ['/tmp/entrypoint.sh'],
+    });
+    assert.ok(!created.includes('--volume'), `no volume should be passed, got: ${created.join(' ')}`);
+
+    const result = await runJob({ cfg: h.workerCfg, client: h.client, runtime: h.runtime, job, logger: quiet });
+    assert.equal(result.success, true, `job failed: ${result.error}`);
+
+    const log = await logOf(h, job.id);
+    assert.match(log, /^\/work$/m, 'the job should run in the working directory');
+    assert.match(log, /test repository/, 'the tree should have arrived');
+
+    // The proof, from inside the container: the only mounts are the ones
+    // docker always adds. Nothing of the worker's filesystem is there, so
+    // no path has to mean the same thing on both sides.
+    const mounts = log.split('\n').filter((line) => / \/\S+ \S+ (rw|ro)[,\s]/.test(line));
+    assert.ok(mounts.length > 0, 'expected /proc/mounts in the log');
+
+    const shared = mounts
+      .map((line) => line.split(' ')[1])
+      .filter((target) => !/^\/(proc|sys|dev|etc\/(hostname|hosts|resolv\.conf))/.test(target))
+      .filter((target) => target !== '/');
+    assert.deepEqual(shared, [], `nothing should be mounted into the job, found: ${shared.join(', ')}`);
+  } finally {
+    await h.stop();
+  }
+});
+
+test('a pipeline chooses where its tree lands', opts, async () => {
+  const pipeline = `
+version: 1
+workdir: /usr/src/app
+jobs:
+  build:
+    image: ${IMAGE}
+    script:
+      - pwd
+      - cat README.md
+      - mkdir -p out && printf 'made here' > out/result.txt
+    artifacts:
+      paths: [out/**]
+`;
+  const h = await listening({ pipeline });
+  try {
+    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const job = await h.client.poll({ arches: [], features: [], name: 'test' });
+    assert.equal(job.workdir, '/usr/src/app');
+
+    const result = await runJob({ cfg: h.workerCfg, client: h.client, runtime: h.runtime, job, logger: quiet });
+    assert.equal(result.success, true, `job failed: ${result.error}`);
+
+    const log = await logOf(h, job.id);
+    assert.match(log, /^\/usr\/src\/app$/m, 'the script should run there');
+    assert.match(log, /test repository/, 'and the tree should be there, not at /work');
+
+    // Artifacts are read back out relative to the same directory.
+    const detail = await h.app.inject({ method: 'GET', url: `/api/jobs/${encodeURIComponent(job.id)}` });
+    const artifacts = detail.json().artifacts;
+    assert.deepEqual(artifacts.map((a) => a.path), ['out/result.txt']);
+
+    const download = await h.app.inject({ method: 'GET', url: `/api/artifacts/${artifacts[0].id}` });
+    assert.equal(download.body, 'made here');
   } finally {
     await h.stop();
   }

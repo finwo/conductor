@@ -23,9 +23,7 @@ PORT="${SMOKE_PORT:-18500}"
 PROJECT=conductor-smoke
 SECRET=smoke-trigger-secret
 
-# Paths must match inside and outside the worker, since jobs run as
-# siblings on the host daemon.
-STATE=${SMOKE_STATE:-/tmp/conductor-smoke-state}
+
 
 log()  { printf '\n== %s\n' "$*"; }
 fail() { printf '\nFAILED: %s\n' "$*" >&2; exit 1; }
@@ -39,7 +37,7 @@ cleanup() {
   fi
   printf '\n== cleaning up\n'
   SMOKE_TOKEN=unused docker compose -p "${PROJECT}" -f "${WORK}/compose.yml" down -v >/dev/null 2>&1 || true
-  rm -rf "${WORK}" "${STATE}"
+  rm -rf "${WORK}"
 }
 trap cleanup EXIT
 
@@ -48,7 +46,7 @@ docker build -q -f "${ROOT}/deploy/Dockerfile" -t conductor:smoke "${ROOT}" >/de
 docker build -q -f "${ROOT}/deploy/Dockerfile.worker" -t conductor-worker:smoke "${ROOT}" >/dev/null
 
 log "preparing a repository"
-mkdir -p "${WORK}/repo" "${STATE}/work" "${STATE}/cache"
+mkdir -p "${WORK}/repo"
 cat > "${WORK}/repo/.conductor.yml" <<'PIPELINE'
 version: 1
 visibility: public
@@ -99,12 +97,8 @@ services:
       CONDUCTOR_WORKER_NAME: smoke-worker
       CONDUCTOR_WORKER_TOKEN: "\${SMOKE_TOKEN}"
       CONDUCTOR_WORKER_CONCURRENCY: "2"
-      CONDUCTOR_WORKER_WORKSPACE: ${STATE}/work
-      CONDUCTOR_WORKER_CACHE: ${STATE}/cache
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ${STATE}/work:${STATE}/work
-      - ${STATE}/cache:${STATE}/cache
 volumes:
   smoke-data:
 COMPOSE

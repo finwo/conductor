@@ -140,12 +140,6 @@ export function expandPipeline(pipeline, options = {}) {
             paths: job.artifacts.paths.map((p, i) => interpolate(problems, `${path}.artifacts.paths[${i}]`, p, context)),
           }
           : null,
-        cache: job.cache
-          ? {
-            key: interpolate(problems, `${path}.cache.key`, job.cache.key, context),
-            paths: job.cache.paths.map((p, i) => interpolate(problems, `${path}.cache.paths[${i}]`, p, context)),
-          }
-          : null,
         allow_failure: job.allow_failure,
         timeout: job.timeout ?? defaultTimeout,
         max_attempts: job.max_attempts ?? defaultAttempts,

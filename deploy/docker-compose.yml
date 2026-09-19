@@ -54,17 +54,11 @@ services:
       CONDUCTOR_WORKER_TOKEN: "${CONDUCTOR_WORKER_TOKEN:?set CONDUCTOR_WORKER_TOKEN, see docs/deployment.md}"
       CONDUCTOR_WORKER_ARCHES: "${CONDUCTOR_WORKER_ARCHES:-}"
       CONDUCTOR_WORKER_CONCURRENCY: "${CONDUCTOR_WORKER_CONCURRENCY:-2}"
-      # The path has to be identical inside and outside this container.
-      CONDUCTOR_WORKER_WORKSPACE: /var/lib/conductor/work
-      CONDUCTOR_WORKER_CACHE: /var/lib/conductor/cache
     volumes:
-      # Jobs run as sibling containers on the host daemon, so the bind
-      # mounts the worker asks for are resolved by the host. The workspace
-      # therefore has to be a host path mounted at the same location here,
-      # not a named volume.
+      # The socket, and nothing else. A job's tree is unpacked into its
+      # own container over this socket rather than shared from here, so
+      # the worker keeps no state and needs no volume of its own.
       - /var/run/docker.sock:/var/run/docker.sock
-      - /var/lib/conductor/work:/var/lib/conductor/work
-      - /var/lib/conductor/cache:/var/lib/conductor/cache
 
   postgres:
     profiles: ["postgres"]

@@ -454,3 +454,55 @@ test('a negative retention value is refused by the form', async () => {
     assert.equal(project.log_keep_days, null);
   });
 });
+
+// --- working directory ---
+
+test('the project page offers a working directory, defaulting to the server one', async () => {
+  await withUi({ allowLocalLogin: true }, async (h) => {
+    const session = await signIn(h);
+    const page = await get(h, `/projects/${h.project.id}`, session);
+
+    assert.equal(page.statusCode, 200);
+    assert.match(page.body, /name="workdir"[^>]*placeholder="\/work"/);
+    assert.match(page.body, /name="workdir"[^>]*value=""/, 'unset means inherited');
+  });
+});
+
+test('saving a working directory stores it, and empty clears it', async () => {
+  await withUi({ allowLocalLogin: true }, async (h) => {
+    const session = await signIn(h);
+
+    const saved = await h.app.inject({
+      method: 'PATCH',
+      url: `/projects/${h.project.id}`,
+      ...form(session, { workdir: '/usr/src/app' }),
+    });
+    assert.ok(saved.statusCode < 400, `unexpected ${saved.statusCode}: ${saved.body}`);
+    assert.equal((await h.services.projects.get(h.project.id)).workdir, '/usr/src/app');
+
+    const cleared = await h.app.inject({
+      method: 'PATCH',
+      url: `/projects/${h.project.id}`,
+      ...form(session, { workdir: '  ' }),
+    });
+    assert.ok(cleared.statusCode < 400);
+    assert.equal((await h.services.projects.get(h.project.id)).workdir, null,
+      'blank means follow the repository, not a directory named blank');
+  });
+});
+
+test('an unusable working directory is refused by the form', async () => {
+  await withUi({ allowLocalLogin: true }, async (h) => {
+    const session = await signIn(h);
+
+    for (const workdir of ['relative', '/', '/a/../b']) {
+      const res = await h.app.inject({
+        method: 'PATCH',
+        url: `/projects/${h.project.id}`,
+        ...form(session, { workdir }),
+      });
+      assert.ok(res.statusCode >= 400, `expected ${JSON.stringify(workdir)} to be refused`);
+      assert.equal((await h.services.projects.get(h.project.id)).workdir, null);
+    }
+  });
+});

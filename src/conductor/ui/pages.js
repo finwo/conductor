@@ -230,7 +230,7 @@ export function projectPage({ project, variables, triggerUrl, secret, user, rete
       <div class="row">
         ${field('repository', html`<span class="mono">${project.repo_url}</span>`)}
         ${field('pipeline', html`<span class="mono">${project.config_path}</span>`)}
-        ${field('source mode', project.source_mode)}
+
         ${field('owner', project.owner_id === null ? 'shared' : (project.owner_id === user.id ? 'you' : project.owner_id))}
         ${field('runs', project.run_counter)}
       </div>
@@ -254,8 +254,16 @@ export function projectPage({ project, variables, triggerUrl, secret, user, rete
               <option value="false" ${project.enabled === 1 ? '' : 'selected'}>no</option>
             </select>
           </label>
+          <label>working directory
+            <input name="workdir" class="mono" placeholder="${retention.workdir}"
+                   value="${project.workdir ?? ''}">
+          </label>
         </div>
-        <p class="muted">A pipeline may override visibility per commit with a top level visibility key.</p>
+        <p class="muted">
+          A pipeline may override visibility per commit with a top level
+          visibility key, and the working directory with a workdir key.
+          Left empty, jobs run in ${retention.workdir}.
+        </p>
         <div class="actions"><button type="submit">save</button></div>
       </form>
     </div>

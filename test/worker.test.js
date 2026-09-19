@@ -13,7 +13,7 @@ import { loadWorkerConfig, featureNames } from '../src/worker/config.js';
 import { buildScript, shellQuote } from '../src/worker/script.js';
 import { containerName, createRuntime } from '../src/worker/docker.js';
 import { createLogStream } from '../src/worker/logstream.js';
-import { resolveFeatures, prepareCache } from '../src/worker/job.js';
+import { resolveFeatures, patternPrefix, copyOutPaths } from '../src/worker/job.js';
 import { collectArtifacts, shouldCollect } from '../src/worker/artifacts.js';
 
 async function tempDir(prefix = 'conductor-worker-') {
@@ -143,12 +143,12 @@ test('run arguments carry mounts, env, network and privilege', () => {
     name: 'job1',
     image: 'alpine:3',
     network: 'net1',
-    workspace: '/tmp/ws',
+    workdir: '/work',
     env: { FOO: 'bar' },
     mounts: ['/srv/k:/keys/k:ro'],
     privileged: true,
     entrypoint: 'sh',
-    command: ['/workspace/.conductor/script.sh'],
+    command: ['/tmp/entrypoint.sh'],
   });
 
   assert.equal(args[0], 'run');
@@ -156,10 +156,47 @@ test('run arguments carry mounts, env, network and privilege', () => {
   assert.deepEqual(args.slice(args.indexOf('--network'), args.indexOf('--network') + 2), ['--network', 'net1']);
   assert.ok(args.includes('--privileged'));
   assert.ok(args.includes('/srv/k:/keys/k:ro'));
-  assert.ok(args.includes('/tmp/ws:/workspace'));
+  assert.deepEqual(args.slice(args.indexOf('--workdir'), args.indexOf('--workdir') + 2), ['--workdir', '/work']);
   assert.ok(args.includes('FOO=bar'));
   // The image must come before its command.
-  assert.ok(args.indexOf('alpine:3') < args.indexOf('/workspace/.conductor/script.sh'));
+  assert.ok(args.indexOf('alpine:3') < args.indexOf('/tmp/entrypoint.sh'));
+});
+
+test('a job container is created without sharing anything with the worker', () => {
+  // The whole point of copying the tree in: no path of the worker's is
+  // handed to the daemon, so nothing has to line up between the two.
+  const runtime = createRuntime({ docker: 'docker', shell: 'sh' });
+  const args = runtime.buildCreateArgs({
+    name: 'job1',
+    image: 'alpine:3',
+    network: 'net1',
+    workdir: '/work',
+    env: { FOO: 'bar' },
+    entrypoint: 'sh',
+    command: ['/tmp/entrypoint.sh'],
+  });
+
+  assert.equal(args[0], 'create');
+  assert.ok(!args.includes('--attach'), 'create takes no attach flags');
+  assert.ok(!args.includes('--volume'), 'nothing of the worker is mounted in');
+  assert.ok(!args.some((a) => a.includes(':/work')), 'the tree is copied in, never bind mounted');
+  assert.deepEqual(args.slice(args.indexOf('--workdir'), args.indexOf('--workdir') + 2), ['--workdir', '/work']);
+  assert.ok(args.indexOf('alpine:3') < args.indexOf('/tmp/entrypoint.sh'));
+});
+
+test('a feature still contributes its bind mounts', () => {
+  // Those name host paths an operator chose deliberately, which is a
+  // different thing from the worker sharing its own directories.
+  const runtime = createRuntime({ docker: 'docker', shell: 'sh' });
+  const args = runtime.buildCreateArgs({
+    name: 'job1',
+    image: 'alpine:3',
+    mounts: ['/srv/keys/build.rsa:/keys/build.rsa:ro'],
+    entrypoint: 'sh',
+    command: ['/tmp/entrypoint.sh'],
+  });
+
+  assert.ok(args.includes('/srv/keys/build.rsa:/keys/build.rsa:ro'));
 });
 
 test('features resolve into mounts, env and privilege', () => {
@@ -179,23 +216,29 @@ test('an unknown required feature is reported rather than ignored', () => {
   assert.deepEqual(resolved.missing, ['nope']);
 });
 
-test('cache paths become bind mounts and are created', async () => {
-  const dir = await tempDir();
-  const mounts = await prepareCache(
-    { cache_root: dir },
-    { project_id: 'demo', cache: { key: 'npm', paths: ['.npm', '../escape/attempt'] } }
-  );
+test('an artifact pattern reduces to the part that can be copied out', () => {
+  // A stopped container cannot expand a glob, so only the leading
+  // literal part of a pattern can be asked for by name.
+  assert.equal(patternPrefix('out/**'), 'out');
+  assert.equal(patternPrefix('build/*.tar.gz'), 'build');
+  assert.equal(patternPrefix('a/b/c/**'), 'a/b/c');
+  assert.equal(patternPrefix('dist/app.tar'), 'dist/app.tar');
 
-  assert.equal(mounts.length, 2);
-  assert.ok(mounts[0].endsWith(':/workspace/.npm'));
-  // Traversal is stripped, not honoured.
-  assert.ok(mounts[1].endsWith(':/workspace/escape/attempt'));
-  for (const mount of mounts) {
-    const host = mount.split(':')[0];
-    assert.ok((await fs.stat(host)).isDirectory());
-    assert.ok(host.startsWith(dir));
-  }
-  await fs.rm(dir, { recursive: true, force: true });
+  // A pattern that could match anywhere has no usable prefix.
+  assert.equal(patternPrefix('**/*.log'), '');
+  assert.equal(patternPrefix('*'), '');
+});
+
+test('overlapping artifact paths are copied out once', () => {
+  assert.deepEqual(copyOutPaths(['out/**', 'out/deep/**', 'build/*']), ['build', 'out']);
+  assert.deepEqual(copyOutPaths(['out/**', 'out/**']), ['out']);
+
+  // One pattern matching anywhere means the whole tree comes back, and
+  // there is no point copying anything else separately.
+  assert.deepEqual(copyOutPaths(['**/*.log', 'out/**']), ['']);
+
+  // A prefix must be a whole path segment: outer must not swallow out.
+  assert.deepEqual(copyOutPaths(['out/**', 'outer/**']), ['out', 'outer']);
 });
 
 test('artifact collection globs, and refuses to leave the workspace', async () => {

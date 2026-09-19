@@ -15,7 +15,7 @@
 import { loadWorkerConfig, featureNames } from './config.js';
 import { createClient } from './client.js';
 import { createRuntime } from './docker.js';
-import { hasTar, hasGit } from './source.js';
+
 import { runJob } from './job.js';
 
 const stamp = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
@@ -51,14 +51,12 @@ export async function main(argv = process.argv.slice(2)) {
 
   // Fail at startup rather than on the first job, when a missing tool would
   // otherwise look like a broken pipeline.
+  //
+  // The runtime is the only thing a worker needs. The tree is unpacked
+  // into the job container over the docker API rather than on this side,
+  // so there is nothing else to look for on PATH.
   if (!(await runtime.available())) {
     throw new Error(`container runtime ${JSON.stringify(cfg.docker)} is not usable; is the daemon running?`);
-  }
-  if (!(await hasTar())) {
-    throw new Error('tar is required to unpack job sources but was not found on PATH');
-  }
-  if (!(await hasGit())) {
-    logger.warn('git was not found; projects configured for clone mode will fail');
   }
 
   const features = featureNames(cfg);

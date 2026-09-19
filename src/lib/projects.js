@@ -13,12 +13,24 @@
 // original value, so it is sealed with the secret box.
 
 import { newProjectId, slugify } from './ids.js';
+import { parseWorkdir } from './pipeline/parse.js';
+import { Problems } from './pipeline/schema.js';
 
-export const SOURCE_MODES = ['archive', 'clone'];
 export const VISIBILITIES = ['public', 'private'];
 
+// Validated with the same rule the pipeline uses, so a project and a
+// repository cannot disagree about what a usable working directory is.
+export function assertWorkdir(value) {
+  const problems = new Problems();
+  const parsed = parseWorkdir(problems, 'workdir', value);
+  if (problems.length > 0) {
+    throw new Error(`workdir ${problems.items[0].message}`);
+  }
+  return parsed;
+}
+
 const COLUMNS = `
-  id, name, repo_url, default_branch, config_path, source_mode,
+  id, name, repo_url, default_branch, config_path, workdir,
   trigger_secret, enabled, run_counter, owner_id, visibility,
   artifact_keep_runs, artifact_keep_days, log_keep_days,
   created_at, updated_at
@@ -61,9 +73,6 @@ export function createProjects({ db, secrets }) {
       const id = input.id ? slugify(input.id) : (slugify(input.name) || newProjectId());
       const now = Date.now();
 
-      if (input.source_mode && !SOURCE_MODES.includes(input.source_mode)) {
-        throw new Error(`source_mode must be one of ${SOURCE_MODES.join(', ')}`);
-      }
       if (input.visibility && !VISIBILITIES.includes(input.visibility)) {
         throw new Error(`visibility must be one of ${VISIBILITIES.join(', ')}`);
       }
@@ -73,11 +82,11 @@ export function createProjects({ db, secrets }) {
 
       await db.run(
         `INSERT INTO projects
-           (id, name, repo_url, default_branch, config_path, source_mode,
+           (id, name, repo_url, default_branch, config_path, workdir,
             trigger_secret, enabled, run_counter, owner_id, visibility,
             created_at, updated_at)
          VALUES
-           ({id}, {name}, {repo_url}, {branch}, {config_path}, {source_mode},
+           ({id}, {name}, {repo_url}, {branch}, {config_path}, {workdir},
             {secret}, {enabled}, 0, {owner}, {visibility},
             {now}, {now})`,
         {
@@ -86,7 +95,7 @@ export function createProjects({ db, secrets }) {
           repo_url: input.repo_url,
           branch: input.default_branch || 'main',
           config_path: input.config_path || '.conductor.yml',
-          source_mode: input.source_mode || 'archive',
+          workdir: input.workdir ? assertWorkdir(input.workdir) : null,
           secret: input.trigger_secret ? secrets.seal(input.trigger_secret, aad(id)) : null,
           enabled: input.enabled === undefined ? 1 : (input.enabled ? 1 : 0),
           owner: input.owner_id ?? null,
@@ -152,6 +161,15 @@ export function createProjects({ db, secrets }) {
       await db.run(
         `UPDATE projects SET ${updates.join(', ')}, updated_at = {now} WHERE id = {id}`,
         params
+      );
+    },
+
+    // Null hands the decision back to the repository, and failing that
+    // to the server default.
+    async setWorkdir(id, workdir) {
+      await db.run(
+        'UPDATE projects SET workdir = {workdir}, updated_at = {now} WHERE id = {id}',
+        { id, workdir: workdir ? assertWorkdir(workdir) : null, now: Date.now() }
       );
     },
 

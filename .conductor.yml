@@ -20,9 +20,6 @@ jobs:
     script:
       - npm install --no-audit --no-fund
       - node --test test/ascii.test.js
-    cache:
-      key: npm
-      paths: [.npm]
 
   # Everything that runs without a docker socket.
   test:
@@ -31,9 +28,6 @@ jobs:
       - npm test
     env:
       CONDUCTOR_TEST_NO_DOCKER: '1'
-    cache:
-      key: npm
-      paths: [.npm]
 
   # The same suite with the container-backed tests switched on, so the S3
   # and OIDC paths are exercised against real servers rather than skipped.
@@ -42,9 +36,6 @@ jobs:
     script:
       - npm install --no-audit --no-fund
       - npm test
-    cache:
-      key: npm
-      paths: [.npm]
 
   # Both images have to build before anything claims a release is possible.
   # Host architecture only, since this runs on every branch and the point

@@ -1,8 +1,11 @@
 // src/worker/script.js - turning a job's commands into a shell script
 //
-// The script is written into the workspace and run by path rather than piped
-// to the shell's stdin, so that a command which itself reads stdin cannot
-// swallow the rest of the script.
+// The script is copied into the container and run by path rather than
+// piped to the shell's stdin, so that a command which itself reads stdin
+// cannot swallow the rest of the script.
+//
+// It lives outside the tree, so that a repository cannot shadow it and
+// nothing the job does to its own working directory can lose it.
 
 // Single quoting is the only form that is safe for arbitrary text in POSIX
 // sh: everything inside is literal, and an embedded quote is closed,
@@ -24,6 +27,5 @@ export function buildScript(commands) {
   return lines.join('\n');
 }
 
-export const SCRIPT_DIR = '.conductor';
-export const SCRIPT_NAME = 'script.sh';
-export const SCRIPT_PATH = `${SCRIPT_DIR}/${SCRIPT_NAME}`;
+export const SCRIPT_NAME = 'entrypoint.sh';
+export const SCRIPT_PATH = `/tmp/${SCRIPT_NAME}`;

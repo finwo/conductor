@@ -11,9 +11,9 @@
 
 import crypto from 'node:crypto';
 import { requireUser } from '../../lib/auth/index.js';
-import { SOURCE_MODES, VISIBILITIES, canManageProject } from '../../lib/projects.js';
+import { VISIBILITIES, canManageProject } from '../../lib/projects.js';
 import { canManageWorker } from '../../lib/workers.js';
-import { PipelineError } from '../../lib/pipeline/index.js';
+import { PipelineError, DEFAULT_WORKDIR } from '../../lib/pipeline/index.js';
 
 export default async function manageRoutes(fastify, services) {
   const { cfg, auth, projects, workerTokens, variables } = services;
@@ -28,10 +28,12 @@ export default async function manageRoutes(fastify, services) {
     repo_url: p.repo_url,
     default_branch: p.default_branch,
     config_path: p.config_path,
-    source_mode: p.source_mode,
+
     visibility: p.visibility,
     enabled: p.enabled === 1,
     owner_id: p.owner_id,
+    // Null means the repository decides, and failing that the server.
+    workdir: p.workdir ?? null,
     has_trigger_secret: Boolean(p.trigger_secret),
     run_count: p.run_counter,
     // Null means the server default applies, which the caller cannot see
@@ -70,9 +72,6 @@ export default async function manageRoutes(fastify, services) {
     const body = req.body ?? {};
     if (typeof body.repo_url !== 'string' || body.repo_url.length === 0) {
       return reply.code(400).send({ error: 'repo_url is required' });
-    }
-    if (body.source_mode && !SOURCE_MODES.includes(body.source_mode)) {
-      return reply.code(400).send({ error: `source_mode must be one of ${SOURCE_MODES.join(', ')}` });
     }
     if (body.visibility && !VISIBILITIES.includes(body.visibility)) {
       return reply.code(400).send({ error: `visibility must be one of ${VISIBILITIES.join(', ')}` });
@@ -116,6 +115,7 @@ export default async function manageRoutes(fastify, services) {
       log_keep_days: cfg.retention.log_keep_days,
     },
     sweep_interval: cfg.retention.sweep_interval,
+    workdir: DEFAULT_WORKDIR,
   }));
 
   fastify.patch('/projects/:id', async (req, reply) => {
@@ -126,6 +126,8 @@ export default async function manageRoutes(fastify, services) {
     try {
       if (typeof body.enabled === 'boolean') await projects.setEnabled(project.id, body.enabled);
       if (typeof body.visibility === 'string') await projects.setVisibility(project.id, body.visibility);
+      if (Object.hasOwn(body, 'workdir')) await projects.setWorkdir(project.id, body.workdir);
+
       const retention = {};
       for (const key of ['artifact_keep_runs', 'artifact_keep_days', 'log_keep_days']) {
         if (Object.hasOwn(body, key)) retention[key] = body[key];

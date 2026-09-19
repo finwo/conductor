@@ -15,6 +15,7 @@ Top level
 | ------------ | -------- | -------------------------------------------- |
 | `version`    | yes      | Must be `1`.                                 |
 | `visibility` | no       | `public` or `private`. Overrides the project. |
+| `workdir`    | no       | Absolute path jobs run in. Overrides the project. |
 | `defaults`   | no       | Values inherited by every job.               |
 | `jobs`       | yes      | Mapping of job name to job.                  |
 
@@ -62,7 +63,6 @@ Jobs
 | `services`      | list              | `[]`           | yes         |
 | `env`           | mapping           | `{}`           | merged      |
 | `artifacts`     | list or mapping   | none           | no          |
-| `cache`         | list or mapping   | none           | yes         |
 | `allow_failure` | boolean           | `false`        | yes         |
 | `timeout`       | duration          | server default | yes         |
 | `max_attempts`  | integer, 1 to 10  | `1`            | yes         |
@@ -283,18 +283,27 @@ flat and lifts the five gigabyte limit that applies to a single request.
 Disk images and other multi gigabyte output are fine; what they cost is
 storage, not resident memory.
 
-Cache
------
+Working directory
+-----------------
 
 ```yaml
-cache:
-  key: deps-$MATRIX_PKG
-  paths: [.npm, vendor]
+version: 1
+workdir: /usr/src/app
 ```
 
-A directory preserved between jobs on the same worker, keyed by `key`. A
-cache is an optimisation, never a correctness guarantee: a job must work with
-an empty one.
+Where the tree is unpacked inside the job container, and the directory
+every script starts in. It must be an absolute path of ordinary directory
+names; it does not have to exist in the image, and is created as the tree
+is unpacked.
+
+Three answers, most specific first: this key, the project's setting, and
+failing both `/work`. The repository has the last word because the path
+belongs with the code: an image that expects to build in `/usr/src/app`
+knows that, and whoever registered the project should not have to.
+
+Nothing else is shared with the container. The tree arrives over the
+docker API and artifacts leave the same way, so a worker needs no
+directory in common with the jobs it runs, and no storage of its own.
 
 Environment
 -----------
@@ -313,8 +322,8 @@ Interpolation
 -------------
 
 `${{ ... }}` is substituted before the job is stored, in `image`, `script`,
-`env` values, `requires`, `services` and `cache`. Two expressions are
-available: `arch` and `matrix.<name>`.
+`env` values, `requires` and `services`. Two expressions are available:
+`arch` and `matrix.<name>`.
 
 ```yaml
 build:

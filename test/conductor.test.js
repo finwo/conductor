@@ -221,12 +221,12 @@ test('a claimed job carries everything the worker needs', async () => {
     assert.deepEqual(job.script, ['./build.sh $ARCH']);
     assert.equal(job.env.ARCH, 'x86_64');
     assert.equal(job.sha, h.sha);
-    assert.equal(job.source.mode, 'archive');
-    assert.match(job.source.url, /^http:\/\/conductor\.test\/api\/workers\/jobs\//);
+    assert.match(job.endpoints.source, /^http:\/\/conductor\.test\/api\/workers\/jobs\//);
+    assert.ok(job.endpoints.source.endsWith('/source.tar.gz'));
     assert.ok(job.endpoints.log.endsWith('/log'));
 
-    // The worker resolves features and cache keys from these two, so a
-    // missing field silently disables both.
+    // The worker resolves features from these, so a missing field
+    // silently disables them.
     assert.deepEqual(job.requires, []);
     assert.equal(job.project_id, 'demo');
     assert.ok(Number.isInteger(job.heartbeat_interval) && job.heartbeat_interval > 0);
@@ -675,13 +675,110 @@ test('a commit that is not in the repository is refused', async () => {
   });
 });
 
-test('clone mode hands the repository url to the worker instead', async () => {
-  await withHarness({ sourceMode: 'clone' }, async (h) => {
+test('a job is told to fetch an archive, and never the repository itself', async () => {
+  await withHarness({}, async (h) => {
     await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
     const job = await claimNamed(h, 'lint', {});
-    assert.equal(job.source.mode, 'clone');
-    assert.equal(job.source.repo_url, h.repoDir);
+
+    assert.match(job.endpoints.source, /\/source\.tar\.gz$/);
+
+    // A worker holds no repository credentials and can reach no ref other
+    // than the commit it was given work for, so the repository location
+    // has no business being in the payload.
+    assert.equal(job.source, undefined, 'there is one way to get the source, so there is no mode');
+    assert.ok(!JSON.stringify(job).includes(h.repoDir), 'the repository path must not reach the worker');
   });
+});
+
+test('the source archive is the bare tree, with no wrapping directory', async () => {
+  // The worker hands it to docker cp with the working directory as the
+  // destination, and docker creates that directory as it extracts. A
+  // wrapping directory in the archive would land one level too deep.
+  await withHarness({}, async (h) => {
+    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const job = await claimNamed(h, 'lint', {});
+
+    const archive = await h.app.inject({
+      method: 'GET',
+      url: new URL(job.endpoints.source).pathname,
+      headers: h.auth,
+    });
+    assert.equal(archive.statusCode, 200);
+
+    // spawnSync rather than the promisified execFile, which has no way to
+    // supply stdin and simply waits for input that never comes.
+    const { spawnSync } = await import('node:child_process');
+    const listing = spawnSync('tar', ['-tzf', '-'], {
+      input: archive.rawPayload,
+      encoding: 'utf8',
+    });
+    assert.equal(listing.status, 0, `tar failed: ${listing.stderr}`);
+
+    const entries = listing.stdout.split('\n').filter(Boolean);
+    assert.ok(entries.length > 0, 'the archive should not be empty');
+    assert.ok(
+      entries.includes('.conductor.yml'),
+      `the pipeline should sit at the root of the archive, got:\n${listing.stdout}`,
+    );
+  });
+});
+
+test('the working directory is resolved from the pipeline, then the project', async () => {
+  const pipeline = [
+    'version: 1',
+    'workdir: /usr/src/app',
+    'defaults:',
+    '  image: alpine:3',
+    'jobs:',
+    '  build:',
+    "    script: ['make']",
+    '',
+  ].join('\n');
+
+  await withHarness({ pipeline }, async (h) => {
+    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const job = await claimNamed(h, 'build', {});
+    assert.equal(job.workdir, '/usr/src/app', 'the repository has the final say');
+  });
+
+  // With the repository silent, the project decides.
+  await withHarness({}, async (h) => {
+    await h.services.db.run(
+      'UPDATE projects SET workdir = {dir} WHERE id = {id}',
+      { dir: '/srv/build', id: h.project.id }
+    );
+    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const job = await claimNamed(h, 'lint', {});
+    assert.equal(job.workdir, '/srv/build');
+  });
+
+  // With neither, there is a default.
+  await withHarness({}, async (h) => {
+    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const job = await claimNamed(h, 'lint', {});
+    assert.equal(job.workdir, '/work');
+  });
+});
+
+test('an unusable working directory is refused rather than sanitised', async () => {
+  for (const workdir of ['relative/path', '/', '/a/../b', '/has space']) {
+    const pipeline = [
+      'version: 1',
+      `workdir: ${JSON.stringify(workdir)}`,
+      'defaults:',
+      '  image: alpine:3',
+      'jobs:',
+      '  build:',
+      "    script: ['make']",
+      '',
+    ].join('\n');
+
+    await withHarness({ pipeline }, async (h) => {
+      const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+      assert.equal(res.statusCode, 422, `expected ${JSON.stringify(workdir)} to be refused`);
+      assert.ok(res.json().problems.some((p) => p.path === 'workdir'));
+    });
+  }
 });
 
 test('the trigger secret is not stored in the clear', async () => {

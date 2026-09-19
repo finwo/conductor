@@ -16,7 +16,7 @@
 // Claiming is a conditional UPDATE guarded on the previous state, so two
 // workers polling at the same instant cannot both win the same job.
 
-import { compilePipeline, PipelineError, transitiveDependents } from '../lib/pipeline/index.js';
+import { compilePipeline, PipelineError, transitiveDependents, DEFAULT_WORKDIR } from '../lib/pipeline/index.js';
 import { inClause } from '../lib/db/query.js';
 import { newRunId, jobId as makeJobId } from '../lib/ids.js';
 import { keys as storageKeys } from '../lib/storage/index.js';
@@ -128,6 +128,11 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
       // legitimately change from one commit to the next.
       const visibility = pipeline.visibility ?? project.visibility ?? 'private';
 
+      // Same shape of answer for where the tree is unpacked inside a job
+      // container: the repository knows what its build expects, the
+      // project can set a house default, and failing both there is one.
+      const workdir = pipeline.workdir ?? project.workdir ?? DEFAULT_WORKDIR;
+
       await db.transaction(async (tx) => {
         const number = await projects.nextRunNumber(tx, project.id);
         const empty = pipeline.jobs.length === 0;
@@ -180,10 +185,13 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
                 env: job.env,
                 services: job.services,
                 artifacts: job.artifacts,
-                cache: job.cache,
                 matrix: job.matrix,
                 needs: job.needs,
                 depth: job.depth,
+                // Recorded per job rather than looked up when a worker
+                // polls, so a run stays reproducible after the project
+                // or the pipeline changes.
+                workdir,
               }),
               allow: job.allow_failure ? 1 : 0,
               attempts: job.max_attempts,
@@ -298,7 +306,8 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
           },
           services: spec.services,
           artifacts: spec.artifacts,
-          cache: spec.cache,
+          // Runs created before this existed have no workdir recorded.
+          workdir: spec.workdir ?? DEFAULT_WORKDIR,
         };
       }
 

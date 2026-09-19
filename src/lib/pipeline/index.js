@@ -16,7 +16,7 @@ export { expandPipeline, interpolate } from './expand.js';
 export { topologicalOrder, depths, transitiveDependents, runnable, CycleError } from './dag.js';
 export { refMatches, jobRunsOnRef, selectForRef } from './only.js';
 export { PipelineError } from './schema.js';
-export { SUPPORTED_VERSION, VISIBILITIES } from './parse.js';
+export { SUPPORTED_VERSION, VISIBILITIES, DEFAULT_WORKDIR, parseWorkdir } from './parse.js';
 
 export function compilePipeline(text, options = {}) {
   const pipeline = parsePipeline(text, options);
@@ -44,6 +44,7 @@ export function compilePipeline(text, options = {}) {
     version: pipeline.version,
     source: pipeline.source,
     visibility: pipeline.visibility,
+    workdir: pipeline.workdir,
     jobs,
   };
 }

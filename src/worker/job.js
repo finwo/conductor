@@ -1,19 +1,58 @@
 // src/worker/job.js - running one job
 //
-// Sequence: prepare a workspace, fetch the tree, start any services on a
-// private network, run the job container, ship its output, upload
-// artifacts, report the outcome, and clean up whatever was created.
+// Sequence: create the container, put the tree and the script into it,
+// start any services on a private network, run it, ship its output,
+// take the artifacts back out, report, and clean up.
+//
+// Nothing is shared with the container through the filesystem. The tree
+// arrives over the docker API and the artifacts leave the same way, so
+// the worker needs no directory the host can also see, and therefore no
+// mounts, no matching paths, and no storage of its own. What little it
+// does write goes to a scratch directory that lives and dies with the
+// job.
 //
 // Cleanup runs whatever happened. A worker that leaks containers or
 // networks stops being usable after a few dozen jobs.
 
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { containerName } from './docker.js';
 import { createLogStream } from './logstream.js';
-import { fetchSource } from './source.js';
-import { buildScript, SCRIPT_DIR, SCRIPT_NAME, SCRIPT_PATH } from './script.js';
+import { sourceIntoContainer } from './source.js';
+
+// Where a job runs when the conductor did not say. The conductor resolves
+// this from the pipeline and the project, so this only covers a worker
+// talking to one too old to have an opinion.
+const FALLBACK_WORKDIR = '/work';
+import { buildScript, SCRIPT_NAME, SCRIPT_PATH } from './script.js';
 import { collectArtifacts, uploadArtifacts, shouldCollect } from './artifacts.js';
+
+// The part of an artifact pattern before its first wildcard, which is the
+// most that can be copied out without asking the container to expand a
+// glob it is no longer running to expand. An empty string means the
+// pattern could match anywhere, so the whole tree has to come back.
+export function patternPrefix(pattern) {
+  const segments = String(pattern).split('/');
+  const literal = [];
+  for (const segment of segments) {
+    if (/[*?[\]{}]/.test(segment)) break;
+    literal.push(segment);
+  }
+  // A pattern with no wildcard at all names one path, and its last
+  // segment is a file rather than a directory to descend into.
+  return literal.join('/');
+}
+
+// The set of paths to copy out for a job's artifact patterns, with any
+// path that is covered by another removed.
+export function copyOutPaths(patterns) {
+  const prefixes = (patterns ?? []).map(patternPrefix);
+  if (prefixes.some((p) => p === '')) return [''];
+
+  const unique = [...new Set(prefixes)].sort();
+  return unique.filter((p, i) => !unique.slice(0, i).some((other) => p === other || p.startsWith(`${other}/`)));
+}
 
 // Resolves the features a job asked for into local resources.
 export function resolveFeatures(job, available) {
@@ -38,35 +77,21 @@ export function resolveFeatures(job, available) {
   return { mounts, env, devices, privileged, missing };
 }
 
-// Cache directories are bind mounted straight onto their path in the
-// workspace, which is cheaper than copying in and out around every job.
-export async function prepareCache(cfg, job) {
-  if (!job.cache || !Array.isArray(job.cache.paths)) return [];
-
-  const key = String(job.cache.key ?? 'default').replace(/[^A-Za-z0-9_.-]/g, '-').slice(0, 128);
-  const project = String(job.project_id ?? 'project').replace(/[^A-Za-z0-9_.-]/g, '-');
-  const mounts = [];
-
-  for (const relative of job.cache.paths) {
-    const normalized = relative.split('/').filter((s) => s && s !== '.' && s !== '..').join('/');
-    if (!normalized) continue;
-    const host = path.join(cfg.cache_root, project, key, normalized);
-    await fs.mkdir(host, { recursive: true });
-    mounts.push(`${host}:/workspace/${normalized}`);
-  }
-
-  return mounts;
-}
-
 export async function runJob({ cfg, client, runtime, job, logger = console }) {
-  const workspace = path.join(cfg.workspace_root, containerName('ws', job.id));
   const network = containerName('conductor-net', job.id);
   const jobContainer = containerName('conductor', job.id);
+  const workdir = job.workdir || FALLBACK_WORKDIR;
+
+  // Worker local, and only ever written by the worker: the generated
+  // script on its way in, and artifacts on their way out. The container
+  // never sees it.
+  let scratch = null;
 
   const log = createLogStream(client, job.endpoints.log, { masked: job.masked ?? [], logger });
 
   const services = [];
   let networkCreated = false;
+  let containerCreated = false;
   let heartbeat = null;
   let timeoutTimer = null;
   let cancelled = false;
@@ -75,7 +100,7 @@ export async function runJob({ cfg, client, runtime, job, logger = console }) {
   let failure = null;
 
   try {
-    await fs.mkdir(workspace, { recursive: true });
+    scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'conductor-job-'));
 
     log.note(`[conductor] job ${job.name} on ${cfg.name}`);
     log.note(`[conductor] commit ${String(job.sha).slice(0, 12)} attempt ${job.attempt}`);
@@ -87,13 +112,6 @@ export async function runJob({ cfg, client, runtime, job, logger = console }) {
       // sides disagree about what this worker offers.
       throw new Error(`worker does not provide required feature(s): ${features.missing.join(', ')}`);
     }
-
-    await fetchSource(client, job, workspace);
-
-    await fs.mkdir(path.join(workspace, SCRIPT_DIR), { recursive: true });
-    await fs.writeFile(path.join(workspace, SCRIPT_PATH), buildScript(job.script), { mode: 0o755 });
-
-    const cacheMounts = await prepareCache(cfg, job);
 
     await runtime.createNetwork(network);
     networkCreated = true;
@@ -113,18 +131,30 @@ export async function runJob({ cfg, client, runtime, job, logger = console }) {
       services.push(name);
     }
 
-    const { child } = runtime.start({
+    // Created rather than run, so its filesystem can be filled before it
+    // starts and read after it exits. Feature mounts are still bind
+    // mounts, since those name host paths the operator chose deliberately.
+    await runtime.create({
       name: jobContainer,
       image: job.image,
       network,
-      workspace,
+      workdir,
       env: { ...features.env, ...job.env },
-      mounts: [...features.mounts, ...cacheMounts],
+      mounts: features.mounts,
       devices: features.devices,
       privileged: features.privileged,
       entrypoint: cfg.shell,
-      command: [`/workspace/${SCRIPT_PATH}`],
+      command: [SCRIPT_PATH],
     });
+    containerCreated = true;
+
+    await sourceIntoContainer({ client, runtime, job, container: jobContainer, workdir });
+
+    const scriptPath = path.join(scratch, SCRIPT_NAME);
+    await fs.writeFile(scriptPath, buildScript(job.script), { mode: 0o755 });
+    await runtime.copyIn(jobContainer, scriptPath, SCRIPT_PATH);
+
+    const { child } = runtime.startCreated(jobContainer);
 
     child.stdout.on('data', (chunk) => log.write(chunk));
     child.stderr.on('data', (chunk) => log.write(chunk));
@@ -167,11 +197,13 @@ export async function runJob({ cfg, client, runtime, job, logger = console }) {
 
   const success = failure === null && exitCode === 0 && !cancelled && !timedOut;
 
-  // Artifacts are collected before teardown, and even after a failure when
-  // the pipeline asked for that.
-  if (job.artifacts && shouldCollect(job.artifacts.when, success)) {
+  // Artifacts are collected before teardown, and even after a failure
+  // when the pipeline asked for that. They come out of the stopped
+  // container, which still has its filesystem until it is removed.
+  if (containerCreated && job.artifacts && shouldCollect(job.artifacts.when, success)) {
     try {
-      const files = await collectArtifacts(workspace, job.artifacts.paths, { logger });
+      const staged = await stageArtifacts();
+      const files = await collectArtifacts(staged, job.artifacts.paths, { logger });
       if (files.length > 0) {
         log.note(`[conductor] uploading ${files.length} artifact(s)`);
         await uploadArtifacts(client, job.endpoints.artifact, files, { logger });
@@ -210,42 +242,44 @@ export async function runJob({ cfg, client, runtime, job, logger = console }) {
 
   return { success, exitCode, error, cancelled, timedOut };
 
+  // Copies what the artifact patterns could possibly match out of the
+  // stopped container, into a directory the globbing can then walk.
+  //
+  // Only the leading literal part of each pattern can be copied, since
+  // the container is no longer running to expand a glob. A pattern that
+  // could match anywhere brings the whole tree back, which is the price
+  // of asking for one.
+  async function stageArtifacts() {
+    const staged = path.join(scratch, 'artifacts');
+    await fs.mkdir(staged, { recursive: true });
+
+    for (const relative of copyOutPaths(job.artifacts.paths)) {
+      if (relative === '') {
+        // The trailing /. copies the contents rather than the directory.
+        await runtime.copyOut(jobContainer, `${workdir}/.`, staged);
+        break;
+      }
+
+      // Copying out of a container does need the parent to exist here,
+      // unlike copying in.
+      const parent = path.join(staged, path.dirname(relative));
+      await fs.mkdir(parent, { recursive: true });
+      await runtime.copyOut(jobContainer, `${workdir}/${relative}`, parent);
+    }
+
+    return staged;
+  }
+
   async function cleanup() {
     for (const name of services) await runtime.remove(name);
     await runtime.remove(jobContainer);
     if (networkCreated) await runtime.removeNetwork(network);
-    await removeWorkspace();
-  }
 
-  // Most images run as root, so files the job created in the bind mounted
-  // workspace are owned by root while the worker usually is not. Removing
-  // them from the host then fails with EACCES. The directory itself belongs
-  // to the worker, so emptying it from inside a container as root and then
-  // removing the empty directory works without forcing every job image to
-  // run as the worker's uid.
-  async function removeWorkspace() {
-    try {
-      await fs.rm(workspace, { recursive: true, force: true });
-      return;
-    } catch (e) {
-      if (e.code !== 'EACCES' && e.code !== 'EPERM' && e.code !== 'ENOTEMPTY') {
-        logger.warn?.(`could not remove workspace ${workspace}: ${e.message}`);
-        return;
-      }
-    }
-
-    try {
-      // The job image is already present locally, so nothing is pulled.
-      await runtime.runOnce({
-        name: containerName('conductor-clean', job.id),
-        image: job.image,
-        workspace,
-        entrypoint: cfg.shell,
-        command: ['-c', 'rm -rf /workspace/..?* /workspace/.[!.]* /workspace/* 2>/dev/null || true'],
-      });
-      await fs.rm(workspace, { recursive: true, force: true });
-    } catch (e) {
-      logger.warn?.(`could not remove workspace ${workspace}: ${e.message}`);
+    // Nothing here was written by the job, so there is no root owned
+    // output to work around: removing the container took that with it.
+    if (scratch) {
+      await fs.rm(scratch, { recursive: true, force: true })
+        .catch((e) => logger.warn?.(`could not remove scratch ${scratch}: ${e.message}`));
     }
   }
 }

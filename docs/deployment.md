@@ -125,19 +125,28 @@ being proxied. The bucket must already exist.
 Workers
 -------
 
-A worker needs the docker socket, because it runs each job in a container.
-Those containers are siblings on the host daemon, not children of the
-worker, which has one consequence that catches people out:
+A worker needs the docker socket, and nothing else:
 
-**The workspace path must be identical inside and outside the worker
-container.** The `-v` flags the worker passes are resolved by the host
-daemon, so a path that only exists inside the worker produces an empty
-workspace and a job that cannot find its own source. The compose files
-mount `/var/lib/conductor/work` at the same path on both sides for exactly
-this reason. A named volume will not do.
+```sh
+docker run -d --restart unless-stopped \
+  -e CONDUCTOR_URL=https://ci.example.com \
+  -e CONDUCTOR_WORKER_TOKEN=... \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  finwo/conductor-worker
+```
+
+It keeps no state and shares no directory with the jobs it runs. A job's
+tree is unpacked into the job's own container over the socket, and its
+artifacts are read back the same way, so there is no workspace to mount,
+no path that has to mean the same thing on both sides, and nothing to
+persist between restarts.
+
+Feature mounts are the one exception, and they are deliberate: those name
+host paths an operator chose, such as a signing key, and are declared in
+the worker's configuration file. See [worker.md](worker.md).
 
 To contribute capacity to somebody else's conductor, use
-`deploy/worker/docker-compose.yml`; see [worker.md](worker.md).
+`deploy/worker/docker-compose.yml`.
 
 Behind a reverse proxy
 ----------------------

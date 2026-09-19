@@ -1,77 +1,29 @@
-// src/worker/source.js - getting the tree into the workspace
+// src/worker/source.js - getting the tree into the job container
 //
-// Two modes, chosen per project by the conductor:
+// The conductor serves a tarball of the exact commit a job was created
+// for. The worker never sees a repository, holds no credentials for one,
+// and cannot reach any ref other than the one it was given work for.
 //
-//   archive  download a tarball of the exact commit from the conductor and
-//            unpack it. The worker needs no repository credentials and can
-//            reach no ref other than the one it was given work for.
-//   clone    git clone the repository directly, for repositories large
-//            enough that a tarball per job is wasteful.
+// The tarball goes straight from the conductor into the container: it is
+// decompressed in flight and handed to docker cp, so it is never written
+// to the worker's disk and never sits in a directory shared with the
+// container. That is what lets a worker run with no mounts at all.
 //
-// Unpacking shells out to the host tar. Both GNU and BSD tar accept these
-// arguments; availability is checked once at startup.
+// docker creates the destination as it extracts, including any missing
+// parents, so the tree can be delivered to a path the image has never
+// heard of without preparing anything first.
 
-import { spawn, execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { Readable } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
+import { createGunzip } from 'node:zlib';
 
-const execFileAsync = promisify(execFile);
+export async function sourceIntoContainer({ client, runtime, job, container, workdir }) {
+  const url = job.endpoints?.source;
+  if (!url) throw new Error('the job carries no source endpoint');
 
-export async function hasTar() {
-  try {
-    await execFileAsync('tar', ['--version'], { timeout: 10000 });
-    return true;
-  } catch {
-    return false;
-  }
-}
+  const body = await client.source(url);
+  const stream = body instanceof Readable ? body : Readable.fromWeb(body);
 
-export async function hasGit() {
-  try {
-    await execFileAsync('git', ['--version'], { timeout: 10000 });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// Streams a gzipped tar into a directory without staging it on disk.
-export async function extractTarGz(stream, directory) {
-  const child = spawn('tar', ['-xzf', '-', '-C', directory, '--no-same-owner'], {
-    stdio: ['pipe', 'ignore', 'pipe'],
-  });
-
-  let stderr = '';
-  child.stderr.on('data', (chunk) => { stderr += chunk.toString().slice(0, 4096); });
-
-  const exited = new Promise((resolve, reject) => {
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`tar exited ${code}: ${stderr.trim()}`));
-    });
-  });
-
-  const source = stream instanceof Readable ? stream : Readable.fromWeb(stream);
-  await Promise.all([pipeline(source, child.stdin), exited]);
-}
-
-export async function fetchSource(client, job, workspace, { timeout = 600000 } = {}) {
-  const source = job.source ?? {};
-
-  if (source.mode === 'clone') {
-    const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '' };
-    await execFileAsync('git', ['clone', '--quiet', '--no-checkout', '--', source.repo_url, workspace], { timeout, env });
-    await execFileAsync('git', ['-C', workspace, 'checkout', '--quiet', source.sha], { timeout, env });
-    return { mode: 'clone' };
-  }
-
-  if (source.mode === 'archive') {
-    const body = await client.source(source.url);
-    await extractTarGz(body, workspace);
-    return { mode: 'archive' };
-  }
-
-  throw new Error(`unsupported source mode: ${JSON.stringify(source.mode)}`);
+  // Decompressed on this side, because docker cp takes a plain tar and
+  // the container has no shell of its own to unpack anything with.
+  await runtime.copyStreamIn(container, stream.pipe(createGunzip()), workdir);
 }
