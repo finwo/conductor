@@ -10,11 +10,15 @@ Source and issues: https://github.com/finwo/conductor
 | Tag              | What it is                                 |
 | ---------------- | ------------------------------------------ |
 | `latest`         | the most recent release                    |
-| `0.1.0`          | an exact version                           |
-| `0.1`            | the latest patch of that minor series      |
+| `0.2.0`          | an exact version                           |
+| `0.2`            | the latest patch of that minor series      |
 | `<commit>`       | an exact build from main, twelve hex chars |
 
 Built for `linux/amd64`, `linux/arm64` and `linux/riscv64`.
+
+**Upgrade the conductor and its workers together.** 0.2.0 changed how a
+job's tree reaches its container, and a 0.1.x worker will not run jobs
+from a 0.2.x conductor.
 
 ## Quick start
 
