@@ -22,10 +22,7 @@ import { createRetention } from './retention.js';
 
 import workerRoutes from './routes/workers.js';
 import triggerRoutes from './routes/trigger.js';
-import runRoutes from './routes/runs.js';
-import authRoutes from './routes/auth.js';
-import adminRoutes from './routes/admin.js';
-import manageRoutes from './routes/manage.js';
+import artifactRoutes from './routes/artifacts.js';
 import uiRoutes from './ui/routes.js';
 import staticRoutes from '../lib/static.js';
 
@@ -84,15 +81,14 @@ export async function buildServer(services, options = {}) {
     auth: cfg.auth.mode,
   }));
 
-  await fastify.register(triggerRoutes, { ...services, prefix: '/api/trigger' });
-  await fastify.register(workerRoutes, { ...services, prefix: '/api/workers' });
-  await fastify.register(authRoutes, { ...services, prefix: '/api/auth' });
-  await fastify.register(adminRoutes, { ...services, prefix: '/api/admin' });
-  await fastify.register(manageRoutes, { ...services, prefix: '/api' });
-  await fastify.register(runRoutes, { ...services, prefix: '/api' });
+  // The only HTTP surface besides the interface: the trigger edge, the
+  // worker edge, and artifact downloads. Everything else is the UI.
+  await fastify.register(triggerRoutes, { ...services, prefix: '/api/v1' });
+  await fastify.register(workerRoutes, { ...services, prefix: '/api/v1' });
+  await fastify.register(artifactRoutes, { ...services, prefix: '/api/v1' });
 
-  // Signing in, managing projects and registering workers all need the
-  // write surface, so the interface lives with it.
+  // Signing in, managing projects and registering workers all happen in the
+  // interface; there is no separate management API.
   if (options.ui !== false) {
     await fastify.register(staticRoutes, {});
     await fastify.register(uiRoutes, { ...services });

@@ -55,10 +55,11 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
 
   // Ask for work. The worker describes what it can run; the scheduler
   // decides. Returns 204 when there is nothing to do.
-  fastify.get('/poll', async (req, reply) => {
-    const arches = splitList(req.query.arches);
-    const features = splitList(req.query.features);
-    const name = typeof req.query.name === 'string' ? req.query.name.slice(0, 255) : req.worker.name;
+  fastify.post('/workers/jobs', async (req, reply) => {
+    const body = req.body ?? {};
+    const arches = splitList(body.arches);
+    const features = splitList(body.features);
+    const name = typeof body.name === 'string' ? body.name.slice(0, 255) : req.worker.name;
 
     const job = await scheduler.claim({
       arches,
@@ -105,18 +106,18 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
           // The tree comes from the conductor, so a worker never needs
           // credentials for the repository and cannot reach any commit
           // other than the one it was given work for.
-          source: `${base}/api/workers/jobs/${encodeURIComponent(job.id)}/source.tar.gz`,
-          log: `${base}/api/workers/jobs/${encodeURIComponent(job.id)}/log`,
-          artifact: `${base}/api/workers/jobs/${encodeURIComponent(job.id)}/artifact`,
-          heartbeat: `${base}/api/workers/jobs/${encodeURIComponent(job.id)}/heartbeat`,
-          done: `${base}/api/workers/jobs/${encodeURIComponent(job.id)}/done`,
+          source: `${base}/api/v1/workers/jobs/${encodeURIComponent(job.id)}/source.tar.gz`,
+          log: `${base}/api/v1/workers/jobs/${encodeURIComponent(job.id)}/log`,
+          artifact: `${base}/api/v1/workers/jobs/${encodeURIComponent(job.id)}/artifacts`,
+          heartbeat: `${base}/api/v1/workers/jobs/${encodeURIComponent(job.id)}/heartbeat`,
+          done: `${base}/api/v1/workers/jobs/${encodeURIComponent(job.id)}/complete`,
         },
       },
     });
   });
 
   // The tree at the job's commit, as a gzipped tar.
-  fastify.get('/jobs/:id/source.tar.gz', async (req, reply) => {
+  fastify.get('/workers/jobs/:id/source.tar.gz', async (req, reply) => {
     const job = await heldJob(req, reply);
     if (!job) return reply;
 
@@ -133,7 +134,7 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
 
   // Append to the live log. X-Log-Offset makes a retry after a dropped
   // connection safe.
-  fastify.post('/jobs/:id/log', { bodyLimit: LOG_CHUNK_LIMIT }, async (req, reply) => {
+  fastify.post('/workers/jobs/:id/log', { bodyLimit: LOG_CHUNK_LIMIT }, async (req, reply) => {
     const job = await heldJob(req, reply);
     if (!job) return reply;
 
@@ -195,7 +196,7 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
 
   // Upload one artifact. The path is worker supplied, so it is sanitized
   // before it can influence a storage key.
-  fastify.post('/jobs/:id/artifact', async (req, reply) => {
+  fastify.post('/workers/jobs/:id/artifacts', async (req, reply) => {
     const job = await heldJob(req, reply);
     if (!job) return reply;
 
@@ -252,7 +253,7 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
   });
 
   // Keeps the job alive, and is how a worker learns it should stop.
-  fastify.post('/jobs/:id/heartbeat', async (req, reply) => {
+  fastify.post('/workers/jobs/:id/heartbeat', async (req, reply) => {
     const result = await scheduler.heartbeat(req.params.id, req.worker.id);
     if (!result.known) return reply.code(404).send({ error: 'unknown job for this worker' });
     return reply.send({ cancelled: result.cancelled, state: result.state });
@@ -260,7 +261,7 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
 
   // Report the outcome. The log is copied to storage here, whatever the
   // result, so a failed job keeps its output.
-  fastify.post('/jobs/:id/done', async (req, reply) => {
+  fastify.post('/workers/jobs/:id/complete', async (req, reply) => {
     const job = await heldJob(req, reply);
     if (!job) return reply;
 
@@ -297,6 +298,6 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
 }
 
 function splitList(value) {
-  if (typeof value !== 'string') return [];
-  return value.split(',').map((s) => s.trim()).filter(Boolean).slice(0, 64);
+  const items = Array.isArray(value) ? value : typeof value === 'string' ? value.split(',') : [];
+  return items.map((s) => String(s).trim()).filter(Boolean).slice(0, 64);
 }

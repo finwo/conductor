@@ -38,7 +38,7 @@ async function addUser(h, admin, username, role = 'viewer') {
     headers: { 'content-type': 'application/json' },
     payload: JSON.stringify({ username, password: `${username}-password` }),
   });
-  return { user, headers: { authorization: `Bearer ${login.json().token}` } };
+  return { user, headers: { cookie: login.headers['set-cookie'].split(';')[0] } };
 }
 
 const runIds = (res) => res.json().runs.map((r) => r.id);

@@ -129,7 +129,7 @@ export function jobPage({ job, artifacts, log }) {
       <h3>artifacts</h3>
       <table><tbody>
         ${artifacts.map((a) => html`<tr>
-          <td><a href="/api/artifacts/${a.id}">${a.path}</a></td>
+          <td><a href="/api/v1/projects/${job.project_id}/runs/${job.run_id}/jobs/${job.id}/artifacts/${a.id}">${a.path}</a></td>
           <td class="muted">${a.size} bytes</td>
           <td class="mono muted">${a.sha256.slice(0, 12)}</td>
         </tr>`)}
@@ -146,18 +146,7 @@ export function jobLog(job, log) {
 
 // --- login ---
 
-export function loginPage({ error, localLogin, issuer }) {
-  if (!localLogin) {
-    return html`<div class="center">
-      <div class="panel narrow">
-        <h2>Sign in</h2>
-        <p>This conductor authenticates through your identity provider.</p>
-        <p class="muted mono">${issuer}</p>
-        <p class="muted">Obtain a token from the provider and send it as a bearer token.</p>
-      </div>
-    </div>`;
-  }
-
+export function loginPage({ error }) {
   return html`<div class="center">
     <div class="panel narrow">
       <h2>Sign in</h2>

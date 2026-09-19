@@ -19,6 +19,7 @@ import {
 import { canManageProject, canViewProject, VISIBILITIES } from '../../lib/projects.js';
 import { canManageWorker } from '../../lib/workers.js';
 import { issueToken, sessionCookie, clearedCookie } from '../../lib/auth/index.js';
+import { createState, verifyState } from '../../lib/auth/state.js';
 import { PipelineError, DEFAULT_WORKDIR } from '../../lib/pipeline/index.js';
 
 const LOG_TAIL_BYTES = 256 * 1024;
@@ -26,6 +27,7 @@ const LOG_TAIL_BYTES = 256 * 1024;
 export default async function uiRoutes(fastify, services) {
   const { cfg, db, auth, users, projects, workerTokens, variables, logs, scheduler } = services;
   const secure = cfg.server.public_url.startsWith('https://');
+  const oidcRedirectUri = `${cfg.server.public_url.replace(/\/+$/, '')}/oidc/callback`;
 
   // Forms post urlencoded bodies; htmx hx-vals posts json.
   fastify.addContentTypeParser(
@@ -44,15 +46,57 @@ export default async function uiRoutes(fastify, services) {
   }
 
   function page(reply, { title, user, body, active }) {
-    return send(reply, layout({ title, user, body, active }));
+    return send(reply, layout({ title, user, body, active, localLogin: auth.localLogin }));
   }
 
   const viewer = (req) => auth.identify(req).catch(() => null);
 
-  // A signed in user, or a redirect to the sign in page.
+  // Only a path on this conductor, so a crafted link cannot bounce someone
+  // to another site after signing in.
+  function safeReturnTo(value) {
+    if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//')) return '/';
+    return value;
+  }
+
+  // Where to send the browser to sign in, with the page to come back to
+  // carried in the signed state.
+  function beginOidcLogin(returnTo) {
+    const state = createState(cfg.auth.session_secret, safeReturnTo(returnTo));
+    return auth.oidc.authorizationUrl({ redirectUri: oidcRedirectUri, state });
+  }
+
+  function signInError(reply, message) {
+    return page(reply, {
+      title: 'sign in',
+      user: null,
+      body: html`<div class="center"><div class="panel narrow">
+        <h2>Sign in</h2>
+        <p class="error">${message}</p>
+        <p><a href="/login">Try again</a></p>
+      </div></div>`,
+    });
+  }
+
+  // A signed in user, or a redirect to sign in. With OIDC that means the
+  // provider; otherwise the built-in sign in page.
   async function required(req, reply) {
     const user = await viewer(req);
     if (user) return user;
+
+    if (auth.oidc) {
+      let url;
+      try {
+        url = await beginOidcLogin(req.url);
+      } catch {
+        reply.code(502);
+        signInError(reply, 'The identity provider could not be reached. Try again shortly.');
+        return null;
+      }
+      if (req.headers['hx-request']) reply.header('hx-redirect', url).code(204).send();
+      else reply.redirect(url, 302);
+      return null;
+    }
+
     if (req.headers['hx-request']) reply.header('hx-redirect', '/login').code(204).send();
     else reply.redirect('/login', 302);
     return null;
@@ -274,11 +318,71 @@ export default async function uiRoutes(fastify, services) {
   fastify.get('/login', async (req, reply) => {
     const user = await viewer(req);
     if (user) return reply.redirect('/', 302);
+
+    // With the provider in charge, asking for the sign in page is asking to
+    // sign in there.
+    if (auth.oidc) {
+      try {
+        const to = typeof req.query.redirect === 'string' ? req.query.redirect : '/';
+        return reply.redirect(await beginOidcLogin(to), 302);
+      } catch {
+        reply.code(502);
+        return signInError(reply, 'The identity provider could not be reached. Try again shortly.');
+      }
+    }
+
     return page(reply, {
       title: 'sign in',
       user: null,
-      body: loginPage({ localLogin: auth.localLogin, issuer: cfg.auth.oidc.issuer }),
+      body: loginPage({}),
     });
+  });
+
+  // The provider sends the browser back here with an authorization code.
+  fastify.get('/oidc/callback', async (req, reply) => {
+    if (typeof req.query.error === 'string') {
+      reply.code(400);
+      return signInError(reply, `The provider refused the sign in: ${req.query.error}`);
+    }
+
+    const state = auth.oidc ? verifyState(cfg.auth.session_secret, String(req.query.state ?? '')) : null;
+    if (!state) {
+      reply.code(400);
+      return signInError(reply, 'This sign in did not start here, or took too long. Try again.');
+    }
+
+    try {
+      const tokens = await auth.oidc.exchangeCode({
+        code: String(req.query.code ?? ''),
+        redirectUri: oidcRedirectUri,
+      });
+      if (typeof tokens.id_token !== 'string') {
+        throw new Error('the token response contained no id_token');
+      }
+
+      const profile = await auth.oidc.verify(tokens.id_token);
+      const account = await users.upsertExternal({
+        externalId: `${profile.issuer}|${profile.subject}`,
+        username: profile.username,
+        role: profile.role,
+      });
+      if (account.disabled === 1) {
+        reply.code(403);
+        return signInError(reply, 'This account is disabled.');
+      }
+
+      // The id_token is the session. Every later request re-verifies it, so
+      // a role revoked at the provider takes effect at once.
+      const ttl = Number.isInteger(tokens.expires_in) && tokens.expires_in > 0
+        ? tokens.expires_in
+        : cfg.auth.session_ttl;
+      reply.header('set-cookie', sessionCookie(tokens.id_token, { ttl, secure }));
+      return reply.redirect(state.url, 302);
+    } catch (e) {
+      req.log.error?.(`oidc callback failed: ${e.message}`);
+      reply.code(400);
+      return signInError(reply, 'Sign in failed. Please try again.');
+    }
   });
 
   fastify.post('/login', async (req, reply) => {
@@ -289,7 +393,7 @@ export default async function uiRoutes(fastify, services) {
     const user = await users.authenticate(String(username ?? ''), String(password ?? ''));
     if (!user) {
       return reply.code(401).header('content-type', 'text/html; charset=utf-8')
-        .send(toHtml(loginPage({ error: 'Invalid username or password.', localLogin: true })));
+        .send(toHtml(loginPage({ error: 'Invalid username or password.' })));
     }
 
     const ttl = cfg.auth.session_ttl;
@@ -300,6 +404,19 @@ export default async function uiRoutes(fastify, services) {
 
   fastify.post('/logout', async (req, reply) => {
     reply.header('set-cookie', clearedCookie());
+
+    // End the provider session too, so signing out is not immediately
+    // undone by a silent re-login on the next visit.
+    if (auth.oidc) {
+      try {
+        const url = await auth.oidc.endSessionUrl({
+          postLogoutRedirectUri: cfg.server.public_url.replace(/\/+$/, ''),
+        });
+        if (url) return refresh(reply, url);
+      } catch {
+        // The provider is unreachable; the local session is still gone.
+      }
+    }
     return refresh(reply, '/');
   });
 
@@ -370,7 +487,7 @@ export default async function uiRoutes(fastify, services) {
         project,
         user,
         variables: await variables.list(project.id),
-        triggerUrl: `${cfg.server.public_url.replace(/\/+$/, '')}/api/trigger/${project.id}`,
+        triggerUrl: `${cfg.server.public_url.replace(/\/+$/, '')}/api/v1/projects/${project.id}/trigger`,
         secret,
         // What an empty field falls back to, so the form can say so
         // rather than looking unset.

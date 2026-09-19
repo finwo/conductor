@@ -44,21 +44,20 @@ auth:
   # everyone out on restart, so set it in production.
   session_secret: null
   session_ttl: 43200
-  # Setting an issuer switches admin authentication to OIDC. Built-in
-  # accounts are used when it is unset.
+  # Setting a discovery url switches authentication to OIDC. Built-in
+  # accounts are used when it is unset. Everything else about the provider,
+  # including its issuer and every endpoint, is read from this document.
   oidc:
-    issuer: null
-    audience: null
+    discovery_url: null
+    # The client this conductor is registered as. The redirect uri to
+    # register is <server.public_url>/oidc/callback.
+    client_id: null
+    # Only for a confidential client; leave unset for a public one.
+    client_secret: null
+    scopes: openid profile email
     admin_role: conductor-admin
-    # Found through the issuer's discovery document. Set this only for a
-    # provider that does not publish one.
-    jwks_uri: null
-  # With OIDC configured, built-in accounts stop being accepted. Set this to
-  # keep one as a break-glass login, for example while the provider is being
-  # set up. Ignored when OIDC is not in use.
-  allow_local_login: false
-  # Created on first boot, only while the users table is empty. With no
-  # password set, one is generated and written to the log once.
+  # Created on first boot, only while the users table is empty, and only
+  # without OIDC. With no password set, one is generated and logged once.
   bootstrap_admin:
     username: admin
     password: null

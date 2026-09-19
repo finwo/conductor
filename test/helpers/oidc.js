@@ -12,6 +12,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import crypto from 'node:crypto';
 import { reapStale } from './containers.js';
+import { SESSION_COOKIE } from '../../src/lib/auth/token.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -114,7 +115,7 @@ export async function startOidc() {
   const issuer = `http://127.0.0.1:${port}/${ISSUER_ID}`;
 
   const config = {
-    interactiveLogin: false,
+    interactiveLogin: true,
     tokenCallbacks: [{
       issuerId: ISSUER_ID,
       requestMappings: Object.entries(PERSONAS).map(([scope, claims]) => ({
@@ -182,9 +183,27 @@ export async function startOidc() {
       return (await res.json()).access_token;
     },
 
-    // Bearer headers for a persona.
+    // A session cookie for a persona, as the browser would carry after
+    // signing in. The conductor accepts no other credential.
     async headers(persona) {
-      return { authorization: `Bearer ${await this.token(persona)}` };
+      return { cookie: `${SESSION_COOKIE}=${await this.token(persona)}` };
+    },
+
+    // Completes the authorization code flow for a URL the conductor built,
+    // by submitting the provider's login form with the given claims. Returns
+    // the redirect the provider hands back to the callback.
+    async signIn(authorizationUrl, { username = 'alice', claims = {} } = {}) {
+      const body = new URLSearchParams({ username });
+      if (Object.keys(claims).length > 0) body.set('claims', JSON.stringify(claims));
+
+      const res = await fetch(authorizationUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body,
+        redirect: 'manual',
+      });
+      if (res.status !== 302) throw new Error(`provider login did not redirect: ${res.status}`);
+      return res.headers.get('location');
     },
 
     async stop() {

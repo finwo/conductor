@@ -130,7 +130,7 @@ compose up -d worker >/dev/null 2>&1
 log "triggering a run"
 BODY=$(printf '{"sha":"%s","ref":"refs/heads/main"}' "${SHA}")
 SIG=$(printf '%s' "${BODY}" | openssl dgst -sha256 -hmac "${SECRET}" | sed 's/^.*[= ]//')
-RESPONSE=$(curl -fsS -X POST "http://127.0.0.1:${PORT}/api/trigger/demo" \
+RESPONSE=$(curl -fsS -X POST "http://127.0.0.1:${PORT}/api/v1/projects/demo/trigger" \
   -H 'Content-Type: application/json' \
   -H "X-Hub-Signature-256: sha256=${SIG}" \
   -d "${BODY}")
@@ -139,11 +139,18 @@ printf '%s\n' "${RESPONSE}"
 RUN=$(printf '%s' "${RESPONSE}" | sed 's/.*"run_id":"\([^"]*\)".*/\1/')
 [ -n "${RUN}" ] || fail "no run was created"
 
+# The run state is the first badge on the run page. There is no read API;
+# the interface is the only place to see it.
+run_state() {
+  curl -fsS "http://127.0.0.1:${PORT}/runs/$1" \
+    | sed -n 's/.*class="badge \([a-z]*\)".*/\1/p' | head -1
+}
+
 log "waiting for the run to finish"
 STATE_NOW=
 i=0
 while [ "${i}" -lt 90 ]; do
-  STATE_NOW=$(curl -fsS "http://127.0.0.1:${PORT}/api/runs/${RUN}" | sed 's/.*"state":"\([^"]*\)".*/\1/')
+  STATE_NOW=$(run_state "${RUN}")
   case "${STATE_NOW}" in
     success|failed|cancelled) break ;;
   esac
@@ -161,15 +168,14 @@ log "checking the log and the artifact"
 JOB="${RUN}:build"
 ENCODED=$(printf '%s' "${JOB}" | sed 's/:/%3A/g')
 
-LOG=$(curl -fsS "http://127.0.0.1:${PORT}/api/jobs/${ENCODED}/log")
-printf '%s\n' "${LOG}"
-printf '%s' "${LOG}" | grep -q 'run 1 of demo' || fail "the job environment did not reach the script"
+PAGE=$(curl -fsS "http://127.0.0.1:${PORT}/jobs/${ENCODED}")
+printf '%s\n' "${PAGE}" | grep -q 'run 1 of demo' || fail "the job environment did not reach the script"
 
-ARTIFACT=$(curl -fsS "http://127.0.0.1:${PORT}/api/jobs/${ENCODED}" \
-  | sed 's/.*"artifacts":\[{"id":"\([^"]*\)".*/\1/')
-[ -n "${ARTIFACT}" ] || fail "no artifact was recorded"
+ARTIFACT_PATH=$(printf '%s' "${PAGE}" \
+  | sed -n 's#.*href="\(/api/v1/[^"]*/artifacts/[^"]*\)".*#\1#p' | head -1)
+[ -n "${ARTIFACT_PATH}" ] || fail "no artifact was recorded"
 
-CONTENT=$(curl -fsSL "http://127.0.0.1:${PORT}/api/artifacts/${ARTIFACT}")
+CONTENT=$(curl -fsSL "http://127.0.0.1:${PORT}${ARTIFACT_PATH}")
 printf 'artifact contents: %s\n' "${CONTENT}"
 [ "${CONTENT}" = packaged ] || fail "the artifact did not round trip"
 
@@ -182,7 +188,7 @@ curl -fsS "http://127.0.0.1:${PORT}/" | grep -q 'conductor' || fail "the interfa
 log "checking that a branch push leaves the restricted job out"
 BRANCH_BODY=$(printf '{"sha":"%s","ref":"refs/heads/feature"}' "${SHA}")
 BRANCH_SIG=$(printf '%s' "${BRANCH_BODY}" | openssl dgst -sha256 -hmac "${SECRET}" | sed 's/^.*[= ]//')
-BRANCH=$(curl -fsS -X POST "http://127.0.0.1:${PORT}/api/trigger/demo" \
+BRANCH=$(curl -fsS -X POST "http://127.0.0.1:${PORT}/api/v1/projects/demo/trigger" \
   -H 'Content-Type: application/json' \
   -H "X-Hub-Signature-256: sha256=${BRANCH_SIG}" \
   -d "${BRANCH_BODY}")
@@ -194,7 +200,7 @@ printf '%s' "${BRANCH}" | grep -q '"jobs":2' \
 BRANCH_RUN=$(printf '%s' "${BRANCH}" | sed 's/.*"run_id":"\([^"]*\)".*/\1/')
 i=0
 while [ "${i}" -lt 90 ]; do
-  BRANCH_STATE=$(curl -fsS "http://127.0.0.1:${PORT}/api/runs/${BRANCH_RUN}" | sed 's/.*"state":"\([^"]*\)".*/\1/')
+  BRANCH_STATE=$(run_state "${BRANCH_RUN}")
   case "${BRANCH_STATE}" in
     success|failed|cancelled) break ;;
   esac
@@ -202,7 +208,7 @@ while [ "${i}" -lt 90 ]; do
   sleep 1
 done
 
-curl -fsS "http://127.0.0.1:${PORT}/api/runs/${BRANCH_RUN}" | grep -q '"release"' \
+curl -fsS "http://127.0.0.1:${PORT}/runs/${BRANCH_RUN}" | grep -q '>release<' \
   && fail "the release job should not exist on a branch run"
 
 printf 'branch run finished as %s without the release job\n' "${BRANCH_STATE}"

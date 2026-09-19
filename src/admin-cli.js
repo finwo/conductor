@@ -20,9 +20,8 @@
 //   node src/admin-cli.js run:trigger <project> <sha> [--ref r] [--base b]
 //   node src/admin-cli.js run:cancel <run-id>
 //
-// Everything here is also available over HTTP under /api/admin. This runs
-// against the database directly, so it works before the first account
-// exists and when the server is down.
+// This runs against the database directly, so it works before the first
+// account exists and when the server is down.
 
 import crypto from 'node:crypto';
 import { loadConfig } from './lib/config.js';
@@ -126,7 +125,7 @@ try {
       console.log(`created project ${project.id}`);
       console.log(`  repository:  ${project.repo_url}`);
       console.log(`  pipeline:    ${project.config_path}`);
-      console.log(`  trigger url: ${cfg.server.public_url.replace(/\/+$/, '')}/api/trigger/${project.id}`);
+      console.log(`  trigger url: ${cfg.server.public_url.replace(/\/+$/, '')}/api/v1/projects/${project.id}/trigger`);
       console.log(`  secret:      ${secret}`);
       break;
     }

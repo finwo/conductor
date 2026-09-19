@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { hashPassword, verifyPassword, validatePassword, generatePassword } from '../src/lib/auth/password.js';
 import { issueToken, verifyToken, parseCookies, sessionCookie, SESSION_COOKIE } from '../src/lib/auth/token.js';
+import { createState, verifyState } from '../src/lib/auth/state.js';
 import { collectRoles } from '../src/lib/auth/oidc.js';
 import { maskBuffer } from '../src/lib/variables.js';
 
@@ -94,6 +95,28 @@ test('cookies are parsed and issued', () => {
   assert.ok(header.includes('Secure'));
   assert.ok(header.includes('Max-Age=60'));
   assert.ok(!sessionCookie('tok', { secure: false }).includes('Secure'));
+});
+
+test('the oidc login state round trips with its return path', () => {
+  const now = 1_700_000_000_000;
+  const state = createState('secret', '/projects?tab=1', { now });
+  assert.deepEqual(verifyState('secret', state, { now }), { iat: 1_700_000_000, url: '/projects?tab=1' });
+});
+
+test('a missing return path means the root', () => {
+  const state = createState('secret', undefined, { now: 1000 });
+  assert.deepEqual(verifyState('secret', state, { now: 1000 }), { iat: 1, url: '/' });
+});
+
+test('the oidc login state is refused when forged, stale or off-site', () => {
+  const now = 1_700_000_000_000;
+  const state = createState('secret', '/', { now });
+
+  assert.equal(verifyState('other-secret', state, { now }), null, 'a wrong secret');
+  assert.equal(verifyState('secret', `${state}x`, { now }), null, 'a tampered signature');
+  assert.equal(verifyState('secret', state, { now: now + 301_000 }), null, 'older than five minutes');
+  assert.equal(verifyState('secret', 'garbage', { now }), null, 'malformed');
+  assert.equal(verifyState('secret', createState('secret', '//evil.example', { now }), { now }), null, 'off-site');
 });
 
 test('oidc roles are collected from the usual claim shapes', () => {

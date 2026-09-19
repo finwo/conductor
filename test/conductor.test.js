@@ -7,6 +7,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { startHarness } from './helpers/harness.js';
 
+// Tests that exercised the JSON read API, which has been removed. Kept
+// until the suite is rebuilt against the interface.
+const apiGone = { skip: 'the JSON API was removed' };
+
 // Each test gets its own harness so that ordering never matters.
 async function withHarness(options, fn) {
   const h = await startHarness(options);
@@ -21,9 +25,21 @@ function jobsByName(payload) {
   return Object.fromEntries(payload.jobs.map((j) => [j.name, j]));
 }
 
+// Reads a run and its jobs straight from the database. There is no read API;
+// the interface is for people, and the tests inspect the data itself.
 async function runState(h, runId) {
-  const res = await h.app.inject({ method: 'GET', url: `/api/runs/${runId}` });
-  return res.json();
+  const run = await h.services.db.get('SELECT * FROM runs WHERE id = {id}', { id: runId });
+  const jobs = await h.services.db.all(
+    'SELECT * FROM jobs WHERE run_id = {run} ORDER BY name', { run: runId }
+  );
+  const deps = await h.services.db.all(
+    `SELECT d.job_id, d.depends_on_id FROM job_deps d
+       JOIN jobs j ON j.id = d.job_id WHERE j.run_id = {run}`,
+    { run: runId }
+  );
+  const needs = new Map(jobs.map((j) => [j.id, []]));
+  for (const d of deps) needs.get(d.job_id)?.push(d.depends_on_id);
+  return { run, jobs: jobs.map((j) => ({ ...j, needs: needs.get(j.id) ?? [] })) };
 }
 
 // Claims everything currently eligible for a worker with the given
@@ -47,7 +63,7 @@ async function claimNamed(h, name, query) {
 async function finish(h, jobId, { success = true, exitCode = 0, error = null } = {}) {
   const res = await h.app.inject({
     method: 'POST',
-    url: `/api/workers/jobs/${encodeURIComponent(jobId)}/done`,
+    url: `/api/v1/workers/jobs/${encodeURIComponent(jobId)}/complete`,
     headers: { ...h.auth, 'content-type': 'application/json' },
     payload: JSON.stringify({ success, exit_code: exitCode, error }),
   });
@@ -90,7 +106,7 @@ test('an unsigned or wrongly signed trigger is refused', async () => {
   await withHarness({}, async (h) => {
     const unsigned = await h.app.inject({
       method: 'POST',
-      url: '/api/trigger/demo',
+      url: '/api/v1/projects/demo/trigger',
       headers: { 'content-type': 'application/json' },
       payload: JSON.stringify({ sha: h.sha }),
     });
@@ -149,11 +165,11 @@ test('a missing pipeline file is reported clearly', async () => {
 
 test('the worker api rejects missing and invalid tokens', async () => {
   await withHarness({}, async (h) => {
-    const none = await h.app.inject({ method: 'GET', url: '/api/workers/poll' });
+    const none = await h.app.inject({ method: 'POST', url: '/api/v1/workers/jobs' });
     assert.equal(none.statusCode, 401);
 
     const bad = await h.app.inject({
-      method: 'GET', url: '/api/workers/poll', headers: { authorization: 'Bearer nope' },
+      method: 'POST', url: '/api/v1/workers/jobs', headers: { authorization: 'Bearer nope' },
     });
     assert.equal(bad.statusCode, 401);
   });
@@ -221,7 +237,7 @@ test('a claimed job carries everything the worker needs', async () => {
     assert.deepEqual(job.script, ['./build.sh $ARCH']);
     assert.equal(job.env.ARCH, 'x86_64');
     assert.equal(job.sha, h.sha);
-    assert.match(job.endpoints.source, /^http:\/\/conductor\.test\/api\/workers\/jobs\//);
+    assert.match(job.endpoints.source, /^http:\/\/conductor\.test\/api\/v1\/workers\/jobs\//);
     assert.ok(job.endpoints.source.endsWith('/source.tar.gz'));
     assert.ok(job.endpoints.log.endsWith('/log'));
 
@@ -268,7 +284,7 @@ test('the source tarball is served from the mirror', async () => {
 
     const res = await h.app.inject({
       method: 'GET',
-      url: `/api/workers/jobs/${encodeURIComponent(job.id)}/source.tar.gz`,
+      url: `/api/v1/workers/jobs/${encodeURIComponent(job.id)}/source.tar.gz`,
       headers: h.auth,
     });
     assert.equal(res.statusCode, 200);
@@ -287,7 +303,7 @@ test('a worker cannot touch a job it does not hold', async () => {
     const other = await h.services.workerTokens.create('intruder');
     const res = await h.app.inject({
       method: 'POST',
-      url: `/api/workers/jobs/${encodeURIComponent(job.id)}/log`,
+      url: `/api/v1/workers/jobs/${encodeURIComponent(job.id)}/log`,
       headers: { authorization: `Bearer ${other.token}`, 'content-type': 'application/octet-stream' },
       payload: Buffer.from('malicious'),
     });
@@ -299,7 +315,7 @@ test('log appends are resumable and deduplicated by offset', async () => {
   await withHarness({}, async (h) => {
     await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
     const job = await claimNamed(h, 'lint', {});
-    const url = `/api/workers/jobs/${encodeURIComponent(job.id)}/log`;
+    const url = `/api/v1/workers/jobs/${encodeURIComponent(job.id)}/log`;
     const headers = { ...h.auth, 'content-type': 'application/octet-stream' };
 
     const first = await h.app.inject({
@@ -320,15 +336,12 @@ test('log appends are resumable and deduplicated by offset', async () => {
     assert.equal(gap.statusCode, 409);
     assert.equal(gap.json().expected_offset, 12);
 
-    const tail = await h.app.inject({ method: 'GET', url: `/api/jobs/${encodeURIComponent(job.id)}/log` });
-    assert.equal(tail.body, 'hello\nworld\n');
-    assert.equal(tail.headers['x-log-size'], '12');
-    assert.equal(tail.headers['x-log-complete'], 'false');
+    const tail = await h.services.logs.read(job.run_id, job.id, { offset: 0, limit: 1024 });
+    assert.equal(tail.data.toString('utf8'), 'hello\nworld\n');
+    assert.equal(tail.size, 12);
 
-    const partial = await h.app.inject({
-      method: 'GET', url: `/api/jobs/${encodeURIComponent(job.id)}/log?offset=6`,
-    });
-    assert.equal(partial.body, 'world\n');
+    const partial = await h.services.logs.read(job.run_id, job.id, { offset: 6, limit: 1024 });
+    assert.equal(partial.data.toString('utf8'), 'world\n');
   });
 });
 
@@ -341,7 +354,7 @@ test('an oversized log chunk is refused', async () => {
     // buffered, so it has to be bounded or a worker can exhaust memory.
     const res = await h.app.inject({
       method: 'POST',
-      url: `/api/workers/jobs/${encodeURIComponent(job.id)}/log`,
+      url: `/api/v1/workers/jobs/${encodeURIComponent(job.id)}/log`,
       headers: { ...h.auth, 'content-type': 'application/octet-stream' },
       payload: Buffer.alloc(2 * 1024 * 1024, 0x41),
     });
@@ -358,16 +371,18 @@ test('a finished log moves to storage and is still readable', async () => {
 
     await h.app.inject({
       method: 'POST',
-      url: `/api/workers/jobs/${encodeURIComponent(job.id)}/log`,
+      url: `/api/v1/workers/jobs/${encodeURIComponent(job.id)}/log`,
       headers: { ...h.auth, 'content-type': 'application/octet-stream' },
       payload: Buffer.from('compiling\ndone\n'),
     });
     await finish(h, job.id, { success: true });
 
-    const tail = await h.app.inject({ method: 'GET', url: `/api/jobs/${encodeURIComponent(job.id)}/log` });
-    assert.equal(tail.statusCode, 200);
-    assert.equal(tail.body, 'compiling\ndone\n');
-    assert.equal(tail.headers['x-log-complete'], 'true');
+    const row = await h.services.db.get('SELECT log_key FROM jobs WHERE id = {id}', { id: job.id });
+    assert.ok(row.log_key, 'the log should have moved to storage');
+    const object = await h.services.storage.get(row.log_key);
+    const parts = [];
+    for await (const part of object.stream) parts.push(part);
+    assert.equal(Buffer.concat(parts).toString('utf8'), 'compiling\ndone\n');
   });
 });
 
@@ -378,7 +393,7 @@ test('artifacts are stored, hashed, and stripped of traversal', async () => {
 
     const upload = await h.app.inject({
       method: 'POST',
-      url: `/api/workers/jobs/${encodeURIComponent(job.id)}/artifact`,
+      url: `/api/v1/workers/jobs/${encodeURIComponent(job.id)}/artifacts`,
       headers: {
         ...h.auth,
         'content-type': 'application/octet-stream',
@@ -393,11 +408,15 @@ test('artifacts are stored, hashed, and stripped of traversal', async () => {
     assert.equal(body.size, 14);
     assert.match(body.sha256, /^[0-9a-f]{64}$/);
 
-    const detail = await h.app.inject({ method: 'GET', url: `/api/jobs/${encodeURIComponent(job.id)}` });
-    const artifacts = detail.json().artifacts;
+    const artifacts = await h.services.db.all(
+      'SELECT id FROM artifacts WHERE job_id = {job}', { job: job.id }
+    );
     assert.equal(artifacts.length, 1);
 
-    const download = await h.app.inject({ method: 'GET', url: `/api/artifacts/${artifacts[0].id}` });
+    const download = await h.app.inject({
+      method: 'GET',
+      url: `/api/v1/projects/${job.project_id}/runs/${job.run_id}/jobs/${encodeURIComponent(job.id)}/artifacts/${artifacts[0].id}`,
+    });
     assert.equal(download.statusCode, 200);
     assert.equal(download.body, 'artifact bytes');
   });
@@ -410,7 +429,7 @@ test('an artifact shorter than its content-length is rejected', async () => {
 
     const res = await h.app.inject({
       method: 'POST',
-      url: `/api/workers/jobs/${encodeURIComponent(job.id)}/artifact`,
+      url: `/api/v1/workers/jobs/${encodeURIComponent(job.id)}/artifacts`,
       headers: {
         ...h.auth,
         'content-type': 'application/octet-stream',
@@ -565,7 +584,7 @@ test('heartbeats keep a job alive and report cancellation', async () => {
 
     const beat = await h.app.inject({
       method: 'POST',
-      url: `/api/workers/jobs/${encodeURIComponent(job.id)}/heartbeat`,
+      url: `/api/v1/workers/jobs/${encodeURIComponent(job.id)}/heartbeat`,
       headers: { ...h.auth, 'content-type': 'application/json' },
       payload: '{}',
     });
@@ -575,7 +594,7 @@ test('heartbeats keep a job alive and report cancellation', async () => {
 
     const after = await h.app.inject({
       method: 'POST',
-      url: `/api/workers/jobs/${encodeURIComponent(job.id)}/heartbeat`,
+      url: `/api/v1/workers/jobs/${encodeURIComponent(job.id)}/heartbeat`,
       headers: { ...h.auth, 'content-type': 'application/json' },
       payload: '{}',
     });
@@ -623,7 +642,7 @@ test('a second push produces an independent, numbered run', async () => {
   });
 });
 
-test('runs can be listed and filtered by project', async () => {
+test('runs can be listed and filtered by project', apiGone, async () => {
   await withHarness({}, async (h) => {
     await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
 
@@ -638,7 +657,7 @@ test('runs can be listed and filtered by project', async () => {
   });
 });
 
-test('unknown runs, jobs and artifacts return 404', async () => {
+test('unknown runs, jobs and artifacts return 404', apiGone, async () => {
   await withHarness({}, async (h) => {
     for (const url of ['/api/runs/nope', '/api/jobs/nope', '/api/jobs/nope/log', '/api/artifacts/nope']) {
       const res = await h.app.inject({ method: 'GET', url });
@@ -659,7 +678,7 @@ test('a trigger for an unknown project is a 404', async () => {
   await withHarness({}, async (h) => {
     const res = await h.app.inject({
       method: 'POST',
-      url: '/api/trigger/absent',
+      url: '/api/v1/projects/absent/trigger',
       headers: { 'content-type': 'application/json' },
       payload: JSON.stringify({ sha: h.sha }),
     });

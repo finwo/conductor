@@ -7,8 +7,8 @@
 //
 // Two capabilities switch on automatically when configured, and fall back
 // otherwise:
-//   storage.s3.bucket set  -> S3 object storage, else local filesystem
-//   auth.oidc.issuer set   -> OIDC bearer auth, else built-in user accounts
+//   storage.s3.bucket set       -> S3 object storage, else local filesystem
+//   auth.oidc.discovery_url set -> OIDC, else built-in user accounts
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -49,17 +49,14 @@ const DEFAULTS = {
     // invalidates existing sessions on restart.
     session_secret: null,
     session_ttl: 43200,
-    // When OIDC is configured, built-in accounts stop being accepted unless
-    // this is set. Turning on OIDC should not quietly leave a second way in,
-    // but a deployment may want one deliberately as a break-glass account.
-    allow_local_login: false,
     oidc: {
-      issuer: null,
-      audience: null,
+      // The provider's OpenID configuration document. Its issuer and every
+      // endpoint are read from here rather than configured separately.
+      discovery_url: null,
+      client_id: null,
+      client_secret: null,
+      scopes: 'openid profile email',
       admin_role: 'conductor-admin',
-      // Normally found through the issuer's discovery document. Set only
-      // for a provider that does not publish one.
-      jwks_uri: null,
     },
     // Created on first boot when the users table is empty.
     bootstrap_admin: {
@@ -130,10 +127,11 @@ const ENV_MAP = [
   ['CONDUCTOR_S3_SECRET_ACCESS_KEY', 'storage.s3.secret_access_key', String],
   ['CONDUCTOR_S3_FORCE_PATH_STYLE',  'storage.s3.force_path_style', toBool],
   ['CONDUCTOR_SESSION_SECRET',       'auth.session_secret',         String],
-  ['CONDUCTOR_OIDC_ISSUER',          'auth.oidc.issuer',            String],
-  ['CONDUCTOR_OIDC_AUDIENCE',        'auth.oidc.audience',          String],
+  ['CONDUCTOR_OIDC_DISCOVERY_URL',   'auth.oidc.discovery_url',     String],
+  ['CONDUCTOR_OIDC_CLIENT_ID',       'auth.oidc.client_id',         String],
+  ['CONDUCTOR_OIDC_CLIENT_SECRET',   'auth.oidc.client_secret',     String],
+  ['CONDUCTOR_OIDC_SCOPES',          'auth.oidc.scopes',            String],
   ['CONDUCTOR_OIDC_ADMIN_ROLE',      'auth.oidc.admin_role',        String],
-  ['CONDUCTOR_OIDC_JWKS_URI',        'auth.oidc.jwks_uri',          String],
   ['CONDUCTOR_ADMIN_USERNAME',       'auth.bootstrap_admin.username', String],
   ['CONDUCTOR_ADMIN_PASSWORD',       'auth.bootstrap_admin.password', String],
   ['CONDUCTOR_SECRET_KEY',           'secrets.encryption_key',      String],
@@ -231,12 +229,19 @@ function validate(cfg) {
     );
   }
 
-  if (cfg.auth.oidc.issuer) {
+  if (cfg.auth.oidc.discovery_url) {
     try {
-      new URL(cfg.auth.oidc.issuer);
+      new URL(cfg.auth.oidc.discovery_url);
     } catch {
-      errors.push(`auth.oidc.issuer must be an absolute URL, got ${JSON.stringify(cfg.auth.oidc.issuer)}`);
+      errors.push(
+        `auth.oidc.discovery_url must be an absolute URL, got ${JSON.stringify(cfg.auth.oidc.discovery_url)}`
+      );
     }
+    if (!cfg.auth.oidc.client_id) {
+      errors.push('auth.oidc.client_id is required when auth.oidc.discovery_url is set');
+    }
+  } else if (cfg.auth.oidc.client_id) {
+    errors.push('auth.oidc.client_id is set but auth.oidc.discovery_url is not');
   }
 
   try {
@@ -332,7 +337,7 @@ export function loadConfig(explicitPath) {
   cfg.source = source;
   cfg.database.dialect = dialectFromUrl(cfg.database.url);
   cfg.storage.driver = cfg.storage.s3.bucket ? 's3' : 'local';
-  cfg.auth.mode = cfg.auth.oidc.issuer ? 'oidc' : 'local';
+  cfg.auth.mode = cfg.auth.oidc.discovery_url ? 'oidc' : 'local';
 
   if (!cfg.auth.session_secret) {
     cfg.auth.session_secret = crypto.randomBytes(32).toString('hex');

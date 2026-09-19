@@ -58,9 +58,20 @@ test('a partial s3 configuration is rejected rather than half applied', async ()
   });
 });
 
-test('configuring an oidc issuer switches the auth mode', async () => {
-  await withEnv({ CONDUCTOR_OIDC_ISSUER: 'https://idp.example.com/realms/ci' }, () => {
+test('configuring an oidc discovery url switches the auth mode', async () => {
+  await withEnv({
+    CONDUCTOR_OIDC_DISCOVERY_URL: 'https://idp.example.com/realms/ci/.well-known/openid-configuration',
+    CONDUCTOR_OIDC_CLIENT_ID: 'conductor',
+  }, () => {
     assert.equal(loadConfig().auth.mode, 'oidc');
+  });
+});
+
+test('an oidc discovery url without a client id is rejected', async () => {
+  await withEnv({
+    CONDUCTOR_OIDC_DISCOVERY_URL: 'https://idp.example.com/realms/ci/.well-known/openid-configuration',
+  }, () => {
+    assert.throws(() => loadConfig(), /client_id is required/);
   });
 });
 

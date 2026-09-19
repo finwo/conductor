@@ -190,14 +190,7 @@ retention:
   batch: 500
 ```
 
-A project overrides any of these from its settings page, or over the API:
-
-```sh
-curl -X PATCH https://ci.example.com/api/projects/demo \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"artifact_keep_runs": 5, "log_keep_days": 30}'
-```
+A project overrides any of these from its settings page.
 
 Three values, three meanings, and the difference matters:
 
@@ -207,8 +200,8 @@ Three values, three meanings, and the difference matters:
 | `0`    | keep forever                             |
 | `n`    | keep that many runs, or that many days   |
 
-`GET /api/retention` reports the server defaults, so an interface can show
-what a `null` actually resolves to.
+The settings page shows what a `null` resolves to, since the server defaults
+are not otherwise visible there.
 
 ### How the artifact rules combine
 

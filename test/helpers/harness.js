@@ -102,16 +102,16 @@ export async function startHarness(options = {}) {
       : []),
     'auth:',
     '  session_secret: test-session-secret-not-for-real-use',
-    ...(options.oidcIssuer
+    ...(options.oidcDiscoveryUrl
       ? [
         '  oidc:',
-        `    issuer: ${options.oidcIssuer}`,
-        ...(options.oidcAudience ? [`    audience: ${options.oidcAudience}`] : []),
+        `    discovery_url: ${options.oidcDiscoveryUrl}`,
+        `    client_id: ${options.oidcClientId ?? 'conductor'}`,
+        ...(options.oidcClientSecret ? [`    client_secret: ${options.oidcClientSecret}`] : []),
+        ...(options.oidcScopes ? [`    scopes: ${options.oidcScopes}`] : []),
         ...(options.oidcAdminRole ? [`    admin_role: ${options.oidcAdminRole}`] : []),
-        ...(options.oidcJwksUri ? [`    jwks_uri: ${options.oidcJwksUri}`] : []),
       ]
       : []),
-    ...(options.allowLocalLogin ? ['  allow_local_login: true'] : []),
     '  bootstrap_admin:',
     `    username: ${options.adminUsername ?? 'admin'}`,
     `    password: ${options.adminPassword ?? 'bootstrap-password'}`,
@@ -181,37 +181,34 @@ export async function startHarness(options = {}) {
       const signature = `sha256=${crypto.createHmac('sha256', secret).update(body).digest('hex')}`;
       return app.inject({
         method: 'POST',
-        url: '/api/trigger/demo',
+        url: '/api/v1/projects/demo/trigger',
         headers: { 'content-type': 'application/json', 'x-hub-signature-256': signature },
         payload: body,
       });
     },
 
-    async poll(query = {}) {
-      const search = new URLSearchParams(query).toString();
+    async poll(body = {}) {
       return app.inject({
-        method: 'GET',
-        url: `/api/workers/poll${search ? `?${search}` : ''}`,
-        headers: this.auth,
+        method: 'POST',
+        url: '/api/v1/workers/jobs',
+        headers: { ...this.auth, 'content-type': 'application/json' },
+        payload: JSON.stringify(body),
       });
     },
 
-    // Signs in as the bootstrap administrator and returns headers that
-    // authenticate subsequent admin calls.
+    // Signs in through the interface, which is the only way in, and returns
+    // the session cookie. The interface's login form is htmx only.
     async login(username = options.adminUsername ?? 'admin', password = options.adminPassword ?? 'bootstrap-password') {
       const res = await app.inject({
         method: 'POST',
-        url: '/api/auth/login',
-        headers: { 'content-type': 'application/json' },
-        payload: JSON.stringify({ username, password }),
+        url: '/login',
+        headers: { 'hx-request': 'true', 'content-type': 'application/x-www-form-urlencoded' },
+        payload: new URLSearchParams({ username, password }).toString(),
       });
-      if (res.statusCode !== 200) {
+      if (res.statusCode !== 204) {
         throw new Error(`login failed: ${res.statusCode} ${res.body}`);
       }
-      // Only the credential. A content-type here would make every bodyless
-      // request fail JSON parsing.
-      const { token } = res.json();
-      return { authorization: `Bearer ${token}` };
+      return { cookie: res.headers['set-cookie'].split(';')[0] };
     },
 
     async stop() {

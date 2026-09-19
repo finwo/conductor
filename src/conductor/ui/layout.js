@@ -6,12 +6,14 @@
 
 import { html, raw, esc } from './html.js';
 
-export function layout({ title, user, body, active = '' }) {
+export function layout({ title, user, body, active = '', localLogin = true }) {
   const nav = [
     { href: '/', label: 'runs', key: 'runs' },
     user ? { href: '/projects', label: 'projects', key: 'projects' } : null,
     user ? { href: '/workers', label: 'workers', key: 'workers' } : null,
-    user && user.role === 'admin' ? { href: '/users', label: 'users', key: 'users' } : null,
+    // Accounts cannot sign in while the provider owns identity, so the page
+    // is kept off the nav but remains reachable by anyone who needs it.
+    user && user.role === 'admin' && localLogin ? { href: '/users', label: 'users', key: 'users' } : null,
   ].filter(Boolean);
 
   return html`<!doctype html>

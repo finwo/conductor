@@ -29,7 +29,7 @@ export default async function triggerRoutes(fastify, { projects, scheduler, logg
     }
   });
 
-  fastify.post('/:project', async (req, reply) => {
+  fastify.post('/projects/:project/trigger', async (req, reply) => {
     const project = await projects.get(req.params.project);
     if (!project) return reply.code(404).send({ error: 'unknown project' });
     if (project.enabled !== 1) return reply.code(409).send({ error: 'project is disabled' });

@@ -1,12 +1,8 @@
 // src/lib/auth/index.js - request authentication
 //
-// OIDC is used when auth.oidc.issuer is configured, built-in accounts
-// otherwise. Local logins remain available alongside OIDC only when
-// auth.allow_local_login is explicitly enabled, so that turning on OIDC does
-// not silently leave a second way in.
-//
-// A credential arrives either as a bearer token or as the session cookie
-// set at login, so the dashboard and scripts can use the same endpoints.
+// OIDC is used when auth.oidc.discovery_url is configured, built-in accounts
+// otherwise. The two do not mix: with OIDC the provider owns identity and
+// local accounts cannot sign in at all.
 
 import { verifyToken, parseCookies, SESSION_COOKIE } from './token.js';
 import { createOidc } from './oidc.js';
@@ -16,13 +12,11 @@ export { hashPassword, verifyPassword, generatePassword, validatePassword } from
 
 export function createAuth({ cfg, users, logger = console }) {
   const oidc = cfg.auth.mode === 'oidc' ? createOidc(cfg) : null;
-  const localLogin = cfg.auth.mode !== 'oidc' || cfg.auth.allow_local_login === true;
+  const localLogin = cfg.auth.mode !== 'oidc';
 
+  // The session cookie is the only credential the conductor itself accepts.
+  // Workers and triggers authenticate on their own routes.
   function credentialFrom(req) {
-    const header = req.headers.authorization;
-    if (typeof header === 'string' && header.startsWith('Bearer ')) {
-      return header.slice(7).trim();
-    }
     const cookies = parseCookies(req.headers.cookie);
     return cookies[SESSION_COOKIE] ?? null;
   }
@@ -30,6 +24,9 @@ export function createAuth({ cfg, users, logger = console }) {
   return {
     mode: cfg.auth.mode,
     localLogin,
+    // The provider client, or null for built-in accounts. The interface
+    // uses it to start the browser login and to end the provider session.
+    oidc,
 
     // Resolves a request to a user, or null. Never throws: an unparseable
     // credential is simply not authenticated.
@@ -45,7 +42,7 @@ export function createAuth({ cfg, users, logger = console }) {
           // to own anything, since projects and worker tokens reference
           // users(id). Created on first sight, refreshed after that.
           const account = await users.upsertExternal({
-            externalId: `${oidc.issuer}|${profile.subject}`,
+            externalId: `${profile.issuer}|${profile.subject}`,
             username: profile.username,
             role: profile.role,
           });
@@ -57,12 +54,9 @@ export function createAuth({ cfg, users, logger = console }) {
           return { id: account.id, username: account.username, role: account.role, source: 'oidc' };
         } catch (e) {
           logger.debug?.(`oidc verification failed: ${e.message}`);
-          // Fall through only when local logins are also permitted.
-          if (!localLogin) return null;
+          return null;
         }
       }
-
-      if (!localLogin) return null;
 
       const claims = verifyToken(cfg.auth.session_secret, credential);
       if (!claims) return null;
@@ -74,32 +68,5 @@ export function createAuth({ cfg, users, logger = console }) {
 
       return { id: user.id, username: user.username, role: user.role, source: 'local' };
     },
-  };
-}
-
-// Fastify preHandler factories. Kept here so every route guards the same way.
-export function requireUser(auth) {
-  return async function guard(req, reply) {
-    const user = await auth.identify(req);
-    if (!user) {
-      reply.code(401).send({ error: 'authentication required' });
-      return;
-    }
-    req.user = user;
-  };
-}
-
-export function requireAdmin(auth) {
-  return async function guard(req, reply) {
-    const user = await auth.identify(req);
-    if (!user) {
-      reply.code(401).send({ error: 'authentication required' });
-      return;
-    }
-    if (user.role !== 'admin') {
-      reply.code(403).send({ error: 'administrator role required' });
-      return;
-    }
-    req.user = user;
   };
 }

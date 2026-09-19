@@ -37,12 +37,11 @@ export function createClient(cfg) {
   return {
     // Returns a job, or null when there is nothing to do.
     async poll({ arches, features, name }) {
-      const query = new URLSearchParams();
-      if (arches.length > 0) query.set('arches', arches.join(','));
-      if (features.length > 0) query.set('features', features.join(','));
-      if (name) query.set('name', name);
-
-      const res = await fetch(`${base}/api/workers/poll?${query}`, { headers: auth });
+      const res = await fetch(`${base}/api/v1/workers/jobs`, {
+        method: 'POST',
+        headers: { ...auth, 'content-type': 'application/json' },
+        body: JSON.stringify({ arches, features, name }),
+      });
       if (res.status === 204) return null;
       if (!res.ok) throw await readError(res, 'poll');
       return (await res.json()).job;

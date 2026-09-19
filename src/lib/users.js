@@ -1,7 +1,7 @@
 // src/lib/users.js - built-in user accounts
 //
-// Used when no OIDC issuer is configured. Passwords are stored as scrypt
-// hashes and never recoverable; a forgotten password is reset, not read.
+// Used when OIDC is not configured. Passwords are stored as scrypt hashes
+// and never recoverable; a forgotten password is reset, not read.
 
 import { newUserId } from './ids.js';
 import { hashPassword, verifyPassword, generatePassword, validatePassword } from './auth/password.js';

@@ -19,7 +19,7 @@ async function withAdmin(options, fn) {
 
 const json = (headers) => ({ ...headers, 'content-type': 'application/json' });
 
-test('login issues a token and a session cookie', async () => {
+test('login sets a session cookie', async () => {
   await withAdmin({}, async (h) => {
     const res = await h.app.inject({
       method: 'POST',
@@ -31,7 +31,6 @@ test('login issues a token and a session cookie', async () => {
     assert.equal(res.statusCode, 200);
     const body = res.json();
     assert.equal(body.user.role, 'admin');
-    assert.ok(body.token);
     assert.match(res.headers['set-cookie'], /conductor_session=/);
     assert.match(res.headers['set-cookie'], /HttpOnly/);
   });
@@ -58,7 +57,7 @@ test('a wrong password and an unknown user are indistinguishable', async () => {
   });
 });
 
-test('the session cookie authenticates as well as the bearer token', async () => {
+test('the session cookie authenticates', async () => {
   await withAdmin({}, async (h) => {
     const login = await h.app.inject({
       method: 'POST',
@@ -92,7 +91,7 @@ test('management needs a session, and user administration needs the admin role',
       headers: { 'content-type': 'application/json' },
       payload: JSON.stringify({ username: 'viewer1', password: 'viewer-password' }),
     });
-    const viewer = { authorization: `Bearer ${login.json().token}` };
+    const viewer = { cookie: login.headers['set-cookie'].split(';')[0] };
 
     // An ordinary user manages their own things, and owns nothing yet.
     const own = await h.app.inject({ method: 'GET', url: '/api/projects', headers: viewer });
@@ -121,7 +120,7 @@ test('a disabled account stops being accepted immediately', async () => {
       headers: { 'content-type': 'application/json' },
       payload: JSON.stringify({ username: 'temp', password: 'temp-password' }),
     });
-    const headers = { authorization: `Bearer ${login.json().token}` };
+    const headers = { cookie: login.headers['set-cookie'].split(';')[0] };
     assert.equal((await h.app.inject({ method: 'GET', url: '/api/auth/me', headers })).statusCode, 200);
 
     await h.app.inject({
@@ -362,8 +361,11 @@ test('a run can be cancelled and retried through the api', async () => {
   });
 });
 
-test('with oidc configured, local login is refused unless allowed', async () => {
-  const h = await startHarness({ oidcIssuer: 'https://idp.example.com/realms/ci', bootstrap: true });
+test('with oidc configured, local login is refused', async () => {
+  const h = await startHarness({
+    oidcDiscoveryUrl: 'https://idp.example.com/realms/ci/.well-known/openid-configuration',
+    bootstrap: true,
+  });
   try {
     assert.equal(h.cfg.auth.mode, 'oidc');
     const res = await h.app.inject({
@@ -378,21 +380,6 @@ test('with oidc configured, local login is refused unless allowed', async () => 
     const mode = await h.app.inject({ method: 'GET', url: '/api/auth/mode' });
     assert.equal(mode.json().mode, 'oidc');
     assert.equal(mode.json().local_login, false);
-  } finally {
-    await h.stop();
-  }
-});
-
-test('local login can be kept as a break-glass account alongside oidc', async () => {
-  const h = await startHarness({
-    oidcIssuer: 'https://idp.example.com/realms/ci',
-    allowLocalLogin: true,
-    bootstrap: true,
-  });
-  try {
-    const headers = await h.login();
-    const res = await h.app.inject({ method: 'GET', url: '/api/projects', headers });
-    assert.equal(res.statusCode, 200);
   } finally {
     await h.stop();
   }

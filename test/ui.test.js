@@ -150,7 +150,7 @@ test('a user creates a project through the form and is shown the secret once', a
 
     const page = await get(h, '/projects/from-ui?created=1', session);
     assert.match(page.body, /Trigger secret/);
-    assert.match(page.body, /api\/trigger\/from-ui/);
+    assert.match(page.body, /api\/v1\/projects\/from-ui\/trigger/);
 
     // The secret is only revealed on that one visit.
     const again = await get(h, '/projects/from-ui', session);
@@ -292,7 +292,7 @@ test('a job page streams the log and stops polling once it completes', async () 
 
     await h.app.inject({
       method: 'POST',
-      url: `/api/workers/jobs/${encodeURIComponent(job.id)}/log`,
+      url: `/api/v1/workers/jobs/${encodeURIComponent(job.id)}/log`,
       headers: { ...h.auth, 'content-type': 'application/octet-stream' },
       payload: Buffer.from('compiling the thing\n'),
     });
@@ -303,7 +303,7 @@ test('a job page streams the log and stops polling once it completes', async () 
 
     await h.app.inject({
       method: 'POST',
-      url: `/api/workers/jobs/${encodeURIComponent(job.id)}/done`,
+      url: `/api/v1/workers/jobs/${encodeURIComponent(job.id)}/complete`,
       headers: { ...h.auth, 'content-type': 'application/json' },
       payload: JSON.stringify({ success: true, exit_code: 0 }),
     });
@@ -321,7 +321,7 @@ test('log output is escaped, so a job cannot inject markup into the page', async
 
     await h.app.inject({
       method: 'POST',
-      url: `/api/workers/jobs/${encodeURIComponent(job.id)}/log`,
+      url: `/api/v1/workers/jobs/${encodeURIComponent(job.id)}/log`,
       headers: { ...h.auth, 'content-type': 'application/octet-stream' },
       payload: Buffer.from('<img src=x onerror="alert(1)">\n'),
     });
@@ -395,7 +395,6 @@ test('the stylesheet and htmx are served, and nothing else is', async () => {
 
 test('the project page shows retention, with server defaults as placeholders', async () => {
   await withUi({
-    allowLocalLogin: true,
     retention: { artifact_keep_runs: 8, artifact_keep_days: 25, log_keep_days: 11 },
   }, async (h) => {
     const session = await signIn(h);
@@ -414,7 +413,6 @@ test('the project page shows retention, with server defaults as placeholders', a
 
 test('saving retention through the form stores it, and empty means inherit', async () => {
   await withUi({
-    allowLocalLogin: true,
     retention: { artifact_keep_runs: 8, artifact_keep_days: 25, log_keep_days: 11 },
   }, async (h) => {
     const session = await signIn(h);
@@ -440,7 +438,7 @@ test('saving retention through the form stores it, and empty means inherit', asy
 });
 
 test('a negative retention value is refused by the form', async () => {
-  await withUi({ allowLocalLogin: true }, async (h) => {
+  await withUi({}, async (h) => {
     const session = await signIn(h);
 
     const res = await h.app.inject({
@@ -458,7 +456,7 @@ test('a negative retention value is refused by the form', async () => {
 // --- working directory ---
 
 test('the project page offers a working directory, defaulting to the server one', async () => {
-  await withUi({ allowLocalLogin: true }, async (h) => {
+  await withUi({}, async (h) => {
     const session = await signIn(h);
     const page = await get(h, `/projects/${h.project.id}`, session);
 
@@ -469,7 +467,7 @@ test('the project page offers a working directory, defaulting to the server one'
 });
 
 test('saving a working directory stores it, and empty clears it', async () => {
-  await withUi({ allowLocalLogin: true }, async (h) => {
+  await withUi({}, async (h) => {
     const session = await signIn(h);
 
     const saved = await h.app.inject({
@@ -492,7 +490,7 @@ test('saving a working directory stores it, and empty clears it', async () => {
 });
 
 test('an unusable working directory is refused by the form', async () => {
-  await withUi({ allowLocalLogin: true }, async (h) => {
+  await withUi({}, async (h) => {
     const session = await signIn(h);
 
     for (const workdir of ['relative', '/', '/a/../b']) {

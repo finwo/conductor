@@ -91,7 +91,7 @@ while read -r old new ref; do
     log "warning: no CONDUCTOR_SECRET set, sending unsigned"
   fi
 
-  url="${CONDUCTOR_URL%/}/api/trigger/${CONDUCTOR_PROJECT}"
+  url="${CONDUCTOR_URL%/}/api/v1/projects/${CONDUCTOR_PROJECT}/trigger"
   log "triggering ${ref} at $(echo "${new}" | cut -c1-12)"
 
   if [ "${http_client}" = curl ]; then

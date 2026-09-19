@@ -18,8 +18,8 @@ can therefore build for you without being able to read anything else.
 
 Nothing has to be set up before it will run. With no configuration it uses
 sqlite on disk, stores artifacts on the local filesystem, and manages its own
-user accounts. Point it at a database url, an S3 bucket or an OIDC issuer and
-it uses those instead.
+user accounts. Point it at a database url, an S3 bucket or an OIDC discovery
+url and it uses those instead.
 
 Status
 ------
@@ -70,16 +70,17 @@ read from defaults, then `conductor.yaml`, then the environment. See
 
 Three capabilities switch on when configured and fall back when not:
 
-| Setting               | Configured           | Not configured        |
-| --------------------- | -------------------- | --------------------- |
-| `database.url`        | mysql/tidb, postgres | sqlite at a file path |
-| `storage.s3.bucket`   | S3 compatible store  | local filesystem      |
-| `auth.oidc.issuer`    | OIDC                 | built-in accounts     |
+| Setting                 | Configured           | Not configured        |
+| ----------------------- | -------------------- | --------------------- |
+| `database.url`          | mysql/tidb, postgres | sqlite at a file path |
+| `storage.s3.bucket`     | S3 compatible store  | local filesystem      |
+| `auth.oidc.discovery_url` | OIDC               | built-in accounts     |
 
-With OIDC the provider owns identity. The key set is located through the
-issuer's discovery document, so any compliant provider works; set
-`auth.oidc.jwks_uri` only for one that publishes no discovery document. An
-account is created locally the first time someone presents a valid token,
+With OIDC the provider owns identity. Point `auth.oidc.discovery_url` at the
+provider's OpenID configuration document and set `client_id` (and
+`client_secret` for a confidential client); the issuer and every endpoint
+come from that document. Register `<server.public_url>/oidc/callback` as the
+redirect uri. An account is created locally the first time someone signs in,
 keyed on issuer and subject, so they can own projects and workers. The role
 in the token wins on every request, and disabling the local account locks
 them out regardless of what the provider says.
