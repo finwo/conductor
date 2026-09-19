@@ -7,6 +7,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { loadWorkerConfig, featureNames } from '../src/worker/config.js';
 import { buildScript, shellQuote } from '../src/worker/script.js';
 import { containerName, createRuntime } from '../src/worker/docker.js';
@@ -227,6 +229,70 @@ test('artifact when controls collection', () => {
   assert.equal(shouldCollect('on_failure', false), true);
   assert.equal(shouldCollect('on_failure', true), false);
   assert.equal(shouldCollect('always', false), true);
+});
+
+test('an idle worker keeps running instead of exiting', async () => {
+  // A worker with nothing to do is waiting on a timer and nothing else.
+  // If that timer does not hold the event loop open, node decides it has
+  // finished and exits 0, which looks like a clean shutdown and is not.
+  const dir = await tempDir();
+  const config = path.join(dir, 'worker.json');
+
+  // Points at a port nothing is listening on, so every poll fails and the
+  // agent stays in its retry sleep.
+  await fs.writeFile(config, JSON.stringify({
+    conductor_url: 'http://127.0.0.1:1',
+    token: 'irrelevant',
+    poll_interval: 1,
+    docker: 'true',
+  }));
+
+  const agent = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/worker/agent.js');
+  const child = spawn(process.execPath, [agent, '--config', config], { stdio: 'ignore' });
+
+  const outcome = await new Promise((resolve) => {
+    const timer = setTimeout(() => resolve('still running'), 4000);
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      resolve(`exited with ${code}`);
+    });
+  });
+
+  child.kill('SIGKILL');
+  assert.equal(outcome, 'still running');
+
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test('a worker stops promptly on a signal rather than after its poll interval', async () => {
+  const dir = await tempDir();
+  const config = path.join(dir, 'worker.json');
+  await fs.writeFile(config, JSON.stringify({
+    conductor_url: 'http://127.0.0.1:1',
+    token: 'irrelevant',
+    // Long enough that waiting it out would fail this test.
+    poll_interval: 60,
+    docker: 'true',
+  }));
+
+  const agent = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/worker/agent.js');
+  const child = spawn(process.execPath, [agent, '--config', config], { stdio: 'ignore' });
+
+  // Let it reach the sleep, then ask it to stop.
+  await new Promise((r) => { setTimeout(r, 1500); });
+  const started = Date.now();
+  child.kill('SIGTERM');
+
+  const code = await new Promise((resolve) => {
+    const timer = setTimeout(() => resolve('timed out'), 10000);
+    child.on('exit', (c) => { clearTimeout(timer); resolve(c); });
+  });
+
+  child.kill('SIGKILL');
+  assert.equal(code, 0, 'should exit cleanly on SIGTERM');
+  assert.ok(Date.now() - started < 8000, 'should not wait out the poll interval');
+
+  await fs.rm(dir, { recursive: true, force: true });
 });
 
 // A client stub that records what the log stream sends.

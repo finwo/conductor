@@ -1,0 +1,104 @@
+# deploy/docker-compose.yml - a conductor and one worker
+#
+#   docker compose -f deploy/docker-compose.yml up -d --build
+#
+# Out of the box this is sqlite on a volume with artifacts on disk, which
+# is a perfectly reasonable way to run it. Postgres and MinIO are behind
+# profiles; turn them on when you want them:
+#
+#   docker compose --profile postgres --profile s3 up -d
+#
+# The administrator password is printed once in the conductor log on first
+# start. Set CONDUCTOR_ADMIN_PASSWORD to choose it instead.
+
+name: conductor
+
+services:
+  conductor:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: conductor:latest
+    restart: unless-stopped
+    ports:
+      - "${CONDUCTOR_PORT:-8080}:8080"
+    environment:
+      # Must match how the outside world reaches this, because workers are
+      # handed absolute callback URLs built from it.
+      CONDUCTOR_PUBLIC_URL: "${CONDUCTOR_PUBLIC_URL:-http://127.0.0.1:8080}"
+      # Without these two, sessions do not survive a restart and stored
+      # secrets are kept in the clear. Generate with: openssl rand -hex 32
+      CONDUCTOR_SESSION_SECRET: "${CONDUCTOR_SESSION_SECRET:-}"
+      CONDUCTOR_SECRET_KEY: "${CONDUCTOR_SECRET_KEY:-}"
+      CONDUCTOR_ADMIN_PASSWORD: "${CONDUCTOR_ADMIN_PASSWORD:-}"
+      CONDUCTOR_DATABASE_URL: "${CONDUCTOR_DATABASE_URL:-}"
+      CONDUCTOR_S3_ENDPOINT: "${CONDUCTOR_S3_ENDPOINT:-}"
+      CONDUCTOR_S3_BUCKET: "${CONDUCTOR_S3_BUCKET:-}"
+      CONDUCTOR_S3_ACCESS_KEY_ID: "${CONDUCTOR_S3_ACCESS_KEY_ID:-}"
+      CONDUCTOR_S3_SECRET_ACCESS_KEY: "${CONDUCTOR_S3_SECRET_ACCESS_KEY:-}"
+    volumes:
+      - conductor-data:/data
+
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.worker
+    image: conductor-worker:latest
+    restart: unless-stopped
+    depends_on:
+      - conductor
+    environment:
+      CONDUCTOR_URL: http://conductor:8080
+      CONDUCTOR_WORKER_NAME: "${CONDUCTOR_WORKER_NAME:-compose-worker}"
+      # Mint one with: docker compose exec conductor node src/admin-cli.js token:add compose-worker
+      CONDUCTOR_WORKER_TOKEN: "${CONDUCTOR_WORKER_TOKEN:?set CONDUCTOR_WORKER_TOKEN, see deploy/README}"
+      CONDUCTOR_WORKER_ARCHES: "${CONDUCTOR_WORKER_ARCHES:-}"
+      CONDUCTOR_WORKER_CONCURRENCY: "${CONDUCTOR_WORKER_CONCURRENCY:-2}"
+      # The path has to be identical inside and outside this container.
+      CONDUCTOR_WORKER_WORKSPACE: /var/lib/conductor/work
+      CONDUCTOR_WORKER_CACHE: /var/lib/conductor/cache
+    volumes:
+      # Jobs run as sibling containers on the host daemon, so the bind
+      # mounts the worker asks for are resolved by the host. The workspace
+      # therefore has to be a host path mounted at the same location here,
+      # not a named volume.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/conductor/work:/var/lib/conductor/work
+      - /var/lib/conductor/cache:/var/lib/conductor/cache
+
+  postgres:
+    profiles: ["postgres"]
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: conductor
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-conductor}"
+      POSTGRES_DB: conductor
+    volumes:
+      - conductor-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U conductor"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Set CONDUCTOR_S3_ENDPOINT=http://minio:9000 and the rest of the S3
+  # variables to have the conductor use this.
+  minio:
+    profiles: ["s3"]
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-conductor}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-conductor-secret}"
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - conductor-minio:/data
+
+volumes:
+  conductor-data:
+  conductor-postgres:
+  conductor-minio:

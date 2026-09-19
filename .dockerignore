@@ -1,0 +1,13 @@
+# Build context: only what the images actually need.
+.git/
+node_modules/
+data/
+test/
+docs/
+examples/
+deploy/
+*.md
+conductor.yaml
+.editorconfig
+.gitignore
+package-lock.json

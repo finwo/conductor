@@ -21,7 +21,17 @@ const CHECK_EXT = new Set([
   '.js', '.mjs', '.cjs', '.json', '.md', '.sql', '.yml', '.yaml',
   '.html', '.css', '.sh', '.txt',
 ]);
-const CHECK_NAMES = new Set(['.editorconfig', '.gitignore', 'Dockerfile', 'post-receive']);
+const CHECK_NAMES = new Set(['.editorconfig', '.gitignore', '.dockerignore', 'post-receive']);
+
+// Dockerfile, Dockerfile.worker, and anything else in that family.
+const CHECK_PREFIXES = ['Dockerfile'];
+
+function shouldCheck(file) {
+  const base = path.basename(file);
+  if (CHECK_EXT.has(path.extname(file))) return true;
+  if (CHECK_NAMES.has(base)) return true;
+  return CHECK_PREFIXES.some((prefix) => base.startsWith(prefix));
+}
 
 async function* walk(dir) {
   for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
@@ -43,9 +53,7 @@ test('every tracked text file is pure ASCII', async () => {
   const offences = [];
 
   for await (const file of walk(ROOT)) {
-    const ext = path.extname(file);
-    const base = path.basename(file);
-    if (!CHECK_EXT.has(ext) && !CHECK_NAMES.has(base)) continue;
+    if (!shouldCheck(file)) continue;
 
     const text = await fs.readFile(file, 'utf8');
     const lines = text.split('\n');
@@ -67,9 +75,7 @@ test('no file uses CRLF line endings or trailing whitespace', async () => {
   const offences = [];
 
   for await (const file of walk(ROOT)) {
-    const ext = path.extname(file);
-    const base = path.basename(file);
-    if (!CHECK_EXT.has(ext) && !CHECK_NAMES.has(base)) continue;
+    if (!shouldCheck(file)) continue;
 
     const text = await fs.readFile(file, 'utf8');
     const rel = path.relative(ROOT, file);

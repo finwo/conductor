@@ -1,0 +1,46 @@
+# deploy/worker/docker-compose.yml - a worker on your own machine
+#
+# For contributing build capacity to a conductor run by someone else. The
+# worker needs no inbound connectivity, so this works from behind NAT.
+#
+# Setup:
+#   1. Ask for a worker token, or mint one yourself in the interface under
+#      Workers. It is shown once.
+#   2. Put it in .env next to this file:
+#        CONDUCTOR_URL=https://ci.example.com
+#        CONDUCTOR_WORKER_TOKEN=...
+#   3. docker compose up -d && docker compose logs -f
+#
+# A worker you register is only ever offered jobs from your own projects.
+#
+# Jobs run as sibling containers on this host's docker daemon. They are
+# isolated from each other, but a job is code from a repository running on
+# your machine: only point this at a conductor whose projects you are
+# willing to execute.
+
+name: conductor-worker
+
+services:
+  worker:
+    image: "${CONDUCTOR_WORKER_IMAGE:-conductor-worker:latest}"
+    restart: unless-stopped
+    environment:
+      CONDUCTOR_URL: "${CONDUCTOR_URL:?set CONDUCTOR_URL in .env}"
+      CONDUCTOR_WORKER_TOKEN: "${CONDUCTOR_WORKER_TOKEN:?set CONDUCTOR_WORKER_TOKEN in .env}"
+      CONDUCTOR_WORKER_NAME: "${CONDUCTOR_WORKER_NAME:-}"
+      # Architectures this machine can build for. Leave unset to take only
+      # jobs that declare none.
+      CONDUCTOR_WORKER_ARCHES: "${CONDUCTOR_WORKER_ARCHES:-}"
+      CONDUCTOR_WORKER_CONCURRENCY: "${CONDUCTOR_WORKER_CONCURRENCY:-1}"
+      # Identical inside and out, because the docker daemon resolves these
+      # paths on the host.
+      CONDUCTOR_WORKER_WORKSPACE: /var/lib/conductor/work
+      CONDUCTOR_WORKER_CACHE: /var/lib/conductor/cache
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/conductor/work:/var/lib/conductor/work
+      - /var/lib/conductor/cache:/var/lib/conductor/cache
+      # Features are declared in a config file when a job needs something
+      # from this machine, such as a signing key. See docs/worker.md.
+      # - ./worker.json:/etc/conductor/worker.json:ro
+      # - /srv/keys/build.rsa:/srv/keys/build.rsa:ro

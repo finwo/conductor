@@ -1,0 +1,184 @@
+Deployment
+==========
+
+One service, one image. The conductor accepts triggers, schedules runs,
+serves the worker API and renders the interface. Workers are separate and
+may live anywhere, including on machines you do not administer.
+
+Quick start
+-----------
+
+```sh
+docker compose -f deploy/docker-compose.yml up -d --build
+```
+
+That brings up a conductor on port 8080 with sqlite on a volume, and one
+worker. The compose file needs a worker token, so the first run is
+two steps:
+
+```sh
+# Start the conductor on its own.
+docker compose -f deploy/docker-compose.yml up -d conductor
+
+# Mint a token, then bring the worker up with it.
+docker compose -f deploy/docker-compose.yml exec conductor \
+  node src/admin-cli.js token:add compose-worker
+
+CONDUCTOR_WORKER_TOKEN=... docker compose -f deploy/docker-compose.yml up -d worker
+```
+
+The administrator password is written to the conductor log once on first
+start. Set `CONDUCTOR_ADMIN_PASSWORD` to choose it instead.
+
+To check the whole thing before trusting it with anything:
+
+```sh
+deploy/smoke.sh
+```
+
+That builds both images, starts them, runs a real pipeline and verifies the
+log and artifact came back.
+
+Images
+------
+
+| Image                | Contents                                        |
+| -------------------- | ----------------------------------------------- |
+| `deploy/Dockerfile`  | the conductor: node, git, the application       |
+| `deploy/Dockerfile.worker` | the worker: node, git, tar, the docker CLI |
+
+Both build from the repository root:
+
+```sh
+docker build -f deploy/Dockerfile -t conductor .
+docker build -f deploy/Dockerfile.worker -t conductor-worker .
+```
+
+The worker image installs `yaml` so its configuration file may be YAML; the
+worker source itself has no npm dependencies at all.
+
+State
+-----
+
+Everything the conductor keeps lives in `/data`:
+
+```
+/data/conductor.db   sqlite, unless database.url points elsewhere
+/data/mirrors        one bare mirror per project
+/data/logs           the live log spool
+/data/storage        artifacts and archived logs, unless S3 is configured
+```
+
+Mount a volume there. Losing it loses run history, and the mirrors and
+spool will be rebuilt.
+
+Configuration
+-------------
+
+Every setting has a default and can come from the environment, so the image
+needs no config file. See `conductor.example.yaml` for the annotated list.
+
+Worth setting in production:
+
+| Variable                   | Why                                              |
+| -------------------------- | ------------------------------------------------ |
+| `CONDUCTOR_PUBLIC_URL`     | Workers get absolute callback URLs built from it. |
+| `CONDUCTOR_SESSION_SECRET` | Otherwise sessions end at every restart.          |
+| `CONDUCTOR_SECRET_KEY`     | Otherwise stored secrets are kept in the clear.   |
+| `CONDUCTOR_ADMIN_PASSWORD` | Otherwise one is generated and logged once.       |
+
+Generate the two secrets with `openssl rand -hex 32`.
+
+### Postgres or MySQL
+
+```sh
+CONDUCTOR_DATABASE_URL=postgres://conductor:secret@postgres:5432/conductor \
+  docker compose --profile postgres -f deploy/docker-compose.yml up -d
+```
+
+The schema is created on start. `npm run migrate` applies it separately
+when a deployment wants that as its own reviewable step.
+
+### Object storage
+
+```sh
+CONDUCTOR_S3_ENDPOINT=http://minio:9000 \
+CONDUCTOR_S3_BUCKET=conductor \
+CONDUCTOR_S3_ACCESS_KEY_ID=... \
+CONDUCTOR_S3_SECRET_ACCESS_KEY=... \
+  docker compose --profile s3 -f deploy/docker-compose.yml up -d
+```
+
+Artifacts and finished logs then go to the bucket instead of the volume,
+and downloads are handed to the store with a presigned redirect rather than
+being proxied. The bucket must already exist.
+
+Workers
+-------
+
+A worker needs the docker socket, because it runs each job in a container.
+Those containers are siblings on the host daemon, not children of the
+worker, which has one consequence that catches people out:
+
+**The workspace path must be identical inside and outside the worker
+container.** The `-v` flags the worker passes are resolved by the host
+daemon, so a path that only exists inside the worker produces an empty
+workspace and a job that cannot find its own source. The compose files
+mount `/var/lib/conductor/work` at the same path on both sides for exactly
+this reason. A named volume will not do.
+
+To contribute capacity to somebody else's conductor, use
+`deploy/worker/docker-compose.yml`; see [worker.md](worker.md).
+
+Behind a reverse proxy
+----------------------
+
+```
+server {
+  server_name ci.example.com;
+  location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    # Artifacts can be large, and a build can be quiet for a long time.
+    client_max_body_size 0;
+    proxy_read_timeout 3600s;
+    proxy_request_buffering off;
+  }
+}
+```
+
+`proxy_request_buffering off` matters: with it on, nginx spools an entire
+artifact to its own disk before the conductor sees a byte, which for
+multi gigabyte build output is both slow and surprising.
+
+Set `CONDUCTOR_PUBLIC_URL=https://ci.example.com` to match, or workers will
+be handed callback URLs that do not work.
+
+Backups
+-------
+
+With sqlite and local storage, the `/data` volume is the whole system. With
+postgres and S3, back up the database and the bucket; the mirrors and the
+log spool are caches and rebuild themselves.
+
+Secrets are encrypted with `CONDUCTOR_SECRET_KEY`. A backup restored
+without that key leaves trigger secrets and project variables unreadable,
+so keep it somewhere other than next to the backup.
+
+Upgrading
+---------
+
+Migrations run on start and are forward only. They are recorded with a
+checksum, so an edited migration is refused rather than applied twice.
+Take a backup first: there is no automatic downgrade.
+
+```sh
+docker compose -f deploy/docker-compose.yml pull
+docker compose -f deploy/docker-compose.yml up -d
+```
+
+Workers can be upgraded independently and in any order. The worker API is
+the boundary between them, and a worker that goes away mid-job has that job
+requeued after `scheduler.heartbeat_timeout`.

@@ -70,6 +70,24 @@ export async function main(argv = process.argv.slice(2)) {
   let stopping = false;
   const running = new Set();
 
+  // An idle worker is waiting on a timer and nothing else. The timer has
+  // to hold the event loop open, or node finds it has no work left and
+  // exits cleanly the first time there is nothing to build. Waking the
+  // sleepers on a signal keeps shutdown immediate despite that.
+  const sleepers = new Set();
+
+  function sleep(ms) {
+    return new Promise((resolve) => {
+      const wake = () => {
+        clearTimeout(timer);
+        sleepers.delete(wake);
+        resolve();
+      };
+      const timer = setTimeout(wake, ms);
+      sleepers.add(wake);
+    });
+  }
+
   const shutdown = (signal) => {
     if (stopping) {
       logger.warn('second signal, exiting now');
@@ -77,10 +95,9 @@ export async function main(argv = process.argv.slice(2)) {
     }
     stopping = true;
     logger.info(`${signal} received, finishing ${running.size} running job(s)`);
+    for (const wake of [...sleepers]) wake();
   };
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => shutdown(signal));
-
-  const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms).unref?.(); });
 
   // One loop per concurrency slot. Each polls independently, so a slow job
   // in one slot does not stall the others.

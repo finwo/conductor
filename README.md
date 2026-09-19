@@ -33,13 +33,18 @@ Under construction. Working today:
   - the worker: containerised jobs, services, features, caches, cleanup
   - accounts, OIDC, project ownership, visibility and project variables
   - the web interface, server rendered with htmx
-
-Not yet built: container images and deployment manifests.
+  - container images, compose manifests and a deployment smoke test
 
 Installation
 ------------
 
-Requires node 24 or newer. No native modules.
+With docker:
+
+```sh
+docker compose -f deploy/docker-compose.yml up -d conductor
+```
+
+From source, requiring node 24 or newer and no native modules:
 
 ```sh
 npm install
@@ -178,7 +183,10 @@ architecture of its own, waits for all of them.
 advertises `sign-key`, and only jobs asking for it are sent there. The key
 stays on the worker and is never known to the conductor.
 
-See `docs/pipeline.md` for the full reference.
+See [docs/pipeline.md](docs/pipeline.md) for the full reference,
+[docs/worker.md](docs/worker.md) for running a worker,
+[docs/deployment.md](docs/deployment.md) for deploying, and
+[docs/api.md](docs/api.md) for the HTTP API.
 
 Architecture
 ------------

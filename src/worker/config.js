@@ -121,15 +121,24 @@ function normalizeFeature(name, raw, problems) {
   };
 }
 
+// Looked at when no file was named. Present means use it, absent means
+// carry on with the environment alone, which is how the container image
+// runs with nothing mounted.
+const DEFAULT_PATHS = ['/etc/conductor/worker.json', '/etc/conductor/worker.yaml', './worker.json', './worker.yaml'];
+
 export async function loadWorkerConfig(explicitPath) {
-  const file = explicitPath || process.env.CONDUCTOR_WORKER_CONFIG || null;
+  const named = explicitPath || process.env.CONDUCTOR_WORKER_CONFIG || null;
   let cfg = { ...DEFAULTS };
 
+  // A file asked for by name must exist; a default one need not.
+  if (named && !fs.existsSync(named)) throw new Error(`worker config not found: ${named}`);
+  const file = named ?? DEFAULT_PATHS.find((candidate) => fs.existsSync(candidate)) ?? null;
+
   if (file) {
-    if (!fs.existsSync(file)) throw new Error(`worker config not found: ${file}`);
     const parsed = await readConfigFile(file);
     if (!isPlainObject(parsed)) throw new Error(`${file} must contain a mapping at the top level`);
     cfg = { ...cfg, ...parsed };
+    cfg.source = file;
   }
 
   for (const [env, key, parse] of ENV_MAP) {
