@@ -86,7 +86,15 @@ export async function startHarness(options = {}) {
     '  reap_interval: 30',
     'auth:',
     '  session_secret: test-session-secret-not-for-real-use',
-    ...(options.oidcIssuer ? ['  oidc:', `    issuer: ${options.oidcIssuer}`] : []),
+    ...(options.oidcIssuer
+      ? [
+        '  oidc:',
+        `    issuer: ${options.oidcIssuer}`,
+        ...(options.oidcAudience ? [`    audience: ${options.oidcAudience}`] : []),
+        ...(options.oidcAdminRole ? [`    admin_role: ${options.oidcAdminRole}`] : []),
+        ...(options.oidcJwksUri ? [`    jwks_uri: ${options.oidcJwksUri}`] : []),
+      ]
+      : []),
     ...(options.allowLocalLogin ? ['  allow_local_login: true'] : []),
     '  bootstrap_admin:',
     `    username: ${options.adminUsername ?? 'admin'}`,

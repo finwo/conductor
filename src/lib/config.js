@@ -57,6 +57,9 @@ const DEFAULTS = {
       issuer: null,
       audience: null,
       admin_role: 'conductor-admin',
+      // Normally found through the issuer's discovery document. Set only
+      // for a provider that does not publish one.
+      jwks_uri: null,
     },
     // Created on first boot when the users table is empty.
     bootstrap_admin: {
@@ -108,6 +111,7 @@ const ENV_MAP = [
   ['CONDUCTOR_OIDC_ISSUER',          'auth.oidc.issuer',            String],
   ['CONDUCTOR_OIDC_AUDIENCE',        'auth.oidc.audience',          String],
   ['CONDUCTOR_OIDC_ADMIN_ROLE',      'auth.oidc.admin_role',        String],
+  ['CONDUCTOR_OIDC_JWKS_URI',        'auth.oidc.jwks_uri',          String],
   ['CONDUCTOR_ADMIN_USERNAME',       'auth.bootstrap_admin.username', String],
   ['CONDUCTOR_ADMIN_PASSWORD',       'auth.bootstrap_admin.password', String],
   ['CONDUCTOR_SECRET_KEY',           'secrets.encryption_key',      String],

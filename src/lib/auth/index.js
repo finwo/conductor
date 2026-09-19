@@ -39,7 +39,22 @@ export function createAuth({ cfg, users, logger = console }) {
 
       if (oidc) {
         try {
-          return await oidc.verify(credential);
+          const profile = await oidc.verify(credential);
+
+          // The provider vouched for them, but they still need a local row
+          // to own anything, since projects and worker tokens reference
+          // users(id). Created on first sight, refreshed after that.
+          const account = await users.upsertExternal({
+            externalId: `${oidc.issuer}|${profile.subject}`,
+            username: profile.username,
+            role: profile.role,
+          });
+
+          // An administrator can still lock out an account the provider
+          // would happily keep admitting.
+          if (account.disabled === 1) return null;
+
+          return { id: account.id, username: account.username, role: account.role, source: 'oidc' };
         } catch (e) {
           logger.debug?.(`oidc verification failed: ${e.message}`);
           // Fall through only when local logins are also permitted.

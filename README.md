@@ -68,6 +68,14 @@ Three capabilities switch on when configured and fall back when not:
 | `storage.s3.bucket`   | S3 compatible store  | local filesystem      |
 | `auth.oidc.issuer`    | OIDC                 | built-in accounts     |
 
+With OIDC the provider owns identity. The key set is located through the
+issuer's discovery document, so any compliant provider works; set
+`auth.oidc.jwks_uri` only for one that publishes no discovery document. An
+account is created locally the first time someone presents a valid token,
+keyed on issuer and subject, so they can own projects and workers. The role
+in the token wins on every request, and disabling the local account locks
+them out regardless of what the provider says.
+
 Usage
 -----
 
@@ -198,7 +206,13 @@ Testing
 npm test
 ```
 
-S3 coverage is skipped unless a server is available:
+Tests that need a container skip themselves when docker is unavailable.
+With docker present the suite starts what it needs and cleans up after
+itself: real containers for the worker to run jobs in, and a real OIDC
+provider to authenticate against. Nothing is stubbed, because the failures
+worth catching are in the parts a stub would replace.
+
+S3 coverage is opt in, since it needs a server to point at:
 
 ```sh
 docker run -d -p 9000:9000 -e MINIO_ROOT_USER=testkey \

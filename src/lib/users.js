@@ -8,7 +8,22 @@ import { hashPassword, verifyPassword, generatePassword, validatePassword } from
 
 export const ROLES = ['admin', 'viewer'];
 
-const PUBLIC_COLUMNS = 'id, username, role, disabled, created_at, last_login_at';
+// A provider may hand over anything as a display name, so it is reduced to
+// the character set local accounts already use.
+function sanitizeUsername(value) {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9_.@-]+/g, '-')
+    .replace(/^[^a-z0-9]+|-+$/g, '')
+    .slice(0, 48);
+}
+
+const PUBLIC_COLUMNS = 'id, username, role, disabled, external_id, created_at, last_login_at';
+
+// Stored in password_hash for accounts the identity provider owns. It does
+// not parse as a scrypt hash, so verifyPassword rejects it and such an
+// account can never be signed into with a password.
+export const EXTERNAL_MARKER = 'external';
 
 export function createUsers({ db, logger = console }) {
   return {
@@ -23,6 +38,56 @@ export function createUsers({ db, logger = console }) {
       );
     },
 
+    async byExternalId(externalId) {
+      return db.get(`SELECT ${PUBLIC_COLUMNS} FROM users WHERE external_id = {externalId}`, { externalId });
+    },
+
+    // Creates or refreshes the local row for someone the identity provider
+    // vouched for. Without this an OIDC user could authenticate but own
+    // nothing, because projects and worker tokens reference users(id).
+    //
+    // The provider is authoritative for the role, so it is written on every
+    // call: losing a role there takes effect here on the next request.
+    // Being disabled locally is not overwritten, which leaves an
+    // administrator a way to lock someone out immediately.
+    async upsertExternal({ externalId, username, role }) {
+      if (!externalId) throw new Error('an external account needs a stable identifier');
+      const desired = ROLES.includes(role) ? role : 'viewer';
+
+      return db.transaction(async (tx) => {
+        const existing = await tx.get(
+          `SELECT ${PUBLIC_COLUMNS} FROM users WHERE external_id = {externalId}`,
+          { externalId }
+        );
+
+        if (existing) {
+          if (existing.role !== desired) {
+            await tx.run('UPDATE users SET role = {role} WHERE id = {id}', { id: existing.id, role: desired });
+          }
+          await tx.run('UPDATE users SET last_login_at = {now} WHERE id = {id}',
+            { id: existing.id, now: Date.now() });
+          return { ...existing, role: desired };
+        }
+
+        // Display names come from the provider and are not guaranteed
+        // unique, so a clash is resolved rather than allowed to fail.
+        const base = sanitizeUsername(username) || 'user';
+        let candidate = base;
+        for (let i = 1; await tx.get('SELECT id FROM users WHERE username = {u}', { u: candidate }); i += 1) {
+          candidate = `${base}-${i}`;
+          if (i > 50) throw new Error(`could not find a free username for ${base}`);
+        }
+
+        const id = newUserId();
+        await tx.run(
+          `INSERT INTO users (id, username, password_hash, role, disabled, external_id, created_at, last_login_at)
+           VALUES ({id}, {username}, {hash}, {role}, 0, {externalId}, {now}, {now})`,
+          { id, username: candidate, hash: EXTERNAL_MARKER, role: desired, externalId, now: Date.now() }
+        );
+        return tx.get(`SELECT ${PUBLIC_COLUMNS} FROM users WHERE id = {id}`, { id });
+      });
+    },
+
     async list() {
       return db.all(`SELECT ${PUBLIC_COLUMNS} FROM users ORDER BY username`);
     },
@@ -30,7 +95,7 @@ export function createUsers({ db, logger = console }) {
     // With what each account owns, since removing one takes those with it.
     async listWithHoldings() {
       return db.all(
-        `SELECT u.id, u.username, u.role, u.disabled, u.created_at, u.last_login_at,
+        `SELECT u.id, u.username, u.role, u.disabled, u.external_id, u.created_at, u.last_login_at,
                 (SELECT COUNT(*) FROM projects p WHERE p.owner_id = u.id) AS project_count,
                 (SELECT COUNT(*) FROM worker_tokens w WHERE w.owner_id = u.id) AS worker_count
            FROM users u ORDER BY u.username`
