@@ -104,13 +104,52 @@ fi
 log "registering emulators"
 # arm64 and riscv64 are emulated unless the worker is that architecture.
 # Without this, buildx cannot run the foreign binaries a build needs.
+#
+# This reports success even when it achieved nothing: if the host has no
+# binfmt_misc mounted, the registrations go into the container's own mount
+# namespace and vanish with it. The check further down is what actually
+# decides whether emulation works, rather than this command's exit code.
 docker run --privileged --rm tonistiigi/binfmt:qemu-v9.2.2 --install all >/dev/null
 
+# Whether the builder can really produce every platform we are asking for.
+builder_covers() {
+    available=$(docker buildx inspect "$1" 2>/dev/null | sed -n 's/^Platforms:[[:space:]]*//p')
+    for want in $(printf '%s' "${PLATFORMS}" | tr ',' ' '); do
+        # Commas around the list so linux/arm does not match linux/arm64.
+        printf ',%s,' "${available}" | tr -d ' ' | grep -q ",${want}," || return 1
+    done
+    return 0
+}
+
+# Platform coverage is necessary but not sufficient: with the emulators
+# registered even the default builder claims every architecture, and then
+# refuses the build because the docker driver cannot produce more than one
+# platform at a time. The driver is the part that decides.
+builder_usable() {
+    docker buildx inspect "$1" 2>/dev/null | grep -q '^Driver:[[:space:]]*docker-container' \
+        && builder_covers "$1"
+}
+
 log "preparing the builder"
-# The default builder cannot do more than one platform at a time.
+# A builder bootstrapped before the emulators were registered does not pick
+# them up afterwards, so one that cannot do the job is replaced rather than
+# reused.
+if docker buildx inspect conductor-publish >/dev/null 2>&1 && ! builder_usable conductor-publish; then
+    log "the existing builder cannot do this, replacing it"
+    docker buildx rm conductor-publish >/dev/null 2>&1 || true
+fi
+
 docker buildx inspect conductor-publish >/dev/null 2>&1 \
     || docker buildx create --name conductor-publish --driver docker-container --bootstrap >/dev/null
 docker buildx use conductor-publish
+
+builder_usable conductor-publish || fail "the builder cannot produce ${PLATFORMS}.
+  It reports: $(docker buildx inspect conductor-publish 2>/dev/null | sed -n 's/^Platforms:[[:space:]]*//p')
+  Emulation is registered through binfmt_misc, which has to be mounted on
+  the host running the docker daemon:
+    sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc
+  Without it the installer above succeeds and registers nothing, and the
+  build fails later with 'exec format error'."
 
 log "signing in"
 printf '%s' "${REGISTRY_TOKEN}" | docker login --username "${REGISTRY_USERNAME}" --password-stdin >/dev/null

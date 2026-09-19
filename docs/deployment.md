@@ -224,9 +224,22 @@ process list. The job logs out again on the way out, whether or not it
 succeeded, so nothing is left behind on a shared worker.
 
 The foreign architectures are emulated with QEMU, registered per run with
-`tonistiigi/binfmt`. A riscv64 build under emulation is slow; giving the
-pool a worker of that architecture makes it native instead, since the
-worker declares its own architectures when it polls.
+`tonistiigi/binfmt`. Giving the pool a worker of that architecture makes
+it native instead, since a worker declares its own architectures when it
+polls.
+
+Emulation needs `binfmt_misc` mounted on the host running the docker
+daemon, which is not the default everywhere:
+
+```sh
+sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc
+```
+
+Without it the registration step still reports success, because the
+handlers are written into the container's own mount namespace and go away
+with it. The build then fails much later with `exec format error`.
+`publish.sh` checks that the builder really offers every platform before
+building anything, and says this if it does not.
 
 To see what a release would push without pushing it:
 
