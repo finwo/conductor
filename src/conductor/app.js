@@ -14,11 +14,16 @@ import { createLogStore } from '../lib/log.js';
 import { createGit } from '../lib/git.js';
 import { createProjects } from '../lib/projects.js';
 import { createWorkerTokens } from '../lib/workers.js';
+import { createUsers } from '../lib/users.js';
+import { createVariables } from '../lib/variables.js';
+import { createAuth } from '../lib/auth/index.js';
 import { createScheduler } from './scheduler.js';
 
 import workerRoutes from './routes/workers.js';
 import triggerRoutes from './routes/trigger.js';
 import runRoutes from './routes/runs.js';
+import authRoutes from './routes/auth.js';
+import adminRoutes from './routes/admin.js';
 
 export async function createServices(cfg, options = {}) {
   ensureStateDirs(cfg);
@@ -32,13 +37,26 @@ export async function createServices(cfg, options = {}) {
   const storage = createStorage(cfg);
   const logs = createLogStore(cfg);
   const git = createGit(cfg);
+  const logger = options.logger ?? console;
+
   const projects = createProjects({ db, secrets });
   const workerTokens = createWorkerTokens({ db });
+  const variables = createVariables({ db, secrets });
+  const users = createUsers({ db, logger });
+  const auth = createAuth({ cfg, users, logger });
 
-  const logger = options.logger ?? console;
-  const scheduler = createScheduler({ cfg, db, git, logs, storage, projects, logger });
+  const scheduler = createScheduler({ cfg, db, git, logs, storage, projects, variables, logger });
 
-  return { cfg, db, secrets, storage, logs, git, projects, workerTokens, scheduler, logger };
+  // Without a first administrator there is no way into the admin surface.
+  // Only done for local accounts; with OIDC the provider owns identity.
+  if (options.bootstrap !== false && auth.localLogin) {
+    await users.bootstrap(cfg);
+  }
+
+  return {
+    cfg, db, secrets, storage, logs, git,
+    projects, workerTokens, variables, users, auth, scheduler, logger,
+  };
 }
 
 export async function buildServer(services, options = {}) {
@@ -63,6 +81,8 @@ export async function buildServer(services, options = {}) {
 
   await fastify.register(triggerRoutes, { ...services, prefix: '/api/trigger' });
   await fastify.register(workerRoutes, { ...services, prefix: '/api/workers' });
+  await fastify.register(authRoutes, { ...services, prefix: '/api/auth' });
+  await fastify.register(adminRoutes, { ...services, prefix: '/api/admin' });
   await fastify.register(runRoutes, { ...services, prefix: '/api' });
 
   return fastify;

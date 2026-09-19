@@ -27,7 +27,7 @@ export const JOB_STATES = ['queued', 'running', 'success', 'failed', 'skipped', 
 // States that let a dependent proceed.
 const TERMINAL = ['success', 'failed', 'skipped', 'cancelled'];
 
-export function createScheduler({ cfg, db, git, logs, storage, projects, logger = console }) {
+export function createScheduler({ cfg, db, git, logs, storage, projects, variables = null, logger = console }) {
   // A job is eligible when it is queued, its run is live, and no dependency
   // is outstanding. A failed dependency marked allow_failure still counts as
   // satisfied, which is the whole point of the flag.
@@ -235,6 +235,19 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, logger 
 
         const spec = JSON.parse(candidate.spec);
         const attempt = candidate.attempt + 1;
+
+        // Project variables are resolved at dispatch and handed to the
+        // worker, never written into the jobs table, so the only place a
+        // secret rests is project_variables.
+        let injected = { env: {}, masked: [] };
+        if (variables) {
+          try {
+            injected = await variables.resolve(candidate.project_id);
+          } catch (e) {
+            logger.warn?.(`could not resolve variables for ${candidate.project_id}: ${e.message}`);
+          }
+        }
+
         return {
           id: candidate.id,
           run_id: candidate.run_id,
@@ -249,10 +262,13 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, logger 
           attempt,
           max_attempts: candidate.max_attempts,
           script: spec.script,
-          // Pipeline env, plus the facts about this run that a script
-          // should not have to be told twice. These are set last so a
-          // pipeline cannot quietly redefine them.
+          // Values the worker must redact from the log stream.
+          masked: injected.masked,
+          // Project variables, then pipeline env, then the facts about this
+          // run. Ordered so a pipeline cannot quietly redefine the last
+          // group, and a variable cannot shadow an explicit job setting.
           env: {
+            ...injected.env,
             ...spec.env,
             CONDUCTOR_PROJECT: candidate.project_id,
             CONDUCTOR_RUN_ID: candidate.run_id,

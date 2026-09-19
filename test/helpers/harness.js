@@ -84,6 +84,13 @@ export async function startHarness(options = {}) {
     'scheduler:',
     '  heartbeat_timeout: 120',
     '  reap_interval: 30',
+    'auth:',
+    '  session_secret: test-session-secret-not-for-real-use',
+    ...(options.oidcIssuer ? ['  oidc:', `    issuer: ${options.oidcIssuer}`] : []),
+    ...(options.allowLocalLogin ? ['  allow_local_login: true'] : []),
+    '  bootstrap_admin:',
+    `    username: ${options.adminUsername ?? 'admin'}`,
+    `    password: ${options.adminPassword ?? 'bootstrap-password'}`,
     '',
   ].join('\n'));
 
@@ -93,7 +100,13 @@ export async function startHarness(options = {}) {
   if (savedConfig === undefined) delete process.env.CONDUCTOR_CONFIG;
   else process.env.CONDUCTOR_CONFIG = savedConfig;
 
-  const services = await createServices(cfg, { migrationLogger: () => {}, logger: silentLogger() });
+  const services = await createServices(cfg, {
+    migrationLogger: () => {},
+    logger: silentLogger(),
+    // scrypt is deliberately slow, so the admin account is only created for
+    // the tests that actually sign in.
+    bootstrap: options.bootstrap === true,
+  });
   const app = await buildServer(services, { logger: false });
 
   const project = await services.projects.create({
@@ -152,6 +165,24 @@ export async function startHarness(options = {}) {
         url: `/api/workers/poll${search ? `?${search}` : ''}`,
         headers: this.auth,
       });
+    },
+
+    // Signs in as the bootstrap administrator and returns headers that
+    // authenticate subsequent admin calls.
+    async login(username = options.adminUsername ?? 'admin', password = options.adminPassword ?? 'bootstrap-password') {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/login',
+        headers: { 'content-type': 'application/json' },
+        payload: JSON.stringify({ username, password }),
+      });
+      if (res.statusCode !== 200) {
+        throw new Error(`login failed: ${res.statusCode} ${res.body}`);
+      }
+      // Only the credential. A content-type here would make every bodyless
+      // request fail JSON parsing.
+      const { token } = res.json();
+      return { authorization: `Bearer ${token}` };
     },
 
     async stop() {

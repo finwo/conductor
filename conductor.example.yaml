@@ -54,6 +54,10 @@ auth:
     issuer: null
     audience: null
     admin_role: conductor-admin
+  # With OIDC configured, built-in accounts stop being accepted. Set this to
+  # keep one as a break-glass login, for example while the provider is being
+  # set up. Ignored when OIDC is not in use.
+  allow_local_login: false
   # Created on first boot, only while the users table is empty. With no
   # password set, one is generated and written to the log once.
   bootstrap_admin:

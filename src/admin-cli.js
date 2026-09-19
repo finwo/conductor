@@ -10,11 +10,19 @@
 //   node src/admin-cli.js token:add <name>
 //   node src/admin-cli.js token:list
 //   node src/admin-cli.js token:remove <id>
+//   node src/admin-cli.js var:set <project> <NAME> <value> [--visible]
+//   node src/admin-cli.js var:list <project>
+//   node src/admin-cli.js var:remove <project> <NAME>
+//   node src/admin-cli.js user:add <username> <password> [--role admin|viewer]
+//   node src/admin-cli.js user:list
+//   node src/admin-cli.js user:passwd <username> <password>
+//   node src/admin-cli.js user:remove <username>
 //   node src/admin-cli.js run:trigger <project> <sha> [--ref r] [--base b]
 //   node src/admin-cli.js run:cancel <run-id>
 //
-// The HTTP admin API arrives with the auth work. Until then this is the
-// supported way to register projects and mint worker tokens.
+// Everything here is also available over HTTP under /api/admin. This runs
+// against the database directly, so it works before the first account
+// exists and when the server is down.
 
 import crypto from 'node:crypto';
 import { loadConfig } from './lib/config.js';
@@ -57,6 +65,13 @@ function usage(message) {
       '  token:add <name>',
       '  token:list',
       '  token:remove <id>',
+      '  var:set <project> <NAME> <value> [--visible]',
+      '  var:list <project>',
+      '  var:remove <project> <NAME>',
+      '  user:add <username> <password> [--role admin|viewer]',
+      '  user:list',
+      '  user:passwd <username> <password>',
+      '  user:remove <username>',
       '  run:trigger <project> <sha> [--ref r] [--base b]',
       '  run:cancel <run-id>',
     ].join('\n')
@@ -67,8 +82,11 @@ function usage(message) {
 if (!command || command === 'help' || command === '--help') usage();
 
 const cfg = loadConfig();
-const services = await createServices(cfg, { migrationLogger: () => {} });
-const { projects, workerTokens, scheduler, db } = services;
+// No bootstrap account is created here: the CLI already has full access,
+// and creating one as a side effect of running a command would be a
+// surprise.
+const services = await createServices(cfg, { migrationLogger: () => {}, bootstrap: false });
+const { projects, workerTokens, variables, users, scheduler, db } = services;
 
 function table(rows, columns) {
   if (rows.length === 0) {
@@ -174,6 +192,83 @@ try {
       const [id] = positional;
       if (!id) usage('token:remove needs a token id');
       console.log(await workerTokens.remove(id) ? `removed token ${id}` : `no such token ${id}`);
+      break;
+    }
+
+    case 'var:set': {
+      const [projectId, name, ...valueParts] = positional;
+      const value = valueParts.join(' ');
+      if (!projectId || !name || valueParts.length === 0) usage('var:set needs a project, a name and a value');
+      if (!(await projects.get(projectId))) usage(`unknown project ${projectId}`);
+      if (!cfg.secrets.encryption_key) {
+        console.warn('warning: secrets.encryption_key is not set, so this is stored in the clear');
+      }
+      await variables.set(projectId, name, value, { masked: flags.visible !== true });
+      console.log(`set ${name} for ${projectId}${flags.visible === true ? '' : ' (masked in logs)'}`);
+      break;
+    }
+
+    case 'var:list': {
+      const [projectId] = positional;
+      if (!projectId) usage('var:list needs a project');
+      const rows = (await variables.list(projectId)).map((v) => ({
+        name: v.name,
+        masked: v.masked ? 'yes' : 'no',
+        at_rest: v.plaintext_at_rest ? 'PLAINTEXT' : 'encrypted',
+        created: when(v.created_at),
+      }));
+      table(rows, ['name', 'masked', 'at_rest', 'created']);
+      break;
+    }
+
+    case 'var:remove': {
+      const [projectId, name] = positional;
+      if (!projectId || !name) usage('var:remove needs a project and a name');
+      console.log(await variables.remove(projectId, name) ? `removed ${name}` : `no such variable ${name}`);
+      break;
+    }
+
+    case 'user:add': {
+      const [username, password] = positional;
+      if (!username || !password) usage('user:add needs a username and a password');
+      const user = await users.create({
+        username,
+        password,
+        role: flags.role ? String(flags.role) : 'viewer',
+      });
+      console.log(`created user ${user.username} with role ${user.role}`);
+      break;
+    }
+
+    case 'user:list': {
+      const rows = (await users.list()).map((u) => ({
+        username: u.username,
+        role: u.role,
+        enabled: u.disabled ? 'no' : 'yes',
+        created: when(u.created_at),
+        last_login: when(u.last_login_at),
+      }));
+      table(rows, ['username', 'role', 'enabled', 'created', 'last_login']);
+      break;
+    }
+
+    case 'user:passwd': {
+      const [username, password] = positional;
+      if (!username || !password) usage('user:passwd needs a username and a password');
+      const existing = await users.byUsername(username);
+      if (!existing) usage(`unknown user ${username}`);
+      await users.setPassword(existing.id, password);
+      console.log(`password updated for ${username}`);
+      break;
+    }
+
+    case 'user:remove': {
+      const [username] = positional;
+      if (!username) usage('user:remove needs a username');
+      const existing = await users.byUsername(username);
+      if (!existing) usage(`unknown user ${username}`);
+      await users.remove(existing.id);
+      console.log(`removed user ${username}`);
       break;
     }
 

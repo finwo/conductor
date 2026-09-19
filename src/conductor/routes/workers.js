@@ -8,13 +8,14 @@ import { pipeline as streamPipeline } from 'node:stream/promises';
 import { LogOffsetError } from '../../lib/log.js';
 import { hashingTransform } from '../../lib/stream.js';
 import { sanitizeRelativePath, keys as storageKeys } from '../../lib/storage/index.js';
+import { maskBuffer } from '../../lib/variables.js';
 import { newArtifactId } from '../../lib/ids.js';
 
 // Log chunks are small and frequent; artifacts are streamed, so this only
 // bounds a single log append.
 const LOG_CHUNK_LIMIT = 1024 * 1024;
 
-export default async function workerRoutes(fastify, { cfg, db, git, logs, storage, projects, scheduler, workerTokens }) {
+export default async function workerRoutes(fastify, { cfg, db, git, logs, storage, projects, scheduler, workerTokens, variables }) {
   // Raw bodies: log chunks and artifacts arrive as octet streams and must
   // not be parsed.
   fastify.addContentTypeParser('application/octet-stream', (req, payload, done) => done(null, payload));
@@ -33,7 +34,8 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
   // Confirms the job exists and is held by the calling worker.
   async function heldJob(req, reply) {
     const job = await db.get(
-      `SELECT j.id, j.run_id, j.name, j.state, j.worker_token_id, j.log_size, r.project_id, r.head_sha
+      `SELECT j.id, j.run_id, j.name, j.state, j.worker_token_id, j.log_size,
+              r.project_id, r.head_sha
          FROM jobs j JOIN runs r ON r.id = j.run_id
         WHERE j.id = {id}`,
       { id: req.params.id }
@@ -144,8 +146,20 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
       return reply.code(400).send({ error: 'x-log-offset must be an integer' });
     }
 
+    // The worker masks before sending; this repeats it on ingest so a
+    // worker that does not still cannot write a secret to disk. It works
+    // within a chunk only, which is why the worker holds back a boundary.
+    let payload = Buffer.concat(chunks);
+    if (variables) {
+      try {
+        payload = maskBuffer(payload, await variables.maskedValues(job.project_id));
+      } catch (e) {
+        req.log.warn({ err: e }, `could not mask log output for ${job.id}`);
+      }
+    }
+
     try {
-      const result = await logs.append(job.run_id, job.id, Buffer.concat(chunks), offset);
+      const result = await logs.append(job.run_id, job.id, payload, offset);
       await db.run('UPDATE jobs SET log_size = {size}, heartbeat_at = {now} WHERE id = {id}',
         { id: job.id, size: result.size, now: Date.now() });
       return reply.send(result);

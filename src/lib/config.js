@@ -53,6 +53,10 @@ const DEFAULTS = {
     // invalidates existing sessions on restart.
     session_secret: null,
     session_ttl: 43200,
+    // When OIDC is configured, built-in accounts stop being accepted unless
+    // this is set. Turning on OIDC should not quietly leave a second way in,
+    // but a deployment may want one deliberately as a break-glass account.
+    allow_local_login: false,
     oidc: {
       issuer: null,
       audience: null,
