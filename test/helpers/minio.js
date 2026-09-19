@@ -13,6 +13,7 @@ import { promisify } from 'node:util';
 import crypto from 'node:crypto';
 import net from 'node:net';
 import { signRequest, sha256Hex } from '../../src/lib/storage/sigv4.js';
+import { reapStale } from './containers.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -62,18 +63,6 @@ async function freePort() {
   });
 }
 
-// A run that crashes never reaches its cleanup hook. Anything still
-// carrying the prefix is from a previous run and can go.
-async function reapStale() {
-  try {
-    const { stdout } = await execFileAsync('docker', ['ps', '-aq', '--filter', `name=${NAME_PREFIX}`], { timeout: 30000 });
-    const ids = stdout.trim().split('\n').filter(Boolean);
-    if (ids.length > 0) await execFileAsync('docker', ['rm', '-f', ...ids], { timeout: 60000 });
-  } catch {
-    // Best effort; a failure here must not fail the tests.
-  }
-}
-
 // Buckets are created with a signed request rather than the MinIO client,
 // which keeps the helper free of another dependency and exercises the
 // signer on the way in.
@@ -117,7 +106,7 @@ export async function startMinio() {
     };
   }
 
-  await reapStale();
+  await reapStale(NAME_PREFIX);
 
   const port = await freePort();
   const name = `${NAME_PREFIX}${crypto.randomBytes(4).toString('hex')}`;

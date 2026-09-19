@@ -11,6 +11,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import crypto from 'node:crypto';
+import { reapStale } from './containers.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -105,24 +106,8 @@ const READY_TIMEOUT = 120 * 1000;
 
 const NAME_PREFIX = 'conductor-oidc-test-';
 
-// A test run that crashes hard, or is killed, never reaches its cleanup
-// hook and leaves the container behind. Since exactly one provider is
-// needed at a time, anything already carrying the prefix is stale and can
-// go. Cheaper than asking people to clean up after a failed run.
-async function reapStale() {
-  try {
-    const { stdout } = await execFileAsync('docker', [
-      'ps', '-aq', '--filter', `name=${NAME_PREFIX}`,
-    ], { timeout: 30000 });
-    const ids = stdout.trim().split('\n').filter(Boolean);
-    if (ids.length > 0) await execFileAsync('docker', ['rm', '-f', ...ids], { timeout: 60000 });
-  } catch {
-    // Best effort; a failure here must not fail the tests.
-  }
-}
-
 export async function startOidc() {
-  await reapStale();
+  await reapStale(NAME_PREFIX);
 
   const port = await freePort();
   const name = `${NAME_PREFIX}${crypto.randomBytes(4).toString('hex')}`;
