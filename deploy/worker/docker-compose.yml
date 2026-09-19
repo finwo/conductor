@@ -22,7 +22,7 @@ name: conductor-worker
 
 services:
   worker:
-    image: "${CONDUCTOR_WORKER_IMAGE:-conductor-worker:latest}"
+    image: "${CONDUCTOR_WORKER_IMAGE:-finwo/conductor-worker:latest}"
     restart: unless-stopped
     environment:
       CONDUCTOR_URL: "${CONDUCTOR_URL:?set CONDUCTOR_URL in .env}"

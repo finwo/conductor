@@ -1,7 +1,13 @@
 # deploy/Dockerfile.worker - the worker
 #
 # Build from the repository root:
-#   docker build -f deploy/Dockerfile.worker -t conductor-worker .
+#   docker build -f deploy/Dockerfile.worker -t finwo/conductor-worker .
+#
+# Alpine rather than the official node image, for the same reason as the
+# conductor: node is not published for riscv64, and Alpine 3.23 has both
+# node 24 and a docker client on every architecture we publish for. That
+# also means the docker client comes from the package manager rather than
+# a tarball off download.docker.com, which has no riscv64 build at all.
 #
 # The worker runs each job in its own container, so it needs a docker
 # socket. It does not run a daemon of its own: the containers it starts are
@@ -13,33 +19,13 @@
 # compose file in deploy/worker does that; if you run this by hand, mount
 # the workspace at the path you configure rather than somewhere convenient.
 
-FROM node:24-bookworm-slim
+ARG ALPINE_VERSION=3.23
 
-# Static docker CLI, rather than docker.io, which would drag in a daemon
-# this image has no use for.
-ARG DOCKER_CLI_VERSION=27.3.1
+FROM alpine:${ALPINE_VERSION} AS deps
 
-# git is only needed for projects configured to clone rather than download
-# a source archive; tar always is.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git tar \
-    && arch="$(uname -m)" \
-    && case "${arch}" in \
-         x86_64)  docker_arch=x86_64 ;; \
-         aarch64) docker_arch=aarch64 ;; \
-         *) echo "unsupported architecture: ${arch}" >&2; exit 1 ;; \
-       esac \
-    && curl -fsSL "https://download.docker.com/linux/static/stable/${docker_arch}/docker-${DOCKER_CLI_VERSION}.tgz" \
-       | tar -xz -C /usr/local/bin --strip-components=1 docker/docker \
-    && docker --version \
-    && apt-get purge -y --auto-remove curl \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache nodejs npm
 
 WORKDIR /app
-
-# The source is ES modules, and node reparses every file with a warning
-# unless the package says so.
-RUN printf '{\n  "name": "conductor-worker",\n  "private": true,\n  "type": "module"\n}\n' > package.json
 
 # The worker source needs no npm packages at all. yaml is installed only so
 # the configuration file may be YAML as well as JSON; nothing breaks
@@ -47,6 +33,20 @@ RUN printf '{\n  "name": "conductor-worker",\n  "private": true,\n  "type": "mod
 RUN npm install --omit=dev --no-audit --no-fund yaml \
     && npm cache clean --force
 
+FROM alpine:${ALPINE_VERSION}
+
+# docker-cli to start job containers on the host daemon, git for projects
+# configured to clone rather than download an archive, and GNU tar because
+# the busybox one is not a full substitute for reading source archives.
+RUN apk add --no-cache ca-certificates docker-cli git nodejs tar
+
+WORKDIR /app
+
+# The source is ES modules, and node reparses every file with a warning
+# unless the package says so.
+RUN printf '{\n  "name": "conductor-worker",\n  "private": true,\n  "type": "module"\n}\n' > package.json
+
+COPY --from=deps /app/node_modules ./node_modules
 COPY src/worker/ ./src/worker/
 
 # Deliberately no CONDUCTOR_WORKER_CONFIG: the worker is configurable by

@@ -1,0 +1,25 @@
+# deploy/docker-compose.build.yml - build the images instead of pulling
+#
+# The main compose file runs the published images, which is what a
+# deployment wants. Layer this over it to build from the working tree:
+#
+#   docker compose -f deploy/docker-compose.yml \
+#                  -f deploy/docker-compose.build.yml up -d --build
+#
+# The image names stay the same, so nothing else has to change and the
+# locally built image simply shadows the published one.
+
+services:
+  conductor:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: "${CONDUCTOR_IMAGE:-finwo/conductor:latest}"
+    pull_policy: build
+
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.worker
+    image: "${CONDUCTOR_WORKER_IMAGE:-finwo/conductor-worker:latest}"
+    pull_policy: build
