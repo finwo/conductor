@@ -24,10 +24,6 @@ const DEFAULTS = {
     // callback URLs, so it must be correct behind a reverse proxy.
     public_url: 'http://127.0.0.1:8080',
   },
-  read_api: {
-    host: '0.0.0.0',
-    port: 8081,
-  },
   database: {
     // Unset means sqlite at database.path. Otherwise the scheme selects the
     // dialect: mysql:// or postgres:// (postgresql:// is accepted too).
@@ -99,8 +95,6 @@ const ENV_MAP = [
   ['CONDUCTOR_HOST',                 'server.host',                 String],
   ['CONDUCTOR_PORT',                 'server.port',                 toInt],
   ['CONDUCTOR_PUBLIC_URL',           'server.public_url',           String],
-  ['CONDUCTOR_READ_API_HOST',        'read_api.host',               String],
-  ['CONDUCTOR_READ_API_PORT',        'read_api.port',               toInt],
   ['CONDUCTOR_DATABASE_URL',         'database.url',                String],
   ['CONDUCTOR_DATABASE_PATH',        'database.path',               String],
   ['CONDUCTOR_STORAGE_PATH',         'storage.path',                String],
@@ -191,11 +185,9 @@ function validate(cfg) {
 
   // Port 0 asks the operating system for a free port, which is useful in
   // tests and for ephemeral instances.
-  for (const key of ['server.port', 'read_api.port']) {
-    const port = getPath(cfg, key);
-    if (!Number.isInteger(port) || port < 0 || port > 65535) {
-      errors.push(`${key} must be between 0 and 65535, got ${port}`);
-    }
+  const port = cfg.server.port;
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    errors.push(`server.port must be between 0 and 65535, got ${port}`);
   }
   if (cfg.database.url && dialectFromUrl(cfg.database.url) === null) {
     errors.push(

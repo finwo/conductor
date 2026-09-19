@@ -1,0 +1,392 @@
+// test/ui.test.js - the server rendered interface
+//
+// The interface is rendered from the same data and the same visibility
+// rules as the API, so these check what a page actually contains for a
+// given caller rather than that a route merely answers.
+
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { startHarness } from './helpers/harness.js';
+import { html, esc, raw, toHtml, attrs } from '../src/conductor/ui/html.js';
+
+async function withUi(options, fn) {
+  const h = await startHarness({ bootstrap: true, ...options });
+  try {
+    return await fn(h);
+  } finally {
+    await h.stop();
+  }
+}
+
+const get = (h, url, headers = {}) => h.app.inject({ method: 'GET', url, headers });
+
+// htmx sets this on every request it makes; mutations require it.
+const hx = (headers = {}) => ({ ...headers, 'hx-request': 'true' });
+
+function form(headers, fields) {
+  return {
+    headers: { ...hx(headers), 'content-type': 'application/x-www-form-urlencoded' },
+    payload: new URLSearchParams(fields).toString(),
+  };
+}
+
+// --- templating ---
+
+test('interpolated values are escaped by default', () => {
+  const evil = '<script>alert(1)</script>';
+  const out = toHtml(html`<td>${evil}</td>`);
+  assert.equal(out, '<td>&lt;script&gt;alert(1)&lt;/script&gt;</td>');
+});
+
+test('quotes and ampersands are escaped inside attributes', () => {
+  const out = toHtml(html`<input value="${'a" onload="evil() & more'}">`);
+  assert.ok(!out.includes('onload="evil'));
+  assert.ok(out.includes('&quot;'));
+  assert.ok(out.includes('&amp;'));
+});
+
+test('nested templates and arrays are kept, raw is passed through', () => {
+  const rows = ['a', 'b'].map((x) => html`<li>${x}</li>`);
+  assert.equal(toHtml(html`<ul>${rows}</ul>`), '<ul><li>a</li><li>b</li></ul>');
+  assert.equal(toHtml(html`<p>${raw('<b>bold</b>')}</p>`), '<p><b>bold</b></p>');
+});
+
+test('null, undefined and false render as nothing', () => {
+  assert.equal(toHtml(html`<p>${null}${undefined}${false}</p>`), '<p></p>');
+  assert.equal(esc(null), '');
+});
+
+test('attrs omits absent values and renders bare booleans', () => {
+  assert.equal(toHtml(attrs({ id: 'x', hidden: true, skip: false, gone: null })), 'id="x" hidden');
+});
+
+// --- anonymous ---
+
+test('an anonymous visitor sees public runs and an invitation to sign in', async () => {
+  await withUi({ visibility: 'public' }, async (h) => {
+    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+
+    const res = await get(h, '/');
+    assert.equal(res.statusCode, 200);
+    assert.match(res.headers['content-type'], /text\/html/);
+    assert.match(res.body, /Sign in/);
+    assert.match(res.body, /#1<\/a>/);
+    // No management links without a session.
+    assert.ok(!res.body.includes('href="/projects"'));
+    assert.ok(!res.body.includes('href="/users"'));
+  });
+});
+
+test('an anonymous visitor cannot see a private run', async () => {
+  await withUi({ visibility: 'private' }, async (h) => {
+    const run = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().run_id;
+
+    const list = await get(h, '/');
+    assert.ok(!list.body.includes('#1</a>'));
+
+    const detail = await get(h, `/runs/${run}`);
+    assert.match(detail.body, /No such run/);
+  });
+});
+
+test('management pages redirect an anonymous visitor to sign in', async () => {
+  await withUi({}, async (h) => {
+    for (const url of ['/projects', '/workers', '/users']) {
+      const res = await get(h, url);
+      assert.equal(res.statusCode, 302, `${url} should redirect`);
+      assert.equal(res.headers.location, '/login');
+    }
+  });
+});
+
+// --- session ---
+
+test('signing in through the form sets a session and reveals the nav', async () => {
+  await withUi({}, async (h) => {
+    const bad = await h.app.inject({
+      method: 'POST',
+      url: '/login',
+      ...form({}, { username: 'admin', password: 'wrong' }),
+    });
+    assert.equal(bad.statusCode, 401);
+    assert.match(bad.body, /Invalid username or password/);
+
+    const good = await h.app.inject({
+      method: 'POST',
+      url: '/login',
+      ...form({}, { username: 'admin', password: 'bootstrap-password' }),
+    });
+    assert.equal(good.statusCode, 204);
+    assert.match(good.headers['set-cookie'], /conductor_session=/);
+
+    const cookie = good.headers['set-cookie'].split(';')[0];
+    const home = await get(h, '/', { cookie });
+    assert.match(home.body, /href="\/projects"/);
+    assert.match(home.body, /href="\/users"/);
+    assert.match(home.body, /sign out/);
+  });
+});
+
+// Signs in and returns a cookie header.
+async function signIn(h, username = 'admin', password = 'bootstrap-password') {
+  const res = await h.app.inject({ method: 'POST', url: '/login', ...form({}, { username, password }) });
+  if (res.statusCode !== 204) throw new Error(`login failed: ${res.statusCode} ${res.body}`);
+  return { cookie: res.headers['set-cookie'].split(';')[0] };
+}
+
+// --- projects ---
+
+test('a user creates a project through the form and is shown the secret once', async () => {
+  await withUi({}, async (h) => {
+    const session = await signIn(h);
+
+    const created = await h.app.inject({
+      method: 'POST',
+      url: '/projects',
+      ...form(session, { id: 'from-ui', repo_url: 'https://git.example.com/ui.git', visibility: 'private' }),
+    });
+    assert.equal(created.statusCode, 204);
+    assert.equal(created.headers['hx-redirect'], '/projects/from-ui?created=1');
+
+    const page = await get(h, '/projects/from-ui?created=1', session);
+    assert.match(page.body, /Trigger secret/);
+    assert.match(page.body, /api\/trigger\/from-ui/);
+
+    // The secret is only revealed on that one visit.
+    const again = await get(h, '/projects/from-ui', session);
+    assert.ok(!again.body.includes('Trigger secret'));
+  });
+});
+
+test('a project page shows variables and never their values', async () => {
+  await withUi({}, async (h) => {
+    const session = await signIn(h);
+    await h.services.variables.set('demo', 'DEPLOY_TOKEN', 'ui-secret-value');
+
+    const page = await get(h, '/projects/demo', session);
+    assert.match(page.body, /DEPLOY_TOKEN/);
+    assert.match(page.body, /masked/);
+    assert.ok(!page.body.includes('ui-secret-value'), 'a variable value must never be rendered');
+  });
+});
+
+test('setting and removing a variable returns the updated table', async () => {
+  await withUi({}, async (h) => {
+    const session = await signIn(h);
+
+    const set = await h.app.inject({
+      method: 'PUT',
+      url: '/projects/demo/variables',
+      ...form(session, { name: 'TOKEN', value: 'abc12345', masked: 'true' }),
+    });
+    assert.equal(set.statusCode, 200);
+    assert.match(set.body, /TOKEN/);
+    assert.ok(!set.body.includes('abc12345'));
+
+    const removed = await h.app.inject({
+      method: 'DELETE', url: '/projects/demo/variables/TOKEN', headers: hx(session),
+    });
+    assert.equal(removed.statusCode, 200);
+    assert.ok(!removed.body.includes('TOKEN'));
+  });
+});
+
+test('a user cannot open or delete a project they do not own', async () => {
+  await withUi({}, async (h) => {
+    const admin = await signIn(h);
+    await h.app.inject({
+      method: 'POST', url: '/users', ...form(admin, { username: 'mallory', password: 'mallory-password', role: 'viewer' }),
+    });
+    const other = await signIn(h, 'mallory', 'mallory-password');
+
+    const page = await get(h, '/projects/demo', other);
+    assert.match(page.body, /No such project/);
+
+    const deleted = await h.app.inject({ method: 'DELETE', url: '/projects/demo', headers: hx(other) });
+    assert.equal(deleted.statusCode, 404);
+    assert.ok(await h.services.projects.get('demo'), 'the project must still exist');
+  });
+});
+
+// --- workers ---
+
+test('registering a worker shows the token once and lists it', async () => {
+  await withUi({}, async (h) => {
+    const session = await signIn(h);
+
+    const created = await h.app.inject({
+      method: 'POST', url: '/workers', ...form(session, { name: 'my-laptop' }),
+    });
+    assert.equal(created.statusCode, 200);
+    assert.match(created.body, /Worker token for my-laptop/);
+
+    // The token appears exactly once, in the reveal panel.
+    const token = /value="([0-9a-f]{64})"/.exec(created.body);
+    assert.ok(token, 'expected the token to be shown');
+
+    const list = await get(h, '/workers', session);
+    assert.match(list.body, /my-laptop/);
+    assert.ok(!list.body.includes(token[1]), 'the token must not be listed again');
+  });
+});
+
+test('an ordinary user cannot create shared capacity from the form', async () => {
+  await withUi({}, async (h) => {
+    const admin = await signIn(h);
+    await h.app.inject({
+      method: 'POST', url: '/users', ...form(admin, { username: 'carol', password: 'carol-password', role: 'viewer' }),
+    });
+    const carol = await signIn(h, 'carol', 'carol-password');
+
+    await h.app.inject({ method: 'POST', url: '/workers', ...form(carol, { name: 'sneaky', shared: 'true' }) });
+
+    const rows = await h.services.db.all('SELECT name, owner_id FROM worker_tokens WHERE name = {n}', { n: 'sneaky' });
+    assert.equal(rows.length, 1);
+    assert.notEqual(rows[0].owner_id, null, 'an ordinary user must not create a shared worker');
+  });
+});
+
+// --- users ---
+
+test('the users page is administrator only and warns about what deletion destroys', async () => {
+  await withUi({}, async (h) => {
+    const admin = await signIn(h);
+    await h.app.inject({
+      method: 'POST', url: '/users', ...form(admin, { username: 'dave', password: 'dave-password', role: 'viewer' }),
+    });
+    const dave = await h.services.users.byUsername('dave');
+    await h.services.projects.setOwner('demo', dave.id);
+
+    const page = await get(h, '/users', admin);
+    assert.match(page.body, /dave/);
+    // The confirmation has to say what goes with the account.
+    assert.match(page.body, /also deletes 1 project\(s\) and all of their run history/);
+
+    const asViewer = await signIn(h, 'dave', 'dave-password');
+    const denied = await get(h, '/users', asViewer);
+    assert.match(denied.body, /Administrator role required/);
+  });
+});
+
+// --- live regions ---
+
+test('a running run polls, and a finished one stops', async () => {
+  await withUi({ visibility: 'public' }, async (h) => {
+    const run = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().run_id;
+
+    const running = await get(h, `/runs/${run}`);
+    assert.match(running.body, /hx-get="\/partials\/runs\/[^"]+\/jobs"/);
+    assert.match(running.body, /hx-trigger="every 3s"/);
+
+    await h.services.scheduler.cancelRun(run);
+
+    const finished = await get(h, `/runs/${run}`);
+    assert.ok(!finished.body.includes('/jobs" hx-trigger'), 'a settled run must stop polling');
+  });
+});
+
+test('a job page streams the log and stops polling once it completes', async () => {
+  await withUi({ visibility: 'public' }, async (h) => {
+    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const job = (await h.poll({})).json().job;
+
+    await h.app.inject({
+      method: 'POST',
+      url: `/api/workers/jobs/${encodeURIComponent(job.id)}/log`,
+      headers: { ...h.auth, 'content-type': 'application/octet-stream' },
+      payload: Buffer.from('compiling the thing\n'),
+    });
+
+    const live = await get(h, `/jobs/${encodeURIComponent(job.id)}`);
+    assert.match(live.body, /compiling the thing/);
+    assert.match(live.body, /hx-trigger="every 2s"/);
+
+    await h.app.inject({
+      method: 'POST',
+      url: `/api/workers/jobs/${encodeURIComponent(job.id)}/done`,
+      headers: { ...h.auth, 'content-type': 'application/json' },
+      payload: JSON.stringify({ success: true, exit_code: 0 }),
+    });
+
+    const done = await get(h, `/jobs/${encodeURIComponent(job.id)}`);
+    assert.match(done.body, /compiling the thing/);
+    assert.ok(!done.body.includes('hx-trigger="every 2s"'), 'a finished job must stop polling');
+  });
+});
+
+test('log output is escaped, so a job cannot inject markup into the page', async () => {
+  await withUi({ visibility: 'public' }, async (h) => {
+    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const job = (await h.poll({})).json().job;
+
+    await h.app.inject({
+      method: 'POST',
+      url: `/api/workers/jobs/${encodeURIComponent(job.id)}/log`,
+      headers: { ...h.auth, 'content-type': 'application/octet-stream' },
+      payload: Buffer.from('<img src=x onerror="alert(1)">\n'),
+    });
+
+    const page = await get(h, `/jobs/${encodeURIComponent(job.id)}`);
+    assert.ok(!page.body.includes('<img src=x'), 'job output must not become markup');
+    assert.match(page.body, /&lt;img src=x/);
+  });
+});
+
+// --- csrf ---
+
+test('a mutation without the htmx header is refused', async () => {
+  await withUi({}, async (h) => {
+    const session = await signIn(h);
+
+    // A cross site form post carries the cookie but cannot set a header.
+    const res = await h.app.inject({
+      method: 'POST',
+      url: '/projects',
+      headers: { ...session, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: new URLSearchParams({ id: 'csrf', repo_url: 'https://evil.example/x.git' }).toString(),
+    });
+    assert.equal(res.statusCode, 400);
+    assert.equal(await h.services.projects.get('csrf'), undefined);
+  });
+});
+
+// --- layout details ---
+
+test('the sign in form is centred rather than stranded at the left edge', async () => {
+  await withUi({}, async (h) => {
+    const res = await get(h, '/login');
+    assert.equal(res.statusCode, 200);
+    assert.match(res.body, /<div class="center">\s*<div class="panel narrow">/);
+  });
+});
+
+test('row actions stay ordinary table cells, so rows keep one height', async () => {
+  await withUi({}, async (h) => {
+    const session = await signIn(h);
+    await h.app.inject({ method: 'POST', url: '/workers', ...form(session, { name: 'metrics-check' }) });
+
+    for (const url of ['/workers', '/users']) {
+      const body = (await get(h, url, session)).body;
+      assert.match(body, /<td class="row-actions">/, `${url} should use row-actions`);
+      // The flex container used for button bars would break baseline
+      // alignment inside a row.
+      assert.ok(!body.includes('<td class="actions">'), `${url} must not make a cell a flex container`);
+    }
+  });
+});
+
+// --- assets ---
+
+test('the stylesheet and htmx are served, and nothing else is', async () => {
+  await withUi({}, async (h) => {
+    assert.equal((await get(h, '/style.css')).statusCode, 200);
+
+    const htmx = await get(h, '/vendor/htmx.min.js');
+    assert.equal(htmx.statusCode, 200);
+    assert.match(htmx.headers['content-type'], /javascript/);
+
+    for (const url of ['/vendor/../package.json', '/app.js', '/index.html']) {
+      assert.equal((await get(h, url)).statusCode, 404, `${url} must not be served`);
+    }
+  });
+});

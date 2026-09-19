@@ -65,6 +65,8 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
       features,
       tokenId: req.worker.id,
       workerName: name,
+      // A worker registered by a user only ever sees that user's projects.
+      ownerId: req.worker.owner_id ?? null,
     });
     if (!job) return reply.code(204).send();
 

@@ -21,7 +21,7 @@ export function createStorage(cfg) {
   return cfg.storage.driver === 's3' ? createS3Storage(cfg) : createLocalStorage(cfg);
 }
 
-// Key layout, kept in one place so the read-api and the conductor agree.
+// Key layout, kept in one place so every caller agrees.
 export const keys = {
   artifact: (runId, jobId, relPath) => `artifacts/${runId}/${jobId}/${relPath}`,
   log: (runId, jobId) => `logs/${runId}/${jobId}.log`,

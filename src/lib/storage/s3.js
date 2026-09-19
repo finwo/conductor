@@ -148,7 +148,7 @@ export function createS3Storage(cfg) {
       await res.arrayBuffer();
     },
 
-    // Lets the read-api redirect a client straight at the object store
+    // Lets a download redirect straight at the object store
     // instead of proxying the bytes.
     async presign(key, opts = {}) {
       return presignUrl({

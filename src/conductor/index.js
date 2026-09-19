@@ -1,8 +1,8 @@
-// src/conductor/index.js - conductor entry point
+// src/conductor/index.js - entry point
 //
-// The write side: accepts triggers, schedules runs, and serves the worker
-// API. Run the read-api separately when the public read surface should not
-// sit on the same port as the write surface.
+// One service: it accepts triggers, schedules runs, serves the worker API,
+// and renders the interface. Anonymous visitors see whatever the projects
+// have declared public, and nothing else.
 
 import { loadConfig } from '../lib/config.js';
 import { createServices, buildServer, startReaper } from './app.js';

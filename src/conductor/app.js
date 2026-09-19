@@ -24,6 +24,8 @@ import triggerRoutes from './routes/trigger.js';
 import runRoutes from './routes/runs.js';
 import authRoutes from './routes/auth.js';
 import adminRoutes from './routes/admin.js';
+import manageRoutes from './routes/manage.js';
+import uiRoutes from './ui/routes.js';
 import staticRoutes from '../lib/static.js';
 
 export async function createServices(cfg, options = {}) {
@@ -84,12 +86,14 @@ export async function buildServer(services, options = {}) {
   await fastify.register(workerRoutes, { ...services, prefix: '/api/workers' });
   await fastify.register(authRoutes, { ...services, prefix: '/api/auth' });
   await fastify.register(adminRoutes, { ...services, prefix: '/api/admin' });
+  await fastify.register(manageRoutes, { ...services, prefix: '/api' });
   await fastify.register(runRoutes, { ...services, prefix: '/api' });
 
-  // Served here as well as by the read-api, so a single process install
-  // has a working interface without deploying both.
-  if (options.dashboard !== false) {
+  // Signing in, managing projects and registering workers all need the
+  // write surface, so the interface lives with it.
+  if (options.ui !== false) {
     await fastify.register(staticRoutes, {});
+    await fastify.register(uiRoutes, { ...services });
   }
 
   return fastify;

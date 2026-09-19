@@ -31,8 +31,8 @@ Under construction. Working today:
   - pipeline parsing, matrix and architecture expansion, dependency graphs
   - triggers, run scheduling, the worker API, live logs, artifacts, reaping
   - the worker: containerised jobs, services, features, caches, cleanup
-  - accounts, OIDC, the admin API, and project variables
-  - the read-api and the dashboard
+  - accounts, OIDC, project ownership, visibility and project variables
+  - the web interface, server rendered with htmx
 
 Not yet built: container images and deployment manifests.
 
@@ -48,17 +48,7 @@ npm start
 ```
 
 On first start an administrator account is created and its generated
-password written to the log once. The dashboard is on the same port.
-
-Run the public read surface separately when the write surface should not be
-exposed:
-
-```sh
-npm run read-api
-```
-
-It serves the dashboard and the read API only. The trigger, worker and admin
-routes are not registered on it at all, so no credential can reach them.
+password written to the log once. Open the port and sign in.
 
 `mysql2` and `pg` are optional and only needed when `database.url` points at
 one of those servers.
@@ -109,6 +99,30 @@ node src/worker/agent.js --config worker.json
 ```
 
 See [docs/worker.md](docs/worker.md), and `examples/worker.json`.
+
+Who sees what
+-------------
+
+Everything is private by default. A run is visible to an anonymous visitor
+only when the project, or the pipeline at that commit, says it is public:
+
+```yaml
+version: 1
+visibility: public
+```
+
+Because it is recorded per run, making a repository private stops exposing
+future runs without rewriting the history of past ones.
+
+Users register their own projects and their own workers. A worker someone
+registers is only ever offered jobs from that person's projects, which is
+what makes it safe to accept build capacity from people you do not
+otherwise trust. A worker created by an administrator with no owner is
+shared, and runs anything.
+
+Administrators see and manage everything, and manage accounts. Deleting an
+account deletes the projects and workers it owned, along with their run
+history: leaving them behind would turn a personal worker into a shared one.
 
 Pipelines
 ---------
@@ -169,9 +183,8 @@ git push -> post-receive -> conductor -> job graph in the database
              source tarball, container, log stream, artifacts
 ```
 
-  - `src/conductor` the write side: triggers, scheduling, the worker API
-  - `src/read-api`  the public read side, deployable separately
-  - `src/worker`    the agent that runs jobs
+  - `src/conductor` triggers, scheduling, the worker API, the interface
+  - `src/worker`    the agent that runs jobs, with no npm dependencies
   - `src/lib`       configuration, database, storage, pipelines, git
 
 Queries are written once against all three databases using named `{key}`

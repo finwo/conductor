@@ -7,7 +7,6 @@
   "scripts": {
     "start": "node src/conductor/index.js",
     "dev": "node --watch src/conductor/index.js",
-    "read-api": "node src/read-api/index.js",
     "worker": "node src/worker/agent.js",
     "migrate": "node src/lib/db/migrate-cli.js",
     "test": "node --test \"test/**/*.test.js\""

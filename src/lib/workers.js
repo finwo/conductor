@@ -3,22 +3,34 @@
 // A worker authenticates with a bearer token. Only the SHA-256 of the token
 // is stored, so the database never holds a usable credential; the plaintext
 // is shown once at creation and cannot be recovered afterwards.
+//
+// A token may belong to a user, in which case it is only ever offered jobs
+// from that user's projects. A token with no owner is shared and can run
+// anything, which is how an administrator provides general capacity. That
+// distinction is enforced in the scheduler, not here.
 
 import { newToken, hashToken, newWorkerTokenId } from './ids.js';
 
 export function createWorkerTokens({ db }) {
   return {
-    async create(name) {
+    async create(name, { ownerId = null } = {}) {
       if (!name || typeof name !== 'string') throw new Error('worker token needs a name');
       const token = newToken();
       const id = newWorkerTokenId();
       await db.run(
-        `INSERT INTO worker_tokens (id, name, token_hash, enabled, created_at)
-         VALUES ({id}, {name}, {hash}, 1, {now})`,
-        { id, name, hash: hashToken(token), now: Date.now() }
+        `INSERT INTO worker_tokens (id, name, token_hash, enabled, owner_id, created_at)
+         VALUES ({id}, {name}, {hash}, 1, {owner}, {now})`,
+        { id, name, hash: hashToken(token), owner: ownerId, now: Date.now() }
       );
       // The only time the plaintext exists outside the worker.
-      return { id, name, token };
+      return { id, name, token, owner_id: ownerId };
+    },
+
+    async get(id) {
+      return db.get(
+        'SELECT id, name, enabled, owner_id, created_at, last_seen_at, last_ip FROM worker_tokens WHERE id = {id}',
+        { id }
+      );
     },
 
     // Returns the token record, or null. Lookup is by hash, so a timing
@@ -27,7 +39,7 @@ export function createWorkerTokens({ db }) {
       if (typeof presented !== 'string' || presented.length === 0) return null;
       const hash = hashToken(presented);
       const row = await db.get(
-        'SELECT id, name, enabled FROM worker_tokens WHERE token_hash = {hash}',
+        'SELECT id, name, enabled, owner_id FROM worker_tokens WHERE token_hash = {hash}',
         { hash }
       );
       if (!row || row.enabled !== 1) return null;
@@ -36,13 +48,23 @@ export function createWorkerTokens({ db }) {
         'UPDATE worker_tokens SET last_seen_at = {now}, last_ip = {ip} WHERE id = {id}',
         { id: row.id, now: Date.now(), ip }
       );
-      return { id: row.id, name: row.name };
+      return { id: row.id, name: row.name, owner_id: row.owner_id };
     },
 
     async list() {
       return db.all(
-        `SELECT id, name, enabled, created_at, last_seen_at, last_ip
+        `SELECT id, name, enabled, owner_id, created_at, last_seen_at, last_ip
            FROM worker_tokens ORDER BY created_at DESC`
+      );
+    },
+
+    async listVisible(user) {
+      if (user && user.role === 'admin') return this.list();
+      if (!user) return [];
+      return db.all(
+        `SELECT id, name, enabled, owner_id, created_at, last_seen_at, last_ip
+           FROM worker_tokens WHERE owner_id = {owner} ORDER BY created_at DESC`,
+        { owner: user.id }
       );
     },
 
@@ -59,4 +81,10 @@ export function createWorkerTokens({ db }) {
       return res.changes > 0;
     },
   };
+}
+
+export function canManageWorker(user, token) {
+  if (!user || !token) return false;
+  if (user.role === 'admin') return true;
+  return token.owner_id !== null && token.owner_id === user.id;
 }

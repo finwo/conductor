@@ -27,6 +27,16 @@ export function createUsers({ db, logger = console }) {
       return db.all(`SELECT ${PUBLIC_COLUMNS} FROM users ORDER BY username`);
     },
 
+    // With what each account owns, since removing one takes those with it.
+    async listWithHoldings() {
+      return db.all(
+        `SELECT u.id, u.username, u.role, u.disabled, u.created_at, u.last_login_at,
+                (SELECT COUNT(*) FROM projects p WHERE p.owner_id = u.id) AS project_count,
+                (SELECT COUNT(*) FROM worker_tokens w WHERE w.owner_id = u.id) AS worker_count
+           FROM users u ORDER BY u.username`
+      );
+    },
+
     async count() {
       return (await db.get('SELECT COUNT(*) AS c FROM users')).c;
     },

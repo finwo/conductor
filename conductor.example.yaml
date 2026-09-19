@@ -16,10 +16,6 @@ server:
   # URLs derived from it, so it must be correct behind a reverse proxy.
   public_url: http://127.0.0.1:8080
 
-read_api:
-  host: 0.0.0.0
-  port: 8081
-
 database:
   # Leave url unset for sqlite. Otherwise the scheme picks the dialect:
   #   mysql://user:pass@host:3306/conductor

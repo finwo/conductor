@@ -12,7 +12,7 @@ import { compileCached, bindParams } from './query.js';
 export function openSqlite(cfg) {
   const db = new DatabaseSync(cfg.database.path);
 
-  // WAL lets the read-api read while the conductor writes.
+  // WAL keeps readers from blocking the writer.
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA foreign_keys = ON');
   db.exec('PRAGMA busy_timeout = 5000');

@@ -116,6 +116,11 @@ export async function startHarness(options = {}) {
     trigger_secret: 'test-secret',
     config_path: options.configPath ?? '.conductor.yml',
     source_mode: options.sourceMode ?? 'archive',
+    // Public by default so that tests about scheduling can read runs back
+    // without signing in. Visibility itself is covered by its own suite,
+    // which creates private projects explicitly.
+    visibility: options.visibility ?? 'public',
+    owner_id: options.ownerId ?? null,
   });
 
   const worker = await services.workerTokens.create('test-worker');

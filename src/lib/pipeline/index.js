@@ -14,7 +14,7 @@ export { parsePipeline } from './parse.js';
 export { expandPipeline, interpolate } from './expand.js';
 export { topologicalOrder, depths, transitiveDependents, runnable, CycleError } from './dag.js';
 export { PipelineError } from './schema.js';
-export { SUPPORTED_VERSION } from './parse.js';
+export { SUPPORTED_VERSION, VISIBILITIES } from './parse.js';
 
 export function compilePipeline(text, options = {}) {
   const pipeline = parsePipeline(text, options);
@@ -32,5 +32,10 @@ export function compilePipeline(text, options = {}) {
   const depth = depths(jobs);
   for (const job of jobs) job.depth = depth.get(job.name);
 
-  return { version: pipeline.version, source: pipeline.source, jobs };
+  return {
+    version: pipeline.version,
+    source: pipeline.source,
+    visibility: pipeline.visibility,
+    jobs,
+  };
 }

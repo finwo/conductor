@@ -74,9 +74,9 @@ test('the session cookie authenticates as well as the bearer token', async () =>
   });
 });
 
-test('admin routes reject anonymous and non-admin callers', async () => {
+test('management needs a session, and user administration needs the admin role', async () => {
   await withAdmin({}, async (h, admin) => {
-    const anonymous = await h.app.inject({ method: 'GET', url: '/api/admin/projects' });
+    const anonymous = await h.app.inject({ method: 'GET', url: '/api/projects' });
     assert.equal(anonymous.statusCode, 401);
 
     await h.app.inject({
@@ -94,7 +94,13 @@ test('admin routes reject anonymous and non-admin callers', async () => {
     });
     const viewer = { authorization: `Bearer ${login.json().token}` };
 
-    const forbidden = await h.app.inject({ method: 'GET', url: '/api/admin/projects', headers: viewer });
+    // An ordinary user manages their own things, and owns nothing yet.
+    const own = await h.app.inject({ method: 'GET', url: '/api/projects', headers: viewer });
+    assert.equal(own.statusCode, 200);
+    assert.deepEqual(own.json().projects, []);
+
+    // User administration stays administrator only.
+    const forbidden = await h.app.inject({ method: 'GET', url: '/api/admin/users', headers: viewer });
     assert.equal(forbidden.statusCode, 403);
   });
 });
@@ -152,7 +158,7 @@ test('projects can be created, listed and removed, and the secret is shown once'
   await withAdmin({}, async (h, admin) => {
     const created = await h.app.inject({
       method: 'POST',
-      url: '/api/admin/projects',
+      url: '/api/projects',
       headers: json(admin),
       payload: JSON.stringify({ id: 'newproj', name: 'New', repo_url: 'https://git.example.com/new.git' }),
     });
@@ -160,14 +166,14 @@ test('projects can be created, listed and removed, and the secret is shown once'
     const secret = created.json().trigger_secret;
     assert.ok(secret && secret.length >= 32);
 
-    const listed = await h.app.inject({ method: 'GET', url: '/api/admin/projects', headers: admin });
+    const listed = await h.app.inject({ method: 'GET', url: '/api/projects', headers: admin });
     const project = listed.json().projects.find((p) => p.id === 'newproj');
     assert.equal(project.has_trigger_secret, true);
     // Listing must never return the value itself.
     assert.equal(project.trigger_secret, undefined);
     assert.ok(!JSON.stringify(listed.json()).includes(secret));
 
-    const deleted = await h.app.inject({ method: 'DELETE', url: '/api/admin/projects/newproj', headers: admin });
+    const deleted = await h.app.inject({ method: 'DELETE', url: '/api/projects/newproj', headers: admin });
     assert.equal(deleted.statusCode, 200);
   });
 });
@@ -176,7 +182,7 @@ test('a rotated trigger secret actually signs triggers', async () => {
   await withAdmin({}, async (h, admin) => {
     const rotated = await h.app.inject({
       method: 'POST',
-      url: '/api/admin/projects/demo/trigger-secret',
+      url: '/api/projects/demo/trigger-secret',
       headers: json(admin),
       payload: JSON.stringify({ secret: 'rotated-secret' }),
     });
@@ -195,7 +201,7 @@ test('worker tokens are issued once and can be revoked', async () => {
   await withAdmin({}, async (h, admin) => {
     const created = await h.app.inject({
       method: 'POST',
-      url: '/api/admin/worker-tokens',
+      url: '/api/worker-tokens',
       headers: json(admin),
       payload: JSON.stringify({ name: 'builder-2' }),
     });
@@ -209,13 +215,13 @@ test('worker tokens are issued once and can be revoked', async () => {
     assert.notEqual(poll.statusCode, 401);
 
     // It is never listed again.
-    const listed = await h.app.inject({ method: 'GET', url: '/api/admin/worker-tokens', headers: admin });
+    const listed = await h.app.inject({ method: 'GET', url: '/api/worker-tokens', headers: admin });
     assert.ok(!JSON.stringify(listed.json()).includes(token));
 
     // Disabling it takes effect at once.
     await h.app.inject({
       method: 'PATCH',
-      url: `/api/admin/worker-tokens/${record.id}`,
+      url: `/api/worker-tokens/${record.id}`,
       headers: json(admin),
       payload: JSON.stringify({ enabled: false }),
     });
@@ -230,14 +236,14 @@ test('project variables reach a job environment and are never listed', async () 
   await withAdmin({}, async (h, admin) => {
     const set = await h.app.inject({
       method: 'PUT',
-      url: '/api/admin/projects/demo/variables/DEPLOY_TOKEN',
+      url: '/api/projects/demo/variables/DEPLOY_TOKEN',
       headers: json(admin),
       payload: JSON.stringify({ value: 'super-secret-value', masked: true }),
     });
     assert.equal(set.statusCode, 200);
 
     const listed = await h.app.inject({
-      method: 'GET', url: '/api/admin/projects/demo/variables', headers: admin,
+      method: 'GET', url: '/api/projects/demo/variables', headers: admin,
     });
     const listing = listed.json().variables;
     assert.equal(listing[0].name, 'DEPLOY_TOKEN');
@@ -258,7 +264,7 @@ test('a variable is encrypted at rest and bound to its project and name', async 
   await withAdmin({}, async (h, admin) => {
     await h.app.inject({
       method: 'PUT',
-      url: '/api/admin/projects/demo/variables/TOKEN',
+      url: '/api/projects/demo/variables/TOKEN',
       headers: json(admin),
       payload: JSON.stringify({ value: 'rest-secret-value' }),
     });
@@ -295,7 +301,7 @@ jobs:
   await withAdmin({ pipeline }, async (h, admin) => {
     await h.app.inject({
       method: 'PUT',
-      url: '/api/admin/projects/demo/variables/SHARED',
+      url: '/api/projects/demo/variables/SHARED',
       headers: json(admin),
       payload: JSON.stringify({ value: 'from-variable' }),
     });
@@ -310,7 +316,7 @@ test('a masked variable is redacted from ingested logs', async () => {
   await withAdmin({}, async (h, admin) => {
     await h.app.inject({
       method: 'PUT',
-      url: '/api/admin/projects/demo/variables/LEAKY',
+      url: '/api/projects/demo/variables/LEAKY',
       headers: json(admin),
       payload: JSON.stringify({ value: 'leaked-secret-value', masked: true }),
     });
@@ -337,7 +343,7 @@ test('a run can be cancelled and retried through the api', async () => {
     const run = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().run_id;
 
     const cancelled = await h.app.inject({
-      method: 'POST', url: `/api/admin/runs/${run}/cancel`, headers: json(admin), payload: '{}',
+      method: 'POST', url: `/api/runs/${run}/cancel`, headers: json(admin), payload: '{}',
     });
     assert.equal(cancelled.statusCode, 200);
 
@@ -345,7 +351,7 @@ test('a run can be cancelled and retried through the api', async () => {
     assert.equal(detail.json().run.state, 'cancelled');
 
     const retried = await h.app.inject({
-      method: 'POST', url: `/api/admin/runs/${run}/retry`, headers: json(admin), payload: '{}',
+      method: 'POST', url: `/api/runs/${run}/retry`, headers: json(admin), payload: '{}',
     });
     assert.equal(retried.statusCode, 201);
     assert.notEqual(retried.json().run_id, run);
@@ -385,7 +391,7 @@ test('local login can be kept as a break-glass account alongside oidc', async ()
   });
   try {
     const headers = await h.login();
-    const res = await h.app.inject({ method: 'GET', url: '/api/admin/projects', headers });
+    const res = await h.app.inject({ method: 'GET', url: '/api/projects', headers });
     assert.equal(res.statusCode, 200);
   } finally {
     await h.stop();

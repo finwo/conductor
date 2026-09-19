@@ -11,11 +11,12 @@ file are reported together.
 Top level
 ---------
 
-| Key        | Required | Description                          |
-| ---------- | -------- | ------------------------------------ |
-| `version`  | yes      | Must be `1`.                         |
-| `defaults` | no       | Values inherited by every job.       |
-| `jobs`     | yes      | Mapping of job name to job.          |
+| Key          | Required | Description                                  |
+| ------------ | -------- | -------------------------------------------- |
+| `version`    | yes      | Must be `1`.                                 |
+| `visibility` | no       | `public` or `private`. Overrides the project. |
+| `defaults`   | no       | Values inherited by every job.               |
+| `jobs`       | yes      | Mapping of job name to job.                  |
 
 Job names may contain letters, digits, underscore, dot and hyphen, and must
 start with a letter or digit.
@@ -28,6 +29,24 @@ jobs:
   test:
     script: [make test]
 ```
+
+Visibility
+----------
+
+Runs are private unless something says otherwise, and the repository has the
+final word on its own results:
+
+```yaml
+version: 1
+visibility: public
+```
+
+Unset means the project's setting stands. The value is recorded on each run
+as it is created, so turning a repository private stops exposing future runs
+without retroactively hiding, or revealing, earlier ones.
+
+A public run, its logs and its artifacts are readable by anyone. A private
+run is readable by the project's owner and by administrators.
 
 Jobs
 ----

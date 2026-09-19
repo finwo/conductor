@@ -22,7 +22,11 @@ import {
   NAME_PATTERN,
 } from './schema.js';
 
-const TOP_KEYS = ['version', 'defaults', 'jobs'];
+const TOP_KEYS = ['version', 'visibility', 'defaults', 'jobs'];
+
+// A repository decides whether its own build results are readable without
+// signing in. Unset means the project's setting stands.
+export const VISIBILITIES = ['public', 'private'];
 
 const JOB_KEYS = [
   'image', 'script', 'needs', 'arch', 'matrix', 'requires', 'services',
@@ -68,6 +72,16 @@ export function parsePipeline(text, options = {}) {
     problems.add('version', `unsupported version ${JSON.stringify(doc.version)}, expected ${SUPPORTED_VERSION}`);
   }
 
+  let visibility = null;
+  if (doc.visibility !== undefined) {
+    const value = asString(problems, 'visibility', doc.visibility);
+    if (value !== undefined && !VISIBILITIES.includes(value)) {
+      problems.add('visibility', `expected one of ${VISIBILITIES.join(', ')}, got ${JSON.stringify(value)}`);
+    } else if (value !== undefined) {
+      visibility = value;
+    }
+  }
+
   const defaults = parseDefaults(problems, doc.defaults);
 
   if (doc.jobs === undefined) {
@@ -95,7 +109,7 @@ export function parsePipeline(text, options = {}) {
   }
 
   problems.throwIfAny(source);
-  return { version: SUPPORTED_VERSION, defaults, jobs, source };
+  return { version: SUPPORTED_VERSION, visibility, defaults, jobs, source };
 }
 
 function parseDefaults(problems, raw) {

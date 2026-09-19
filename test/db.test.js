@@ -51,11 +51,12 @@ test('migrations apply once and are idempotent', async () => {
   const { db, cleanup } = await tempDb();
   try {
     const first = await runMigrations(db, { logger: quiet });
-    assert.equal(first.applied.length, 1);
+    assert.ok(first.applied.length > 0, 'expected the schema to be created');
+    assert.equal(first.applied.length, first.total, 'a fresh database applies every migration');
 
     const second = await runMigrations(db, { logger: quiet });
-    assert.equal(second.applied.length, 0);
-    assert.equal(second.total, 1);
+    assert.equal(second.applied.length, 0, 'a second run must do nothing');
+    assert.equal(second.total, first.total);
   } finally {
     await cleanup();
   }

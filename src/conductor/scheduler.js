@@ -37,6 +37,7 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
            r.head_sha, r.project_id, r.ref, r.number
       FROM jobs j
       JOIN runs r ON r.id = j.run_id
+      JOIN projects p ON p.id = r.project_id
      WHERE j.state = 'queued'
        AND r.state = 'running'
        AND NOT EXISTS (
@@ -118,6 +119,11 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
       const runId = newRunId();
       const now = Date.now();
 
+      // The repository may declare its own visibility; otherwise the
+      // project's setting stands. Stored per run, because the answer can
+      // legitimately change from one commit to the next.
+      const visibility = pipeline.visibility ?? project.visibility ?? 'private';
+
       await db.transaction(async (tx) => {
         const number = await projects.nextRunNumber(tx, project.id);
         const empty = pipeline.jobs.length === 0;
@@ -125,11 +131,12 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
         await tx.run(
           `INSERT INTO runs
              (id, project_id, number, ref, base_sha, head_sha, trigger_type, actor,
-              title, state, pipeline, created_at, started_at, finished_at)
+              title, state, pipeline, visibility, created_at, started_at, finished_at)
            VALUES
              ({id}, {project}, {number}, {ref}, {base}, {head}, {trigger}, {actor},
-              {title}, {state}, {pipeline}, {now}, {now}, {finished})`,
+              {title}, {state}, {pipeline}, {visibility}, {now}, {now}, {finished})`,
           {
+            visibility,
             id: runId,
             project: project.id,
             number,
@@ -198,7 +205,12 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
 
     // Hands one job to a worker. The worker advertises what it can run;
     // jobs asking for anything it lacks are passed over.
-    async claim({ arches = [], features = [], tokenId, workerName }) {
+    //
+    // ownerId scopes the worker to one user's projects. That is the whole
+    // basis of letting people contribute their own hardware: a worker
+    // someone registers is never offered anybody else's work. A worker
+    // with no owner is shared capacity and sees everything.
+    async claim({ arches = [], features = [], tokenId, workerName, ownerId = null }) {
       const archFilter = inClause('arch', arches);
       const featureSet = new Set(features);
 
@@ -207,9 +219,10 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
       const candidates = await db.all(
         `${ELIGIBLE}
            AND (j.arch IS NULL${archFilter.empty ? '' : ` OR j.arch IN (${archFilter.sql})`})
+           ${ownerId === null ? '' : 'AND p.owner_id = {owner}'}
          ORDER BY r.created_at ASC, j.created_at ASC
          LIMIT 100`,
-        { ...archFilter.params }
+        { ...archFilter.params, ...(ownerId === null ? {} : { owner: ownerId }) }
       );
 
       for (const candidate of candidates) {
