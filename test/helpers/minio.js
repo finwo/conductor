@@ -19,6 +19,10 @@ const execFileAsync = promisify(execFile);
 // Pinned, so a MinIO release cannot change what the suite is testing
 // against without the change being visible here.
 export const IMAGE = 'quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z';
+// How long to wait for the container to answer. Generous, because it
+// competes with image builds for the machine.
+const READY_TIMEOUT = 120 * 1000;
+
 const NAME_PREFIX = 'conductor-minio-test-';
 
 const ACCESS_KEY = 'conductortest';
@@ -129,8 +133,14 @@ export async function startMinio() {
     IMAGE, 'server', '/data',
   ], { timeout: 180000 });
 
+  // Deadline rather than a count of attempts. A refused connection comes
+  // back instantly, so sixty attempts spaced by half a second gave up
+  // after thirty seconds regardless of the interval, and a machine busy
+  // pulling or building images needs longer than that. Failing there
+  // looked like a broken test rather than a slow start.
   let ready = false;
-  for (let i = 0; i < 60; i += 1) {
+  const deadline = Date.now() + READY_TIMEOUT;
+  while (Date.now() < deadline) {
     try {
       const res = await fetch(`${endpoint}/minio/health/live`, { signal: AbortSignal.timeout(2000) });
       if (res.ok) {
@@ -140,12 +150,20 @@ export async function startMinio() {
     } catch {
       // Still starting.
     }
-    await new Promise((r) => { setTimeout(r, 500).unref?.(); });
+    await new Promise((r) => { setTimeout(r, 500); });
   }
 
   if (!ready) {
+    // Whatever the container said on its way down, so a failure here is
+    // diagnosable from the test output rather than needing a rerun that
+    // may well not reproduce it.
+    const diagnosis = await execFileAsync('docker', ['logs', '--tail', '20', name], { timeout: 10000 })
+      .then(({ stdout, stderr }) => `${stdout}${stderr}`.trim())
+      .catch((e) => `could not read container logs: ${e.message}`);
     await execFileAsync('docker', ['rm', '-f', name]).catch(() => {});
-    throw new Error(`MinIO did not become ready at ${endpoint}`);
+    throw new Error(
+      `MinIO did not become ready at ${endpoint} within ${READY_TIMEOUT / 1000}s\n${diagnosis}`,
+    );
   }
 
   return {

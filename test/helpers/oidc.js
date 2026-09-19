@@ -99,6 +99,10 @@ async function freePort() {
   });
 }
 
+// How long to wait for the container to answer. Generous, because it
+// competes with image builds for the machine.
+const READY_TIMEOUT = 120 * 1000;
+
 const NAME_PREFIX = 'conductor-oidc-test-';
 
 // A test run that crashes hard, or is killed, never reaches its cleanup
@@ -145,8 +149,14 @@ export async function startOidc() {
   ], { timeout: 120000 });
 
   const discovery = `${issuer}/.well-known/openid-configuration`;
+  // Deadline rather than a count of attempts. A refused connection comes
+  // back instantly, so sixty attempts spaced by half a second gave up
+  // after thirty seconds regardless of the interval, and a machine busy
+  // pulling or building images needs longer than that. Failing there
+  // looked like a broken test rather than a slow start.
   let ready = false;
-  for (let i = 0; i < 60; i += 1) {
+  const deadline = Date.now() + READY_TIMEOUT;
+  while (Date.now() < deadline) {
     try {
       const res = await fetch(discovery, { signal: AbortSignal.timeout(2000) });
       if (res.ok) {
@@ -156,12 +166,12 @@ export async function startOidc() {
     } catch {
       // Still starting.
     }
-    await new Promise((r) => { setTimeout(r, 500).unref?.(); });
+    await new Promise((r) => { setTimeout(r, 500); });
   }
 
   if (!ready) {
     await execFileAsync('docker', ['rm', '-f', name]).catch(() => {});
-    throw new Error(`the OIDC provider did not become ready at ${discovery}`);
+    throw new Error(`the OIDC provider did not become ready at ${discovery} within ${READY_TIMEOUT / 1000}s`);
   }
 
   return {
