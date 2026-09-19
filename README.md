@@ -206,13 +206,28 @@ Testing
 npm test
 ```
 
-Tests that need a container skip themselves when docker is unavailable.
-With docker present the suite starts what it needs and cleans up after
-itself: real containers for the worker to run jobs in, and a real OIDC
-provider to authenticate against. Nothing is stubbed, because the failures
-worth catching are in the parts a stub would replace.
+That is the whole setup. With docker available the suite starts what it
+needs and cleans up after itself:
 
-S3 coverage is opt in, since it needs a server to point at:
+| Dependency          | Used for                                     |
+| ------------------- | -------------------------------------------- |
+| `alpine`            | containers for the worker to actually run jobs in |
+| MinIO               | object storage, artifacts and archived logs  |
+| mock-oauth2-server  | a real OIDC provider to authenticate against |
+
+Nothing is stubbed, because the failures worth catching live in the parts a
+stub would replace. Hand written SigV4 signing is only meaningfully tested
+by a server that rejects a bad signature, and the JWKS path was wrong
+against every provider except the one it was written for.
+
+Without docker those tests skip and the rest still run:
+
+```sh
+CONDUCTOR_TEST_NO_DOCKER=1 npm test
+```
+
+To test against a different object store, such as Garage or AWS, point the
+same tests at it instead of starting MinIO:
 
 ```sh
 docker run -d -p 9000:9000 -e MINIO_ROOT_USER=testkey \

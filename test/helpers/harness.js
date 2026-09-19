@@ -74,6 +74,19 @@ export async function startHarness(options = {}) {
     '  path: ./state/conductor.db',
     'storage:',
     '  path: ./state/storage',
+    // Given an s3 block, artifacts and finished logs go there instead of
+    // to the local path above.
+    ...(options.s3
+      ? [
+        '  s3:',
+        `    endpoint: ${options.s3.endpoint}`,
+        `    region: ${options.s3.region}`,
+        `    bucket: ${options.s3.bucket}`,
+        `    access_key_id: ${options.s3.access_key_id}`,
+        `    secret_access_key: ${options.s3.secret_access_key}`,
+        `    force_path_style: ${options.s3.force_path_style !== false}`,
+      ]
+      : []),
     'git:',
     '  mirror_path: ./state/mirrors',
     '  fetch_interval: 0',

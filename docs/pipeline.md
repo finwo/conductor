@@ -222,6 +222,13 @@ A bare list is shorthand for `paths`. Paths are relative to the workspace;
 absolute paths are rejected. `when` is `on_success`, `on_failure` or
 `always`.
 
+Artifacts are streamed rather than buffered, so size is bounded by where
+they are stored rather than by the conductor's memory. Object storage
+receives anything over 32 MiB as a multipart upload, which keeps memory
+flat and lifts the five gigabyte limit that applies to a single request.
+Disk images and other multi gigabyte output are fine; what they cost is
+storage, not resident memory.
+
 Cache
 -----
 

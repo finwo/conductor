@@ -332,6 +332,25 @@ test('log appends are resumable and deduplicated by offset', async () => {
   });
 });
 
+test('an oversized log chunk is refused', async () => {
+  await withHarness({}, async (h) => {
+    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const job = await claimNamed(h, 'lint', {});
+
+    // Artifacts are streamed and may be large, but a single log append is
+    // buffered, so it has to be bounded or a worker can exhaust memory.
+    const res = await h.app.inject({
+      method: 'POST',
+      url: `/api/workers/jobs/${encodeURIComponent(job.id)}/log`,
+      headers: { ...h.auth, 'content-type': 'application/octet-stream' },
+      payload: Buffer.alloc(2 * 1024 * 1024, 0x41),
+    });
+
+    assert.equal(res.statusCode, 413);
+    assert.equal(await h.services.logs.size(job.run_id, job.id), 0, 'nothing should have been written');
+  });
+});
+
 test('a finished log moves to storage and is still readable', async () => {
   await withHarness({}, async (h) => {
     await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
