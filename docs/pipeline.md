@@ -66,6 +66,7 @@ Jobs
 | `allow_failure` | boolean           | `false`        | yes         |
 | `timeout`       | duration          | server default | yes         |
 | `max_attempts`  | integer, 1 to 10  | `1`            | yes         |
+| `only`          | mapping           | none           | no          |
 
 `image` and `script` are the only required fields, and `image` may come from
 `defaults`.
@@ -91,6 +92,48 @@ exceed seven days; `artifacts.expire` may not exceed a year.
 
 Fanning out
 -----------
+
+### only
+
+Restricts a job to certain refs. Without it a job runs on every push.
+
+```yaml
+publish:
+  needs: [build]
+  only:
+    refs: [refs/heads/main, 'refs/tags/v*']
+  script:
+    - ./deploy/publish.sh
+```
+
+Patterns match the whole ref, so `refs/heads/main` rather than `main`.
+A `*` stands for any run of characters; everything else is literal, so a
+dot is a dot rather than any character.
+
+A job that does not match is left out of the run entirely, not recorded
+as skipped. A skipped job means a dependency collapsed and fails the run,
+which is the wrong reading for a publish step that was never meant to run
+on this branch.
+
+Anything depending on an excluded job is excluded with it. Dropping the
+dependency instead would let a job run without something it declared it
+needed, which is the worse surprise:
+
+```yaml
+# On a branch, none of these three run.
+publish:
+  only: { refs: [refs/heads/main] }
+  script: ['make publish']
+announce:
+  needs: [publish]
+  script: ['make announce']
+```
+
+A run triggered without a ref matches no pattern, so restricted jobs stay
+out rather than being handed a ref they were never written for.
+
+The rule is not inheritable from `defaults`. A restriction that silently
+applied to every job is hard to spot when the symptom is an empty run.
 
 ### arch
 

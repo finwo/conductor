@@ -149,6 +149,9 @@ export function expandPipeline(pipeline, options = {}) {
         allow_failure: job.allow_failure,
         timeout: job.timeout ?? defaultTimeout,
         max_attempts: job.max_attempts ?? defaultAttempts,
+        // Every instance of a matrix job inherits the ref rule, so a
+        // restricted job stays restricted across all of its expansions.
+        only: job.only ?? null,
         needs: [],
       });
     }

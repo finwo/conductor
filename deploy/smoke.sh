@@ -64,6 +64,11 @@ jobs:
   publish:
     needs: [build]
     script: ['echo published']
+  release:
+    needs: [build]
+    only:
+      refs: [refs/heads/main]
+    script: ['echo released']
 PIPELINE
 echo 'smoke test repository' > "${WORK}/repo/README.md"
 git -C "${WORK}/repo" init -q -b main
@@ -176,5 +181,37 @@ printf 'artifact contents: %s\n' "${CONTENT}"
 
 log "checking the interface"
 curl -fsS "http://127.0.0.1:${PORT}/" | grep -q 'conductor' || fail "the interface did not render"
+
+# The release job is restricted to main. A push to anything else must not
+# produce it at all, rather than produce it and skip it, since a skipped
+# job fails the run.
+log "checking that a branch push leaves the restricted job out"
+BRANCH_BODY=$(printf '{"sha":"%s","ref":"refs/heads/feature"}' "${SHA}")
+BRANCH_SIG=$(printf '%s' "${BRANCH_BODY}" | openssl dgst -sha256 -hmac "${SECRET}" | sed 's/^.*[= ]//')
+BRANCH=$(curl -fsS -X POST "http://127.0.0.1:${PORT}/api/trigger/demo" \
+  -H 'Content-Type: application/json' \
+  -H "X-Hub-Signature-256: sha256=${BRANCH_SIG}" \
+  -d "${BRANCH_BODY}")
+printf '%s\n' "${BRANCH}"
+
+printf '%s' "${BRANCH}" | grep -q '"jobs":2' \
+  || fail "expected 2 jobs on a branch, got: ${BRANCH}"
+
+BRANCH_RUN=$(printf '%s' "${BRANCH}" | sed 's/.*"run_id":"\([^"]*\)".*/\1/')
+i=0
+while [ "${i}" -lt 90 ]; do
+  BRANCH_STATE=$(curl -fsS "http://127.0.0.1:${PORT}/api/runs/${BRANCH_RUN}" | sed 's/.*"state":"\([^"]*\)".*/\1/')
+  case "${BRANCH_STATE}" in
+    success|failed|cancelled) break ;;
+  esac
+  i=$((i + 1))
+  sleep 1
+done
+
+curl -fsS "http://127.0.0.1:${PORT}/api/runs/${BRANCH_RUN}" | grep -q '"release"' \
+  && fail "the release job should not exist on a branch run"
+
+printf 'branch run finished as %s without the release job\n' "${BRANCH_STATE}"
+[ "${BRANCH_STATE}" = success ] || fail "the branch run ended as ${BRANCH_STATE}"
 
 printf '\nPASSED\n'

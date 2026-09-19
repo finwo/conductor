@@ -9,11 +9,11 @@ Quick start
 -----------
 
 ```sh
-docker compose -f deploy/docker-compose.yml up -d --build
+docker compose -f deploy/docker-compose.yml up -d
 ```
 
-That brings up a conductor on port 8080 with sqlite on a volume, and one
-worker. The compose file needs a worker token, so the first run is
+That pulls the published images and brings up a conductor on port 8080
+with sqlite on a volume, and one worker. The compose file needs a worker token, so the first run is
 two steps:
 
 ```sh
@@ -42,16 +42,25 @@ log and artifact came back.
 Images
 ------
 
-| Image                | Contents                                        |
-| -------------------- | ----------------------------------------------- |
-| `deploy/Dockerfile`  | the conductor: node, git, the application       |
-| `deploy/Dockerfile.worker` | the worker: node, git, tar, the docker CLI |
+| Image                     | Contents                                    |
+| ------------------------- | ------------------------------------------- |
+| `finwo/conductor`         | the conductor: node, git, the application   |
+| `finwo/conductor-worker`  | the worker: node, git, tar, the docker CLI  |
 
-Both build from the repository root:
+Published for `linux/amd64`, `linux/arm64` and `linux/riscv64`. Tags:
+`latest` follows releases, `1.2.3` and `1.2` pin a version, and a twelve
+character commit id pins an exact build from main.
+
+Both are built on Alpine rather than the official node image, which is
+only published for amd64, arm64 and ppc64le. Alpine 3.23 carries node 24
+on every architecture here, and a docker client too, so the worker no
+longer fetches a static binary that has no riscv64 build at all.
+
+To build them yourself:
 
 ```sh
-docker build -f deploy/Dockerfile -t conductor .
-docker build -f deploy/Dockerfile.worker -t conductor-worker .
+docker build -f deploy/Dockerfile -t finwo/conductor .
+docker build -f deploy/Dockerfile.worker -t finwo/conductor-worker .
 ```
 
 The worker image installs `yaml` so its configuration file may be YAML; the
@@ -179,6 +188,49 @@ docker compose -f deploy/docker-compose.yml pull
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
+Pin a version rather than tracking `latest` if an unattended restart
+picking up a new release would be unwelcome:
+
+```sh
+CONDUCTOR_IMAGE=finwo/conductor:1.2.3 \
+CONDUCTOR_WORKER_IMAGE=finwo/conductor-worker:1.2.3 \
+  docker compose -f deploy/docker-compose.yml up -d
+```
+
 Workers can be upgraded independently and in any order. The worker API is
 the boundary between them, and a worker that goes away mid-job has that job
 requeued after `scheduler.heartbeat_timeout`.
+
+Publishing
+----------
+
+The images are built and pushed by the project's own pipeline, from
+`deploy/publish.sh`. It runs only on `main` and on `v*` tags, enforced by
+an `only:` rule in `.conductor.yml` rather than by a check inside the
+script, so a branch build cannot move `latest` even by accident.
+
+| Ref                | Tags pushed                          |
+| ------------------ | ------------------------------------ |
+| `refs/heads/main`  | `latest`, `<short sha>`              |
+| `refs/tags/v1.2.3` | `1.2.3`, `1.2`, `latest`             |
+
+A tag that is not a plain version, `v1.2.3-rc1` for instance, is refused
+rather than guessed at.
+
+Pushing needs `REGISTRY_USERNAME` and `REGISTRY_TOKEN` as project
+variables. They are masked in job logs, and passed to `docker login` on
+standard input rather than on the command line so they stay out of the
+process list. The job logs out again on the way out, whether or not it
+succeeded, so nothing is left behind on a shared worker.
+
+The foreign architectures are emulated with QEMU, registered per run with
+`tonistiigi/binfmt`. A riscv64 build under emulation is slow; giving the
+pool a worker of that architecture makes it native instead, since the
+worker declares its own architectures when it polls.
+
+To see what a release would push without pushing it:
+
+```sh
+CONDUCTOR_REF=refs/tags/v1.2.3 CONDUCTOR_SHA=$(git rev-parse HEAD) \
+  DRY_RUN=1 deploy/publish.sh
+```

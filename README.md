@@ -33,7 +33,7 @@ Under construction. Working today:
   - the worker: containerised jobs, services, features, caches, cleanup
   - accounts, OIDC, project ownership, visibility and project variables
   - the web interface, server rendered with htmx
-  - container images, compose manifests and a deployment smoke test
+  - container images for amd64, arm64 and riscv64, published on release
 
 Installation
 ------------
@@ -43,6 +43,9 @@ With docker:
 ```sh
 docker compose -f deploy/docker-compose.yml up -d conductor
 ```
+
+Images are published as `finwo/conductor` and `finwo/conductor-worker`
+for amd64, arm64 and riscv64.
 
 From source, requiring node 24 or newer and no native modules:
 

@@ -113,6 +113,10 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
         source: project.config_path,
         defaultTimeout: cfg.scheduler.default_job_timeout,
         defaultAttempts: 1,
+        // Decides which jobs this push runs at all, so a publish step
+        // restricted to main is absent from a branch run rather than
+        // recorded against it.
+        ref: ref ?? '',
       });
 
       const info = await git.commitInfo(project, headSha).catch(() => ({ subject: null }));

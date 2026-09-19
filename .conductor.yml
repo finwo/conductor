@@ -1,0 +1,81 @@
+# The pipeline conductor runs on itself.
+#
+# The suite is split in two because most of it needs nothing but node,
+# while the parts that exercise object storage and OIDC start real
+# containers and so need a worker offering the docker feature. Setting
+# CONDUCTOR_TEST_NO_DOCKER skips those rather than failing them, which
+# keeps the fast job honest about what it did and did not check.
+
+version: 1
+visibility: public
+
+defaults:
+  image: node:24-bookworm-slim
+  timeout: 15m
+
+jobs:
+  # Style rules that are cheap to break and cheap to check: ASCII only,
+  # no CRLF, no trailing whitespace.
+  style:
+    script:
+      - npm install --no-audit --no-fund
+      - node --test test/ascii.test.js
+    cache:
+      key: npm
+      paths: [.npm]
+
+  # Everything that runs without a docker socket.
+  test:
+    script:
+      - npm install --no-audit --no-fund
+      - npm test
+    env:
+      CONDUCTOR_TEST_NO_DOCKER: '1'
+    cache:
+      key: npm
+      paths: [.npm]
+
+  # The same suite with the container-backed tests switched on, so the S3
+  # and OIDC paths are exercised against real servers rather than skipped.
+  integration:
+    requires: [docker]
+    script:
+      - npm install --no-audit --no-fund
+      - npm test
+    cache:
+      key: npm
+      paths: [.npm]
+
+  # Both images have to build before anything claims a release is possible.
+  # Host architecture only, since this runs on every branch and the point
+  # is to catch a broken Dockerfile early rather than to ship anything.
+  images:
+    needs: [style, test]
+    requires: [docker]
+    image: docker:28-cli
+    script:
+      - docker build -f deploy/Dockerfile -t conductor:$CONDUCTOR_SHA .
+      - docker build -f deploy/Dockerfile.worker -t conductor-worker:$CONDUCTOR_SHA .
+
+  # The whole stack, built from the images and exercised with a real
+  # pipeline. Catches what unit tests cannot: that the thing people
+  # actually deploy starts, registers a worker and runs a job.
+  smoke:
+    needs: [images]
+    requires: [docker]
+    image: docker:28-cli
+    script:
+      - apk add --no-cache git openssl curl
+      - ./deploy/smoke.sh
+
+  # Pushes to Docker Hub. Restricted to main and release tags, so a branch
+  # build never moves :latest. Without the rule this job would run on every
+  # push, which is the whole reason only: exists.
+  publish:
+    needs: [smoke, integration]
+    requires: [docker]
+    image: docker:28-cli
+    only:
+      refs: [refs/heads/main, 'refs/tags/v*']
+    script:
+      - ./deploy/publish.sh

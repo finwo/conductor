@@ -31,6 +31,7 @@ export const VISIBILITIES = ['public', 'private'];
 const JOB_KEYS = [
   'image', 'script', 'needs', 'arch', 'matrix', 'requires', 'services',
   'env', 'artifacts', 'cache', 'allow_failure', 'timeout', 'max_attempts',
+  'only',
 ];
 
 // Fields a job may inherit from defaults.
@@ -39,6 +40,7 @@ const DEFAULT_KEYS = [
   'allow_failure', 'timeout', 'max_attempts',
 ];
 
+const ONLY_KEYS = ['refs'];
 const ARTIFACT_KEYS = ['paths', 'expire', 'when'];
 const ARTIFACT_WHEN = ['on_success', 'on_failure', 'always'];
 const CACHE_KEYS = ['key', 'paths'];
@@ -203,7 +205,44 @@ function parseJob(problems, path, raw, defaults) {
     max_attempts: raw.max_attempts === undefined
       ? defaults.max_attempts
       : asInteger(problems, `${path}.max_attempts`, raw.max_attempts, { min: 1, max: 10 }),
+    only: parseOnly(problems, `${path}.only`, raw.only),
   };
+}
+
+// Restricts a job to certain refs. Deliberately not inheritable from
+// defaults: a rule that silently applied to every job is the kind of thing
+// that stops a pipeline running at all and takes an afternoon to find.
+//
+//   only:
+//     refs: [refs/heads/main, 'refs/tags/v*']
+//
+// Patterns match the whole ref, so refs/heads/main rather than main, with
+// * standing for any run of characters. Absent means the job always runs.
+function parseOnly(problems, path, raw) {
+  if (raw === undefined || raw === null) return null;
+  if (!isPlainObject(raw)) {
+    problems.add(path, 'must be a mapping, for example: only: { refs: [refs/heads/main] }');
+    return null;
+  }
+
+  for (const key of Object.keys(raw)) {
+    if (!ONLY_KEYS.includes(key)) {
+      problems.add(`${path}.${key}`, `unknown key, expected one of: ${ONLY_KEYS.join(', ')}`);
+    }
+  }
+
+  if (raw.refs === undefined) {
+    problems.add(path, 'needs a refs list, otherwise it restricts nothing');
+    return null;
+  }
+
+  const refs = asStringList(problems, `${path}.refs`, raw.refs, { max: 64 });
+  if (refs.length === 0) {
+    problems.add(`${path}.refs`, 'must list at least one ref pattern');
+    return null;
+  }
+
+  return { refs };
 }
 
 // A need is either a job name, or a mapping for the cases where the default
