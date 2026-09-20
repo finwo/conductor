@@ -11,8 +11,8 @@ Source and issues: https://github.com/finwo/conductor
 | Tag              | What it is                                 |
 | ---------------- | ------------------------------------------ |
 | `latest`         | the most recent release                    |
-| `0.3.1`          | an exact version                           |
-| `0.3`            | the latest patch of that minor series      |
+| `0.4.0`          | an exact version                           |
+| `0.4`            | the latest patch of that minor series      |
 | `<commit>`       | an exact build from main, twelve hex chars |
 
 Built for `linux/amd64`, `linux/arm64` and `linux/riscv64`.
@@ -20,8 +20,8 @@ Built for `linux/amd64`, `linux/arm64` and `linux/riscv64`.
 **Upgrade the conductor and its workers together.** In 0.3.0 a job became
 one run of a pipeline and a task became the unit this image runs. Workers
 claim from `/api/v1/tasks/claim`, so a 0.2.x worker will not run anything
-for a 0.3.x conductor. Pin both to the same version if they are upgraded
-separately.
+for a 0.3 or newer conductor. Pin both to the same version if they are
+upgraded separately.
 
 ## Quick start
 
