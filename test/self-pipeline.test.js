@@ -2,7 +2,7 @@
 //
 // .conductor.yml is not covered by examples.test.js, and it is the one
 // pipeline whose breakage stops the project from building at all. It also
-// encodes decisions that are easy to undo by accident: which tasks may job
+// encodes decisions that are easy to undo by accident: which tasks may run
 // on any worker, and which need a docker socket.
 
 import test from 'node:test';
@@ -46,9 +46,9 @@ test('its tasks declare the features they actually need', async () => {
     );
   }
 
-  // Conversely, the tasks meant to job anywhere must not demand features.
+  // Conversely, the tasks meant to run anywhere must not demand features.
   for (const name of ['style', 'test']) {
-    assert.deepEqual(byName.get(name).requires, [], `${name} should job on any worker`);
+    assert.deepEqual(byName.get(name).requires, [], `${name} should run on any worker`);
   }
 });
 
@@ -65,10 +65,10 @@ test('publishing is restricted to main and release tags', async () => {
     );
     assert.ok(
       !tasks.some((j) => j.name === 'publish'),
-      `publish must not job for ${JSON.stringify(ref)}`,
+      `publish must not run for ${JSON.stringify(ref)}`,
     );
-    // The rest of the pipeline still has to job on a branch.
-    assert.ok(tasks.some((j) => j.name === 'test'), `test should still job for ${JSON.stringify(ref)}`);
+    // The rest of the pipeline still has to run on a branch.
+    assert.ok(tasks.some((j) => j.name === 'test'), `test should still run for ${JSON.stringify(ref)}`);
   }
 
   for (const ref of ['refs/heads/main', 'refs/tags/v1.2.0']) {
@@ -76,6 +76,6 @@ test('publishing is restricted to main and release tags', async () => {
       await fs.readFile(path.join(ROOT, '.conductor.yml'), 'utf8'),
       { source: '.conductor.yml', arches: ['x86_64'], ref },
     );
-    assert.ok(tasks.some((j) => j.name === 'publish'), `publish should job for ${ref}`);
+    assert.ok(tasks.some((j) => j.name === 'publish'), `publish should run for ${ref}`);
   }
 });

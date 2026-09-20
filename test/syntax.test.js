@@ -2,11 +2,11 @@
 //
 // Most modules are covered because a test imports them, but entry points
 // and the dashboard are never imported by anything: the entry points start
-// listeners, and the dashboard only ever jobs in a browser. A syntax error
+// listeners, and the dashboard only ever runs in a browser. A syntax error
 // in either would otherwise reach a deployment.
 //
 // node --check parses without executing, which is what makes this safe to
-// job over files that would start a server on import.
+// run over files that would start a server on import.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
