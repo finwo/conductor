@@ -1,0 +1,5 @@
+# conductor.conf - webhook configuration for post-receive hook
+# Format: url secret (one per line, comments start with #)
+
+# https://ci.example.com/api/v1/projects/prod/trigger secret123
+# https://ci.staging.com/api/v1/projects/staging/trigger staging_secret

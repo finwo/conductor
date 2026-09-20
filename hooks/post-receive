@@ -1,45 +1,25 @@
 #!/bin/sh
-# hooks/post-receive - notify a conductor of pushed commits
+# hooks/post-receive - notify conductors of pushed commits
 #
 # Install into a bare repository as hooks/post-receive, chmod +x.
 # Reads "<old> <new> <ref>" per pushed ref on stdin.
 #
-# Required:
-#   CONDUCTOR_URL      base url, for example https://ci.example.com
-#   CONDUCTOR_PROJECT  project id registered with the conductor
-#
-# Optional:
-#   CONDUCTOR_SECRET       trigger secret, or a path to a file holding it.
-#                          Required whenever the project has one set.
-#   CONDUCTOR_REFS         space separated refs to build. Default: every
-#                          branch. Example: "refs/heads/main refs/heads/dev"
-#   CONDUCTOR_TIMEOUT      seconds to wait per request, default 10
-#
-# The hook decides nothing about the build. It reports which commit was
-# pushed and the conductor reads the pipeline from the repository itself.
-# A failure here never blocks the push.
+# Expects conductor.conf in the parent directory with lines:
+#   <trigger_url> <secret>
+# Blank lines and lines starting with # are ignored.
 
 set -eu
 
-CONDUCTOR_URL="${CONDUCTOR_URL:-}"
-CONDUCTOR_PROJECT="${CONDUCTOR_PROJECT:-}"
-CONDUCTOR_SECRET="${CONDUCTOR_SECRET:-}"
-CONDUCTOR_REFS="${CONDUCTOR_REFS:-}"
-CONDUCTOR_TIMEOUT="${CONDUCTOR_TIMEOUT:-10}"
-
 ZERO="0000000000000000000000000000000000000000"
+
+DIRSELF=$(dirname $(realpath $0))
+CONFIG="${DIRSELF}/../conductor.conf"
 
 log() { printf '[conductor] %s\n' "$*" >&2; }
 
-if [ -z "${CONDUCTOR_URL}" ] || [ -z "${CONDUCTOR_PROJECT}" ]; then
-  log "CONDUCTOR_URL and CONDUCTOR_PROJECT must be set; not triggering"
+if [ ! -f "${CONFIG}" ]; then
+  log "no conductor.conf found; not triggering"
   exit 0
-fi
-
-# The secret may be given inline or as a file, so it can stay out of the
-# process environment on shared hosts.
-if [ -n "${CONDUCTOR_SECRET}" ] && [ -f "${CONDUCTOR_SECRET}" ]; then
-  CONDUCTOR_SECRET=$(cat "${CONDUCTOR_SECRET}")
 fi
 
 if command -v curl >/dev/null 2>&1; then
@@ -51,15 +31,39 @@ else
   exit 0
 fi
 
-want_ref() {
-  [ -z "${CONDUCTOR_REFS}" ] && case "$1" in
-    refs/heads/*) return 0 ;;
-    *) return 1 ;;
-  esac
-  for candidate in ${CONDUCTOR_REFS}; do
-    [ "${candidate}" = "$1" ] && return 0
-  done
-  return 1
+trigger() {
+  _url="$1"
+  _secret="$2"
+  _payload="$3"
+  _ref="$4"
+
+  if [ -n "${_secret}" ]; then
+    digest=$(printf '%s' "${_payload}" | openssl dgst -sha256 -hmac "${_secret}" | sed 's/^.*[= ]//')
+    signature="sha256=${digest}"
+  else
+    signature=""
+    log "warning: no secret for ${_url}, sending unsigned"
+  fi
+
+  if [ "${http_client}" = curl ]; then
+    response=$(curl -fsS -m 10 -X POST "${_url}" \
+      -H 'Content-Type: application/json' \
+      -H "X-Hub-Signature-256: ${signature}" \
+      -d "${_payload}" 2>&1) || {
+      log "trigger failed for ${_ref}: ${response}"
+      return
+    }
+  else
+    response=$(wget -qO- --timeout=10 \
+      --header='Content-Type: application/json' \
+      --header="X-Hub-Signature-256: ${signature}" \
+      --post-data="${_payload}" "${_url}" 2>&1) || {
+      log "trigger failed for ${_ref}: ${response}"
+      return
+    }
+  fi
+
+  log "${response}"
 }
 
 while read -r old new ref; do
@@ -68,12 +72,11 @@ while read -r old new ref; do
     continue
   fi
 
-  if ! want_ref "${ref}"; then
-    log "skipping ${ref}"
-    continue
-  fi
+  case "${ref}" in
+    refs/heads/*) ;;
+    *) log "skipping ${ref}"; continue ;;
+  esac
 
-  # A new branch reports an all zero parent, which is not a commit.
   if [ "${old}" = "${ZERO}" ]; then
     base=""
   else
@@ -83,36 +86,20 @@ while read -r old new ref; do
   payload=$(printf '{"sha":"%s","base":"%s","ref":"%s","actor":"%s"}' \
     "${new}" "${base}" "${ref}" "${USER:-git}")
 
-  if [ -n "${CONDUCTOR_SECRET}" ]; then
-    digest=$(printf '%s' "${payload}" | openssl dgst -sha256 -hmac "${CONDUCTOR_SECRET}" | sed 's/^.*[= ]//')
-    signature="sha256=${digest}"
-  else
-    signature=""
-    log "warning: no CONDUCTOR_SECRET set, sending unsigned"
-  fi
-
-  url="${CONDUCTOR_URL%/}/api/v1/projects/${CONDUCTOR_PROJECT}/trigger"
   log "triggering ${ref} at $(echo "${new}" | cut -c1-12)"
 
-  if [ "${http_client}" = curl ]; then
-    response=$(curl -fsS -m "${CONDUCTOR_TIMEOUT}" -X POST "${url}" \
-      -H 'Content-Type: application/json' \
-      -H "X-Hub-Signature-256: ${signature}" \
-      -d "${payload}" 2>&1) || {
-      log "trigger failed for ${ref}: ${response}"
-      continue
-    }
-  else
-    response=$(wget -qO- --timeout="${CONDUCTOR_TIMEOUT}" \
-      --header='Content-Type: application/json' \
-      --header="X-Hub-Signature-256: ${signature}" \
-      --post-data="${payload}" "${url}" 2>&1) || {
-      log "trigger failed for ${ref}: ${response}"
-      continue
-    }
-  fi
+  while IFS= read -r line; do
+    case "${line}" in
+      ''|\#*) continue ;;
+    esac
 
-  log "${response}"
+    url=$(printf '%s' "${line}" | awk '{print $1}')
+    secret=$(printf '%s' "${line}" | awk '{print $2}')
+
+    [ -z "${url}" ] && continue
+
+    trigger "${url}" "${secret}" "${payload}" "${ref}" "${new}"
+  done < "${CONFIG}"
 done
 
 exit 0
