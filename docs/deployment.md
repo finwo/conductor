@@ -1,7 +1,7 @@
 Deployment
 ==========
 
-One service, one image. The conductor accepts triggers, schedules runs,
+One service, one image. The conductor accepts triggers, schedules jobs,
 serves the worker API and renders the interface. Workers are separate and
 may live anywhere, including on machines you do not administer.
 
@@ -13,7 +13,7 @@ docker compose -f deploy/docker-compose.yml up -d
 ```
 
 That pulls the published images and brings up a conductor on port 8080
-with sqlite on a volume, and one worker. The compose file needs a worker token, so the first run is
+with sqlite on a volume, and one worker. The compose file needs a worker token, so the first job is
 two steps:
 
 ```sh
@@ -78,7 +78,7 @@ Everything the conductor keeps lives in `/data`:
 /data/storage        artifacts and archived logs, unless S3 is configured
 ```
 
-Mount a volume there. Losing it loses run history, and the mirrors and
+Mount a volume there. Losing it loses job history, and the mirrors and
 spool will be rebuilt.
 
 Configuration
@@ -135,8 +135,8 @@ docker run -d --restart unless-stopped \
   finwo/conductor-worker
 ```
 
-It keeps no state and shares no directory with the jobs it runs. A job's
-tree is unpacked into the job's own container over the socket, and its
+It keeps no state and shares no directory with the tasks it runs. A task's
+tree is unpacked into the task's own container over the socket, and its
 artifacts are read back the same way, so there is no workspace to mount,
 no path that has to mean the same thing on both sides, and nothing to
 persist between restarts.
@@ -178,12 +178,12 @@ Retention
 ---------
 
 Nothing is deleted unless this says so, and logs are what fills a disk:
-written for every job, read for almost none. The defaults keep artifacts
-for 30 days or the last 10 runs, and logs for 14 days.
+written for every task, read for almost none. The defaults keep artifacts
+for 30 days or the last 10 jobs, and logs for 14 days.
 
 ```yaml
 retention:
-  artifact_keep_runs: 10
+  artifact_keep_jobs: 10
   artifact_keep_days: 30
   log_keep_days: 14
   sweep_interval: 3600
@@ -198,7 +198,7 @@ Three values, three meanings, and the difference matters:
 | ------ | ---------------------------------------- |
 | `null` | follow the server default                |
 | `0`    | keep forever                             |
-| `n`    | keep that many runs, or that many days   |
+| `n`    | keep that many jobs, or that many days   |
 
 The settings page shows what a `null` resolves to, since the server defaults
 are not otherwise visible there.
@@ -206,22 +206,22 @@ are not otherwise visible there.
 ### How the artifact rules combine
 
 An artifact is kept if **either** rule wants it. The last
-`artifact_keep_runs` runs keep their artifacts however old they are, and
-anything younger than `artifact_keep_days` is kept however many runs have
+`artifact_keep_jobs` jobs keep their artifacts however old they are, and
+anything younger than `artifact_keep_days` is kept however many jobs have
 followed. Setting both is therefore more generous than setting one, not
 less.
 
-The most recent **successful** run is kept regardless, so a project that
+The most recent **successful** job is kept regardless, so a project that
 has not built in months still has something to download. Only the latest
 one: older successes are not protected.
 
-A job that sets `artifacts.expire` in its pipeline overrides all of the
+A task that sets `artifacts.expire` in its pipeline overrides all of the
 above with an exact deadline, including the protection for the last good
-run. That is deliberate, and is how a bulky intermediate avoids becoming
+job. That is deliberate, and is how a bulky intermediate avoids becoming
 immortal by being green.
 
-Logs go by age alone. Sweeping a log deletes the bytes and leaves the job,
-so a run stays explainable after its output is gone, and the interface can
+Logs go by age alone. Sweeping a log deletes the bytes and leaves the task,
+so a job stays explainable after its output is gone, and the interface can
 tell an expired log apart from one that was never written.
 
 ### What a first sweep will do
@@ -275,7 +275,7 @@ CONDUCTOR_WORKER_IMAGE=finwo/conductor-worker:1.2.3 \
 ```
 
 Workers can be upgraded independently and in any order. The worker API is
-the boundary between them, and a worker that goes away mid-job has that job
+the boundary between them, and a worker that goes away mid-task has that task
 requeued after `scheduler.heartbeat_timeout`.
 
 Publishing
@@ -295,12 +295,12 @@ A tag that is not a plain version, `v1.2.3-rc1` for instance, is refused
 rather than guessed at.
 
 Pushing needs `REGISTRY_USERNAME` and `REGISTRY_TOKEN` as project
-variables. They are masked in job logs, and passed to `docker login` on
+variables. They are masked in task logs, and passed to `docker login` on
 standard input rather than on the command line so they stay out of the
-process list. The job logs out again on the way out, whether or not it
+process list. The task logs out again on the way out, whether or not it
 succeeded, so nothing is left behind on a shared worker.
 
-The foreign architectures are emulated with QEMU, registered per run with
+The foreign architectures are emulated with QEMU, registered per job with
 `tonistiigi/binfmt`. Giving the pool a worker of that architecture makes
 it native instead, since a worker declares its own architectures when it
 polls.

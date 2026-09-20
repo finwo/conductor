@@ -82,16 +82,16 @@ log:
 # its settings page; zero means keep forever.
 #
 # Artifacts follow two rules and survive if either wants them: the last
-# artifact_keep_runs runs are kept whatever their age, and anything younger
-# than artifact_keep_days is kept however many runs have followed. The most
-# recent successful run is always kept, so a project that has gone quiet
-# still has something to download. A job that sets artifacts.expire in the
+# artifact_keep_jobs jobs are kept whatever their age, and anything younger
+# than artifact_keep_days is kept however many jobs have followed. The most
+# recent successful job is always kept, so a project that has gone quiet
+# still has something to download. A task that sets artifacts.expire in the
 # pipeline overrides all of it with an exact deadline.
 #
 # Logs go by age alone. They are the reason this exists: written for every
-# job, read for almost none, and otherwise never removed.
+# task, read for almost none, and otherwise never removed.
 retention:
-  artifact_keep_runs: 10
+  artifact_keep_jobs: 10
   artifact_keep_days: 30
   log_keep_days: 14
   # Seconds between sweeps, and how much one sweep will delete, so a first
@@ -100,9 +100,9 @@ retention:
   batch: 500
 
 scheduler:
-  # A claimed job whose worker stops reporting for this long is treated as
+  # A claimed task whose worker stops reporting for this long is treated as
   # lost, then retried or failed. Must exceed reap_interval.
   heartbeat_timeout: 120
   reap_interval: 30
-  default_job_timeout: 3600
+  default_task_timeout: 3600
   max_attempts: 3

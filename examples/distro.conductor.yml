@@ -20,7 +20,7 @@ defaults:
   image: debian:bookworm-slim
   timeout: 2h
 
-jobs:
+tasks:
   check:
     timeout: 10m
     script:

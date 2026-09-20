@@ -52,10 +52,10 @@ version: 1
 visibility: public
 defaults:
   image: alpine:3
-jobs:
+tasks:
   build:
     script:
-      - echo "run $CONDUCTOR_RUN_NUMBER of $CONDUCTOR_PROJECT"
+      - echo "run $CONDUCTOR_JOB_NUMBER of $CONDUCTOR_PROJECT"
       - mkdir -p out && echo "packaged" > out/result.txt
     artifacts:
       paths: [out/**]
@@ -127,7 +127,7 @@ export SMOKE_TOKEN
 log "starting the worker"
 compose up -d worker >/dev/null 2>&1
 
-log "triggering a run"
+log "triggering a job"
 BODY=$(printf '{"sha":"%s","ref":"refs/heads/main"}' "${SHA}")
 SIG=$(printf '%s' "${BODY}" | openssl dgst -sha256 -hmac "${SECRET}" | sed 's/^.*[= ]//')
 RESPONSE=$(curl -fsS -X POST "http://127.0.0.1:${PORT}/api/v1/projects/demo/trigger" \
@@ -136,21 +136,20 @@ RESPONSE=$(curl -fsS -X POST "http://127.0.0.1:${PORT}/api/v1/projects/demo/trig
   -d "${BODY}")
 printf '%s\n' "${RESPONSE}"
 
-RUN=$(printf '%s' "${RESPONSE}" | sed 's/.*"run_id":"\([^"]*\)".*/\1/')
-[ -n "${RUN}" ] || fail "no run was created"
+JOB=$(printf '%s' "${RESPONSE}" | sed 's/.*"job_id":"\([^"]*\)".*/\1/')
+[ -n "${JOB}" ] || fail "no job was created"
 
-# The run state is the first badge on the run page. There is no read API;
-# the interface is the only place to see it.
-run_state() {
-  curl -fsS "http://127.0.0.1:${PORT}/runs/$1" \
+# The job state is the first badge on the job page.
+job_state() {
+  curl -fsS "http://127.0.0.1:${PORT}/jobs/$1" \
     | sed -n 's/.*class="badge \([a-z]*\)".*/\1/p' | head -1
 }
 
-log "waiting for the run to finish"
+log "waiting for the job to finish"
 STATE_NOW=
 i=0
 while [ "${i}" -lt 90 ]; do
-  STATE_NOW=$(run_state "${RUN}")
+  STATE_NOW=$(job_state "${JOB}")
   case "${STATE_NOW}" in
     success|failed|cancelled) break ;;
   esac
@@ -158,18 +157,21 @@ while [ "${i}" -lt 90 ]; do
   sleep 1
 done
 
-printf 'run %s finished as %s after %ss\n' "${RUN}" "${STATE_NOW}" "${i}"
+printf 'job %s finished as %s after %ss\n' "${JOB}" "${STATE_NOW}" "${i}"
 [ "${STATE_NOW}" = success ] || {
   compose logs worker | tail -30
-  fail "the run ended as ${STATE_NOW}"
+  fail "the job ended as ${STATE_NOW}"
 }
 
 log "checking the log and the artifact"
-JOB="${RUN}:build"
-ENCODED=$(printf '%s' "${JOB}" | sed 's/:/%3A/g')
+# Task ids carry no structure, so the build task is found by following the
+# link from the job page rather than by assembling an id.
+TASK=$(curl -fsS "http://127.0.0.1:${PORT}/jobs/${JOB}" \
+  | sed -n 's#.*href="/tasks/\([^"]*\)">build<.*#\1#p' | head -1)
+[ -n "${TASK}" ] || fail "no build task was linked from the job page"
 
-PAGE=$(curl -fsS "http://127.0.0.1:${PORT}/jobs/${ENCODED}")
-printf '%s\n' "${PAGE}" | grep -q 'run 1 of demo' || fail "the job environment did not reach the script"
+PAGE=$(curl -fsS "http://127.0.0.1:${PORT}/tasks/${TASK}")
+printf '%s\n' "${PAGE}" | grep -q 'run 1 of demo' || fail "the task environment did not reach the script"
 
 ARTIFACT_PATH=$(printf '%s' "${PAGE}" \
   | sed -n 's#.*href="\(/api/v1/[^"]*/artifacts/[^"]*\)".*#\1#p' | head -1)
@@ -182,10 +184,10 @@ printf 'artifact contents: %s\n' "${CONTENT}"
 log "checking the interface"
 curl -fsS "http://127.0.0.1:${PORT}/" | grep -q 'conductor' || fail "the interface did not render"
 
-# The release job is restricted to main. A push to anything else must not
+# The release task is restricted to main. A push to anything else must not
 # produce it at all, rather than produce it and skip it, since a skipped
-# job fails the run.
-log "checking that a branch push leaves the restricted job out"
+# task fails the job.
+log "checking that a branch push leaves the restricted task out"
 BRANCH_BODY=$(printf '{"sha":"%s","ref":"refs/heads/feature"}' "${SHA}")
 BRANCH_SIG=$(printf '%s' "${BRANCH_BODY}" | openssl dgst -sha256 -hmac "${SECRET}" | sed 's/^.*[= ]//')
 BRANCH=$(curl -fsS -X POST "http://127.0.0.1:${PORT}/api/v1/projects/demo/trigger" \
@@ -194,13 +196,13 @@ BRANCH=$(curl -fsS -X POST "http://127.0.0.1:${PORT}/api/v1/projects/demo/trigge
   -d "${BRANCH_BODY}")
 printf '%s\n' "${BRANCH}"
 
-printf '%s' "${BRANCH}" | grep -q '"jobs":2' \
-  || fail "expected 2 jobs on a branch, got: ${BRANCH}"
+printf '%s' "${BRANCH}" | grep -q '"tasks":2' \
+  || fail "expected 2 tasks on a branch, got: ${BRANCH}"
 
-BRANCH_RUN=$(printf '%s' "${BRANCH}" | sed 's/.*"run_id":"\([^"]*\)".*/\1/')
+BRANCH_JOB=$(printf '%s' "${BRANCH}" | sed 's/.*"job_id":"\([^"]*\)".*/\1/')
 i=0
 while [ "${i}" -lt 90 ]; do
-  BRANCH_STATE=$(run_state "${BRANCH_RUN}")
+  BRANCH_STATE=$(job_state "${BRANCH_JOB}")
   case "${BRANCH_STATE}" in
     success|failed|cancelled) break ;;
   esac
@@ -208,10 +210,10 @@ while [ "${i}" -lt 90 ]; do
   sleep 1
 done
 
-curl -fsS "http://127.0.0.1:${PORT}/runs/${BRANCH_RUN}" | grep -q '>release<' \
-  && fail "the release job should not exist on a branch run"
+curl -fsS "http://127.0.0.1:${PORT}/jobs/${BRANCH_JOB}" | grep -q '>release<' \
+  && fail "the release task should not exist on a branch job"
 
-printf 'branch run finished as %s without the release job\n' "${BRANCH_STATE}"
-[ "${BRANCH_STATE}" = success ] || fail "the branch run ended as ${BRANCH_STATE}"
+printf 'branch job finished as %s without the release task\n' "${BRANCH_STATE}"
+[ "${BRANCH_STATE}" = success ] || fail "the branch job ended as ${BRANCH_STATE}"
 
 printf '\nPASSED\n'

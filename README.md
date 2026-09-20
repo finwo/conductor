@@ -1,19 +1,19 @@
 conductor
 =========
 
-A stand-alone CI system. Pipelines live in the repository, jobs run in
+A stand-alone CI system. Pipelines live in the repository, tasks run in
 containers, and workers pull work rather than being pushed to.
 
 Summary
 -------
 
 The conductor accepts a push notification, reads `.conductor.yml` at the
-pushed commit, and turns it into a graph of jobs. Workers poll for work,
-advertising the architectures and features they can offer. Any job whose
+pushed commit, and turns it into a graph of tasks. Workers poll for work,
+advertising the architectures and features they can offer. Any task whose
 dependencies have succeeded is eligible, so a wide graph runs wide.
 
 Workers need no repository credentials: the conductor serves the source tree
-for the exact commit a job was handed. A worker on someone else's hardware
+for the exact commit a task was handed. A worker on someone else's hardware
 can therefore build for you without being able to read anything else.
 
 Nothing has to be set up before it will run. With no configuration it uses
@@ -29,8 +29,8 @@ Under construction. Working today:
   - configuration, with sqlite, mysql/tidb and postgres backends
   - local and S3 compatible object storage
   - pipeline parsing, matrix and architecture expansion, dependency graphs
-  - triggers, run scheduling, the worker API, live logs, artifacts, reaping
-  - the worker: containerised jobs, services, features, caches, cleanup
+  - triggers, job scheduling, the worker API, live logs, artifacts, reaping
+  - the worker: containerised tasks, services, features, caches, cleanup
   - accounts, OIDC, project ownership, visibility and project variables
   - the web interface, server rendered with htmx
   - container images for amd64, arm64 and riscv64, published on release
@@ -120,7 +120,7 @@ See [docs/worker.md](docs/worker.md), and `examples/worker.json`.
 Who sees what
 -------------
 
-Everything is private by default. A run is visible to an anonymous visitor
+Everything is private by default. A job is visible to an anonymous visitor
 only when the project, or the pipeline at that commit, says it is public:
 
 ```yaml
@@ -128,17 +128,17 @@ version: 1
 visibility: public
 ```
 
-Because it is recorded per run, making a repository private stops exposing
-future runs without rewriting the history of past ones.
+Because it is recorded per job, making a repository private stops exposing
+future jobs without rewriting the history of past ones.
 
 Users register their own projects and their own workers. A worker someone
-registers is only ever offered jobs from that person's projects, which is
+registers is only ever offered tasks from that person's projects, which is
 what makes it safe to accept build capacity from people you do not
 otherwise trust. A worker created by an administrator with no owner is
 shared, and runs anything.
 
 Administrators see and manage everything, and manage accounts. Deleting an
-account deletes the projects and workers it owned, along with their run
+account deletes the projects and workers it owned, along with their job
 history: leaving them behind would turn a personal worker into a shared one.
 
 Pipelines
@@ -151,7 +151,7 @@ defaults:
   image: debian:bookworm-slim
   timeout: 30m
 
-jobs:
+tasks:
   test:
     script:
       - make test
@@ -178,13 +178,13 @@ jobs:
       - ./publish.sh
 ```
 
-`arch` and `matrix` fan a job out into one job per combination. A dependency
+`arch` and `matrix` fan a task out into one task per combination. A dependency
 that shares a dimension is matched on it, so the aarch64 package waits for
 the aarch64 build rather than for every build, while `publish`, which has no
 architecture of its own, waits for all of them.
 
 `requires` names features a worker must offer. A worker holding a signing key
-advertises `sign-key`, and only jobs asking for it are sent there. The key
+advertises `sign-key`, and only tasks asking for it are sent there. The key
 stays on the worker and is never known to the conductor.
 
 See [docs/pipeline.md](docs/pipeline.md) for the full reference,
@@ -196,7 +196,7 @@ Architecture
 ------------
 
 ```
-git push -> post-receive -> conductor -> job graph in the database
+git push -> post-receive -> conductor -> task graph in the database
                                 |
                           worker polls
                                 |
@@ -204,7 +204,7 @@ git push -> post-receive -> conductor -> job graph in the database
 ```
 
   - `src/conductor` triggers, scheduling, the worker API, the interface
-  - `src/worker`    the agent that runs jobs, with no npm dependencies
+  - `src/worker`    the agent that runs tasks, with no npm dependencies
   - `src/lib`       configuration, database, storage, pipelines, git
 
 Queries are written once against all three databases using named `{key}`
@@ -223,7 +223,7 @@ needs and cleans up after itself:
 
 | Dependency          | Used for                                     |
 | ------------------- | -------------------------------------------- |
-| `alpine`            | containers for the worker to actually run jobs in |
+| `alpine`            | containers for the worker to actually run tasks in |
 | MinIO               | object storage, artifacts and archived logs  |
 | mock-oauth2-server  | a real OIDC provider to authenticate against |
 

@@ -13,7 +13,7 @@ defaults:
   image: node:24-bookworm-slim
   timeout: 15m
 
-jobs:
+tasks:
   # Style rules that are cheap to break and cheap to check: ASCII only,
   # no CRLF, no trailing whitespace.
   style:

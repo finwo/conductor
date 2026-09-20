@@ -11,22 +11,31 @@ file are reported together.
 Top level
 ---------
 
-| Key          | Required | Description                                  |
-| ------------ | -------- | -------------------------------------------- |
-| `version`    | yes      | Must be `1`.                                 |
-| `visibility` | no       | `public` or `private`. Overrides the project. |
-| `workdir`    | no       | Absolute path jobs run in. Overrides the project. |
-| `defaults`   | no       | Values inherited by every job.               |
-| `jobs`       | yes      | Mapping of job name to job.                  |
+| Key          | Required | Description                                         |
+| ------------ | -------- | --------------------------------------------------- |
+| `version`    | yes      | Must be `1`.                                        |
+| `visibility` | no       | `public` or `private`. Overrides the project.       |
+| `workdir`    | no       | Absolute path tasks run in. Overrides the project.  |
+| `defaults`   | no       | Values inherited by every task.                     |
+| `tasks`      | yes      | Mapping of task name to task.                       |
 
-Job names may contain letters, digits, underscore, dot and hyphen, and must
+The file may be named `.conductor.yml` or `.conductor.yaml`; both are
+looked for unless the project was pointed at some other path explicitly.
+Carrying both at once is an error rather than a coin toss, since two
+pipelines in one repository will disagree sooner or later.
+
+This key was called `jobs` before 0.3.0. A job is now the pipeline run
+that these tasks belong to, and a file still using the old spelling is
+refused with a message saying so.
+
+Task names may contain letters, digits, underscore, dot and hyphen, and must
 start with a letter or digit.
 
 ```yaml
 version: 1
 defaults:
   image: debian:bookworm-slim
-jobs:
+tasks:
   test:
     script: [make test]
 ```
@@ -34,7 +43,7 @@ jobs:
 Visibility
 ----------
 
-Runs are private unless something says otherwise, and the repository has the
+Jobs are private unless something says otherwise, and the repository has the
 final word on its own results:
 
 ```yaml
@@ -42,14 +51,14 @@ version: 1
 visibility: public
 ```
 
-Unset means the project's setting stands. The value is recorded on each run
-as it is created, so turning a repository private stops exposing future runs
+Unset means the project's setting stands. The value is recorded on each job
+as it is created, so turning a repository private stops exposing future jobs
 without retroactively hiding, or revealing, earlier ones.
 
-A public run, its logs and its artifacts are readable by anyone. A private
-run is readable by the project's owner and by administrators.
+A public job, its logs and its artifacts are readable by anyone. A private
+job is readable by the project's owner and by administrators.
 
-Jobs
+Tasks
 ----
 
 | Key             | Type              | Default        | Inheritable |
@@ -73,7 +82,7 @@ Jobs
 
 ### script
 
-A list of shell commands, run in order in the job's container. The job fails
+A list of shell commands, run in order in the task's container. The task fails
 on the first command that exits non-zero.
 
 Take care with YAML scalars. Unquoted `true`, `false`, `yes`, `no` and `on`
@@ -87,7 +96,7 @@ script: [true]        # rejected, this is a boolean
 ### timeout
 
 Accepts whole seconds, or a duration with units `s`, `m`, `h`, `d` and `w`,
-optionally combined: `90`, `90s`, `30m`, `1h`, `1h30m`. A job timeout may not
+optionally combined: `90`, `90s`, `30m`, `1h`, `1h30m`. A task timeout may not
 exceed seven days; `artifacts.expire` may not exceed a year.
 
 Fanning out
@@ -95,7 +104,7 @@ Fanning out
 
 ### only
 
-Restricts a job to certain refs. Without it a job runs on every push.
+Restricts a task to certain refs. Without it a task runs on every push.
 
 ```yaml
 publish:
@@ -110,13 +119,13 @@ Patterns match the whole ref, so `refs/heads/main` rather than `main`.
 A `*` stands for any run of characters; everything else is literal, so a
 dot is a dot rather than any character.
 
-A job that does not match is left out of the run entirely, not recorded
-as skipped. A skipped job means a dependency collapsed and fails the run,
+A task that does not match is left out of the job entirely, not recorded
+as skipped. A skipped task means a dependency collapsed and fails the job,
 which is the wrong reading for a publish step that was never meant to run
 on this branch.
 
-Anything depending on an excluded job is excluded with it. Dropping the
-dependency instead would let a job run without something it declared it
+Anything depending on an excluded task is excluded with it. Dropping the
+dependency instead would let a task run without something it declared it
 needed, which is the worse surprise:
 
 ```yaml
@@ -129,15 +138,15 @@ announce:
   script: ['make announce']
 ```
 
-A run triggered without a ref matches no pattern, so restricted jobs stay
+A job triggered without a ref matches no pattern, so restricted tasks stay
 out rather than being handed a ref they were never written for.
 
 The rule is not inheritable from `defaults`. A restriction that silently
-applied to every job is hard to spot when the symptom is an empty run.
+applied to every task is hard to spot when the symptom is an empty job.
 
 ### arch
 
-Expands the job into one job per architecture, and restricts each to a worker
+Expands the task into one task per architecture, and restricts each to a worker
 that offers it. The value is available to the script as `$ARCH`.
 
 ```yaml
@@ -161,16 +170,16 @@ package:
     mode: [debug, release]
 ```
 
-produces four jobs, named `package:pkg=musl,mode=debug` and so on.
+produces four tasks, named `package:pkg=musl,mode=debug` and so on.
 
-Matrix values become part of the job name, so they are limited to letters,
+Matrix values become part of the task name, so they are limited to letters,
 digits, underscore, dot and hyphen. Use `arch` rather than a matrix dimension
 called `arch`.
 
 Dependencies
 ------------
 
-`needs` lists jobs that must succeed first. A cycle is rejected, naming the
+`needs` lists tasks that must succeed first. A cycle is rejected, naming the
 cycle.
 
 When a dependency shares a dimension with the dependent, it is matched on
@@ -198,9 +207,9 @@ Three forms are accepted:
 
 ```yaml
 needs: [build]                          # match shared dimensions
-needs: ['build:arch=x86_64']            # one specific job
+needs: ['build:arch=x86_64']            # one specific task
 needs:
-  - job: build
+  - task: build
     match: all                          # every instance, ignore dimensions
 ```
 
@@ -215,7 +224,7 @@ Worker features
 ---------------
 
 `requires` names capabilities the worker must advertise. The conductor only
-offers a job to a worker that advertises all of them.
+offers a task to a worker that advertises all of them.
 
 ```yaml
 package:
@@ -225,13 +234,13 @@ package:
 
 What a feature provides is defined on the worker, not here: a mount, some
 environment, a privileged container. This is how a signing key reaches a
-build without the conductor ever holding it, and how a job asks for docker in
+build without the conductor ever holding it, and how a task asks for docker in
 docker.
 
 Services
 --------
 
-Sidecar containers started alongside the job on the same network, reachable
+Sidecar containers started alongside the task on the same network, reachable
 by their alias.
 
 ```yaml
@@ -247,7 +256,7 @@ test:
 ```
 
 The alias defaults to the image name without registry, path or tag, so
-`postgres:16` is reachable as `postgres`. Aliases must be unique within a job.
+`postgres:16` is reachable as `postgres`. Aliases must be unique within a task.
 
 Artifacts
 ---------
@@ -265,11 +274,11 @@ A bare list is shorthand for `paths`. Paths are relative to the workspace;
 absolute paths are rejected. `when` is `on_success`, `on_failure` or
 `always`.
 
-`expire` sets an exact deadline for what this job produces, and overrides
+`expire` sets an exact deadline for what this task produces, and overrides
 the project's retention policy in both directions: sooner than the project
 would delete, or later than it would keep. It also overrides the rule that
-protects the most recent successful run, which is the point of it. A
-node_modules tree is worth dropping within the hour whether or not its run
+protects the most recent successful job, which is the point of it. A
+node_modules tree is worth dropping within the hour whether or not its job
 was green, and without that the largest artifacts are the ones kept
 longest.
 
@@ -291,7 +300,7 @@ version: 1
 workdir: /usr/src/app
 ```
 
-Where the tree is unpacked inside the job container, and the directory
+Where the tree is unpacked inside the task container, and the directory
 every script starts in. It must be an absolute path of ordinary directory
 names; it does not have to exist in the image, and is created as the tree
 is unpacked.
@@ -303,25 +312,25 @@ knows that, and whoever registered the project should not have to.
 
 Nothing else is shared with the container. The tree arrives over the
 docker API and artifacts leave the same way, so a worker needs no
-directory in common with the jobs it runs, and no storage of its own.
+directory in common with the tasks it jobs, and no storage of its own.
 
 Environment
 -----------
 
 `env` values must be scalars, and names must be valid environment variable
-names. Job `env` is merged over `defaults.env`.
+names. Task `env` is merged over `defaults.env`.
 
 Injected automatically:
 
 | Variable          | Present when                     |
 | ----------------- | -------------------------------- |
-| `ARCH`            | the job declares `arch`          |
+| `ARCH`            | the task declares `arch`          |
 | `MATRIX_<NAME>`   | for each matrix dimension        |
 
 Interpolation
 -------------
 
-`${{ ... }}` is substituted before the job is stored, in `image`, `script`,
+`${{ ... }}` is substituted before the task is stored, in `image`, `script`,
 `env` values, `requires` and `services`. Two expressions are available:
 `arch` and `matrix.<name>`.
 
@@ -334,7 +343,7 @@ build:
   script: ['./build.sh ${{ matrix.pkg }}']
 ```
 
-Referring to a dimension the job does not declare is an error. Inside
+Referring to a dimension the task does not declare is an error. Inside
 `script` the `$ARCH` and `$MATRIX_*` variables usually read better, since the
 shell expands them; interpolation exists for the fields the shell never sees,
 such as `image`.
@@ -349,7 +358,7 @@ defaults:
   image: debian:bookworm-slim
   timeout: 30m
 
-jobs:
+tasks:
   lint:
     script: [make lint]
 
@@ -376,6 +385,6 @@ jobs:
     script: ['./mk/publish.sh']
 ```
 
-This yields nine jobs: one `lint`, two `build`, four `package` and one
-`publish`. The two `build` jobs run at the same time as `lint`; each
+This yields nine tasks: one `lint`, two `build`, four `package` and one
+`publish`. The two `build` tasks run at the same time as `lint`; each
 `package` starts as soon as its own architecture's `build` finishes.

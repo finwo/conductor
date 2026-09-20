@@ -1,6 +1,6 @@
 # conductor
 
-A small CI server. Accepts triggers, schedules runs, serves the worker
+A small CI server. Accepts triggers, schedules jobs, serves the worker
 API and renders the interface. One service, one image.
 
 Source and issues: https://github.com/finwo/conductor
@@ -10,15 +10,16 @@ Source and issues: https://github.com/finwo/conductor
 | Tag              | What it is                                 |
 | ---------------- | ------------------------------------------ |
 | `latest`         | the most recent release                    |
-| `0.2.0`          | an exact version                           |
-| `0.2`            | the latest patch of that minor series      |
+| `0.3.0`          | an exact version                           |
+| `0.3`            | the latest patch of that minor series      |
 | `<commit>`       | an exact build from main, twelve hex chars |
 
 Built for `linux/amd64`, `linux/arm64` and `linux/riscv64`.
 
-**Upgrade the conductor and its workers together.** 0.2.0 changed how a
-job's tree reaches its container, and a 0.1.x worker will not run jobs
-from a 0.2.x conductor.
+**Upgrade the conductor and its workers together.** In 0.3.0 a job became
+one run of a pipeline and a task became the unit a worker runs. Workers
+claim from `/api/v1/tasks/claim`, so a 0.2.x worker will not run anything
+for a 0.3.x conductor.
 
 ## Quick start
 
@@ -34,7 +35,7 @@ docker run -d \
 The administrator password is printed once in the log on first start.
 Set `CONDUCTOR_ADMIN_PASSWORD` to choose it instead.
 
-Jobs need a worker, which is a separate image: see
+Tasks need a worker, which is a separate image: see
 [finwo/conductor-worker](https://hub.docker.com/r/finwo/conductor-worker).
 A compose file running both is in the repository under `deploy/`.
 
@@ -85,7 +86,7 @@ handed over with a presigned redirect rather than proxied.
 
 Build output is deleted on a schedule, or a busy server fills its disk
 with logs nobody will read. The defaults keep artifacts for 30 days or
-the last 10 runs, and logs for 14 days, and a project may override any of
+the last 10 jobs, and logs for 14 days, and a project may override any of
 it. Upgrading an installation that has been running for a while will
 delete a lot on the first sweep, so set these before starting if that
 matters:

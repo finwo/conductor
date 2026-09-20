@@ -9,7 +9,7 @@ defaults:
   image: node:22-bookworm-slim
   timeout: 20m
 
-jobs:
+tasks:
   install:
     script:
       - npm ci
