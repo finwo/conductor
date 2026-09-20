@@ -12,17 +12,24 @@ A worker deals only in tasks. It is never told which project or job a task
 belongs to, and the task id it receives carries no structure it could read
 that out of. What it gets is a context and a script.
 
-The conductor exposes four HTTP surfaces, all under `/api/v1`. Everything
+The conductor exposes five HTTP surfaces, all under `/api/v1`. Everything
 else, including signing in and managing projects, workers and users,
 happens in the interface.
 
-| Surface                                    | Authentication        |
-| ------------------------------------------ | --------------------- |
-| `POST /api/v1/projects/:project/trigger`    | per project HMAC      |
-| `POST /api/v1/projects/:project/jobs`       | per project HMAC      |
-| `GET  /api/v1/projects/:project/jobs/:job`  | HMAC, session, or anonymous for a public job |
-| `/api/v1/tasks/...`                         | worker token          |
-| `GET /api/v1/projects/.../artifacts/...`    | session, or anonymous for a public job |
+| Surface                                       | Authentication        |
+| --------------------------------------------- | --------------------- |
+| `POST /api/v1/projects/:project/trigger`       | per project HMAC      |
+| `POST /api/v1/projects/:project/jobs`          | per project HMAC      |
+| `GET  /api/v1/projects/:project/jobs/:job`     | HMAC, session, or anonymous for a public job |
+| `GET  /api/v1/tasks/:task`                     | session, or anonymous for a public task |
+| `GET  /api/v1/projects/:project/tasks/:task`   | HMAC, session, or anonymous for a public task |
+| `POST /api/v1/tasks/claim`, `/tasks/:task/...` | worker token          |
+| `GET  /api/v1/projects/.../artifacts/...`      | session, or anonymous for a public job |
+
+Note the two readings of `/api/v1/tasks/:task`. Asking after the task
+itself is a public read; everything below it is the worker protocol and
+needs a token. They are separate plugins for that reason, so the token
+requirement cannot accidentally spread to the first or lapse on the rest.
 
 Errors are `{"error": "..."}` with a meaningful status. A resource the
 caller may not see returns 404 rather than 403, so absence and denial are
@@ -112,8 +119,65 @@ Three ways to be allowed: the job is public, the caller holds the project's
 trigger secret, or the caller is signed in and may manage the project. One
 credential therefore covers starting a build and watching it.
 
-The task API
-------------
+Reading a task back
+-------------------
+
+```
+GET /api/v1/tasks/:task
+GET /api/v1/projects/:project/tasks/:task
+```
+
+A task's state and the artifacts it stored. Both paths return the same
+body. A task id is unique on its own, so naming the project is optional;
+doing so only widens what may reach a private task, because there is then a
+trigger secret to check against.
+
+| | public task | trigger secret | session that may manage the project |
+| --- | --- | --- | --- |
+| `/tasks/:task` | yes | not applicable | yes |
+| `/projects/:project/tasks/:task` | yes | yes | yes |
+
+A signature on the bare path proves nothing, since there is no project in
+it to look a secret up from. On the scoped path the project must be the one
+the task belongs to, so a guessed id cannot be read through some other
+project that happens to be readable. Signing a GET means an HMAC over an
+empty body.
+
+```json
+{
+  "task": {
+    "id": "m2y5t7deprrj9s6jvv4d", "name": "package:arch=x86_64,pkg=musl",
+    "base_name": "package", "state": "success", "arch": "x86_64",
+    "image": "debian:bookworm-slim", "attempt": 1, "max_attempts": 1,
+    "allow_failure": false, "exit_code": 0, "error": null,
+    "worker_name": "builder-1", "timeout": 3600, "workdir": "/work",
+    "needs": ["build:arch=x86_64"], "matrix": { "pkg": "musl" },
+    "artifact_paths": ["dist/**"], "log_size": 4096,
+    "created_at": 1800000000000, "started_at": null, "finished_at": null,
+    "project_id": "demo", "job_id": "m2y5rj7ykdm9sfbr54hf", "job_number": 12,
+    "ref": "refs/heads/main", "sha": "<40 hex>", "visibility": "public"
+  },
+  "artifacts": [
+    { "id": "...", "path": "dist/app", "size": 1048576, "sha256": "<64 hex>",
+      "created_at": 1800000000000, "expires_at": null,
+      "url": "https://ci.example.com/api/v1/projects/demo/jobs/<job>/tasks/<task>/artifacts/<id>" }
+  ]
+}
+```
+
+`artifact_paths` is what the pipeline told the task to collect; `artifacts`
+is what it actually stored. Each carries a ready download `url`, which is a
+convenience rather than the permission: that route checks visibility again
+for itself.
+
+There is no `env` and no `services` here, deliberately. Both can hold
+project variables, and a service carries an environment of its own. The
+`script` is left out for the same reason: a public job can be built from a
+repository that is not public. A worker gets all three because it has to;
+nobody else does.
+
+The worker API
+--------------
 
 Documented because a worker is a normal client of it, and anyone may write
 another. Every call needs `Authorization: Bearer <worker token>`, and a
