@@ -180,3 +180,15 @@ a.button:hover { text-decoration: none; background: #2b3036; }
    give the row a different height from every other one. */
 td.row-actions { white-space: nowrap; text-align: right; }
 td.row-actions button.link + button.link { margin-left: .9rem; }
+
+dialog {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  padding: 1.25rem;
+  max-width: 28rem;
+  width: 90%;
+}
+dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
+dialog .actions { justify-content: flex-end; margin-top: 1rem; }

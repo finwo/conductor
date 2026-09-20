@@ -354,7 +354,7 @@ export function workersPage({ tokens, user, created }) {
 
     <div class="panel">
       <h3>Register a worker</h3>
-      <form hx-post="/workers" hx-target="body" hx-swap="none">
+      <form hx-post="/workers" hx-target="body" hx-swap="outerHTML">
         <div class="grid">
           <label>name<input name="name" placeholder="my-laptop" required></label>
           ${user.role === 'admin' ? html`<label>shared
@@ -366,6 +366,41 @@ export function workersPage({ tokens, user, created }) {
     </div>
 
     ${workersTable(tokens, user)}
+
+    <dialog id="disableDialog">
+      <p>Disable worker "<span id="disableWorkerName"></span>"?</p>
+      <div class="actions">
+        <button type="button" id="disableConfirm" class="danger">disable</button>
+        <button type="button" onclick="this.closest('dialog').close()">cancel</button>
+      </div>
+    </dialog>
+
+    <dialog id="removeDialog">
+      <p>Remove worker "<span id="removeWorkerName"></span>"?</p>
+      <div class="actions">
+        <button type="button" id="removeConfirm" class="danger">remove</button>
+        <button type="button" onclick="this.closest('dialog').close()">cancel</button>
+      </div>
+    </dialog>
+
+    <script>
+    function setupDisableDialog(id, name) {
+      document.getElementById('disableWorkerName').textContent = name;
+      document.getElementById('disableConfirm').onclick = function() {
+        htmx.ajax('PATCH', '/workers/' + id, { target: '#workers', swap: 'outerHTML', values: { enabled: false } });
+        document.getElementById('disableDialog').close();
+      };
+      document.getElementById('disableDialog').showModal();
+    }
+    function setupRemoveDialog(id, name) {
+      document.getElementById('removeWorkerName').textContent = name;
+      document.getElementById('removeConfirm').onclick = function() {
+        htmx.ajax('DELETE', '/workers/' + id, { target: '#workers', swap: 'outerHTML' });
+        document.getElementById('removeDialog').close();
+      };
+      document.getElementById('removeDialog').showModal();
+    }
+    </script>
   `;
 }
 
@@ -382,10 +417,10 @@ export function workersTable(tokens, user) {
           <td class="muted">${t.last_seen_at ? ago(t.last_seen_at) : 'never'}</td>
           <td class="muted mono">${t.last_ip ?? ''}</td>
           <td class="row-actions">
-            <button class="link" hx-patch="/workers/${t.id}" hx-vals='{"enabled": ${t.enabled === 1 ? 'false' : 'true'}}'
-              hx-target="#workers" hx-swap="outerHTML">${t.enabled === 1 ? 'disable' : 'enable'}</button>
-            <button class="link danger" hx-delete="/workers/${t.id}"
-              hx-confirm="Remove ${t.name}?" hx-target="#workers" hx-swap="outerHTML">remove</button>
+            ${t.enabled === 1
+      ? html`<button class="link" data-worker-id="${t.id}" data-worker-name="${t.name}" onclick="setupDisableDialog(this.dataset.workerId, this.dataset.workerName)">disable</button>`
+      : html`<button class="link" hx-patch="/workers/${t.id}" hx-vals='{"enabled": true}' hx-target="#workers" hx-swap="outerHTML">enable</button>`}
+            <button class="link danger" data-worker-id="${t.id}" data-worker-name="${t.name}" onclick="setupRemoveDialog(this.dataset.workerId, this.dataset.workerName)">remove</button>
           </td>
         </tr>`)}
     </tbody>
