@@ -1,6 +1,6 @@
 // test/helpers/oidc.js - a real identity provider for the tests
 //
-// Runs navikt/mock-oauth2-server, which speaks real OIDC discovery and
+// Jobs navikt/mock-oauth2-server, which speaks real OIDC discovery and
 // signs real tokens with a real key set. Faking the provider would test the
 // fake: the interesting failures here are discovery paths, signature
 // verification and claim shapes, and none of those survive a stub.

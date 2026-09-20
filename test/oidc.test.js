@@ -1,6 +1,6 @@
 // test/oidc.test.js - authentication against a real identity provider
 //
-// Runs navikt/mock-oauth2-server in a container and verifies real signed
+// Jobs navikt/mock-oauth2-server in a container and verifies real signed
 // tokens against its real key set. Skipped when docker is unavailable.
 //
 // The two things worth proving here cannot be proven against a stub: that

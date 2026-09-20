@@ -1,4 +1,4 @@
-// test/only.test.js - restricting jobs to particular refs
+// test/only.test.js - restricting tasks to particular refs
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -9,7 +9,7 @@ const PIPELINE = `
 version: 1
 defaults:
   image: alpine:3
-jobs:
+tasks:
   build:
     script: ['make']
   publish:
@@ -20,7 +20,7 @@ jobs:
 `;
 
 function names(text, ref) {
-  return compilePipeline(text, { ref }).jobs.map((j) => j.name).sort();
+  return compilePipeline(text, { ref }).tasks.map((j) => j.name).sort();
 }
 
 test('a pattern without a star matches exactly', () => {
@@ -33,7 +33,7 @@ test('a pattern without a star matches exactly', () => {
   assert.ok(!refMatches('main', 'refs/heads/main'));
 });
 
-test('a star matches any run of characters', () => {
+test('a star matches any job of characters', () => {
   assert.ok(refMatches('refs/tags/v*', 'refs/tags/v1.2.0'));
   assert.ok(refMatches('refs/tags/v*', 'refs/tags/v'));
   assert.ok(!refMatches('refs/tags/v*', 'refs/heads/v1'));
@@ -52,25 +52,25 @@ test('the rest of a pattern is literal, not a regular expression', () => {
   assert.ok(!refMatches('refs/heads/fix+', 'refs/heads/fixx'));
 });
 
-test('a restricted job is left out of runs for other refs', () => {
+test('a restricted task is left out of jobs for other refs', () => {
   assert.deepEqual(names(PIPELINE, 'refs/heads/main'), ['build', 'publish']);
   assert.deepEqual(names(PIPELINE, 'refs/tags/v1.2.0'), ['build', 'publish']);
   assert.deepEqual(names(PIPELINE, 'refs/heads/feature'), ['build']);
 });
 
 test('it is left out rather than recorded as skipped', () => {
-  // The scheduler reads a skipped job as a reason to fail the run, so a
-  // publish step that was never meant to run here must not appear at all.
-  const { jobs } = compilePipeline(PIPELINE, { ref: 'refs/heads/feature' });
-  assert.ok(!jobs.some((j) => j.name === 'publish'));
+  // The scheduler reads a skipped task as a reason to fail the job, so a
+  // publish step that was never meant to job here must not appear at all.
+  const { tasks } = compilePipeline(PIPELINE, { ref: 'refs/heads/feature' });
+  assert.ok(!tasks.some((j) => j.name === 'publish'));
 });
 
-test('jobs depending on an excluded job are excluded too', () => {
+test('tasks depending on an excluded task are excluded too', () => {
   const text = `
 version: 1
 defaults:
   image: alpine:3
-jobs:
+tasks:
   build:
     script: ['make']
   publish:
@@ -88,19 +88,19 @@ jobs:
   assert.deepEqual(names(text, 'refs/heads/main'), ['announce', 'build', 'publish']);
 });
 
-test('depth and ordering describe the run that will happen', () => {
-  const { jobs } = compilePipeline(PIPELINE, { ref: 'refs/heads/feature' });
-  assert.equal(jobs.length, 1);
-  assert.equal(jobs[0].name, 'build');
-  assert.equal(jobs[0].depth, 0);
+test('depth and ordering describe the job that will happen', () => {
+  const { tasks } = compilePipeline(PIPELINE, { ref: 'refs/heads/feature' });
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0].name, 'build');
+  assert.equal(tasks[0].depth, 0);
 });
 
 test('without a ref nothing is filtered, so a pipeline can still be validated', () => {
-  const { jobs } = compilePipeline(PIPELINE);
-  assert.deepEqual(jobs.map((j) => j.name).sort(), ['build', 'publish']);
+  const { tasks } = compilePipeline(PIPELINE);
+  assert.deepEqual(tasks.map((j) => j.name).sort(), ['build', 'publish']);
 });
 
-test('a restricted job cannot match a run that has no ref', () => {
+test('a restricted task cannot match a job that has no ref', () => {
   assert.deepEqual(names(PIPELINE, ''), ['build']);
 });
 
@@ -117,7 +117,7 @@ test('a malformed rule is reported rather than ignored', () => {
 version: 1
 defaults:
   image: alpine:3
-jobs:
+tasks:
   publish:
     script: ['make publish']
     ${fragment}
@@ -136,15 +136,15 @@ jobs:
 });
 
 test('the rule is not inherited from defaults', () => {
-  // Inheriting it would restrict every job at once, which is a hard
-  // mistake to spot when the symptom is an empty run.
+  // Inheriting it would restrict every task at once, which is a hard
+  // mistake to spot when the symptom is an empty job.
   const text = `
 version: 1
 defaults:
   image: alpine:3
   only:
     refs: [refs/heads/main]
-jobs:
+tasks:
   build:
     script: ['make']
 `;

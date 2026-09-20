@@ -55,7 +55,7 @@ test('migrations apply once and are idempotent', async () => {
     assert.equal(first.applied.length, first.total, 'a fresh database applies every migration');
 
     const second = await runMigrations(db, { logger: quiet });
-    assert.equal(second.applied.length, 0, 'a second run must do nothing');
+    assert.equal(second.applied.length, 0, 'a second job must do nothing');
     assert.equal(second.total, first.total);
   } finally {
     await cleanup();
@@ -120,15 +120,15 @@ test('a conditional update claims exactly once', async () => {
     const t = Date.now();
     await db.run('INSERT INTO projects (id,name,repo_url,created_at,updated_at) VALUES ({i},{n},{u},{t},{t})',
       { i: 'p', n: 'p', u: 'u', t });
-    await db.run('INSERT INTO runs (id,project_id,number,head_sha,created_at) VALUES ({i},{p},{n},{s},{t})',
+    await db.run('INSERT INTO jobs (id,project_id,number,head_sha,created_at) VALUES ({i},{p},{n},{s},{t})',
       { i: 'r', p: 'p', n: 1, s: 'sha', t });
     await db.run(
-      'INSERT INTO jobs (id,run_id,name,base_name,image,requires,spec,timeout,created_at) ' +
+      'INSERT INTO tasks (id,job_id,name,base_name,image,requires,spec,timeout,created_at) ' +
       'VALUES ({i},{r},{n},{n},{img},{req},{spec},{to},{t})',
       { i: 'r:b', r: 'r', n: 'b', img: 'alpine', req: '[]', spec: '{}', to: 60, t }
     );
 
-    const claim = 'UPDATE jobs SET state = {to} WHERE id = {id} AND state = {from}';
+    const claim = 'UPDATE tasks SET state = {to} WHERE id = {id} AND state = {from}';
     const first = await db.run(claim, { to: 'running', id: 'r:b', from: 'queued' });
     const second = await db.run(claim, { to: 'running', id: 'r:b', from: 'queued' });
     assert.equal(first.changes, 1);
@@ -138,23 +138,23 @@ test('a conditional update claims exactly once', async () => {
   }
 });
 
-test('deleting a run cascades to its jobs', async () => {
+test('deleting a job cascades to its tasks', async () => {
   const { db, cleanup } = await tempDb();
   try {
     await runMigrations(db, { logger: quiet });
     const t = Date.now();
     await db.run('INSERT INTO projects (id,name,repo_url,created_at,updated_at) VALUES ({i},{n},{u},{t},{t})',
       { i: 'p', n: 'p', u: 'u', t });
-    await db.run('INSERT INTO runs (id,project_id,number,head_sha,created_at) VALUES ({i},{p},{n},{s},{t})',
+    await db.run('INSERT INTO jobs (id,project_id,number,head_sha,created_at) VALUES ({i},{p},{n},{s},{t})',
       { i: 'r', p: 'p', n: 1, s: 'sha', t });
     await db.run(
-      'INSERT INTO jobs (id,run_id,name,base_name,image,requires,spec,timeout,created_at) ' +
+      'INSERT INTO tasks (id,job_id,name,base_name,image,requires,spec,timeout,created_at) ' +
       'VALUES ({i},{r},{n},{n},{img},{req},{spec},{to},{t})',
       { i: 'r:b', r: 'r', n: 'b', img: 'alpine', req: '[]', spec: '{}', to: 60, t }
     );
 
-    await db.run('DELETE FROM runs WHERE id = {id}', { id: 'r' });
-    assert.equal((await db.get('SELECT COUNT(*) AS c FROM jobs', {})).c, 0);
+    await db.run('DELETE FROM jobs WHERE id = {id}', { id: 'r' });
+    assert.equal((await db.get('SELECT COUNT(*) AS c FROM tasks', {})).c, 0);
   } finally {
     await cleanup();
   }

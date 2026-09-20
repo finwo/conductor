@@ -20,7 +20,7 @@ export const DEFAULT_PIPELINE = `
 version: 1
 defaults:
   image: debian:bookworm-slim
-jobs:
+tasks:
   lint:
     script: [make lint]
   build:
@@ -61,7 +61,12 @@ export async function createRepo(dir, { pipeline = DEFAULT_PIPELINE, configPath 
 export async function startHarness(options = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'conductor-it-'));
   const repoDir = path.join(root, 'repo');
-  const sha = await createRepo(repoDir, options);
+  // The file in the repository and the project's config_path are usually
+  // the same, but not when the point of the test is that they differ.
+  const sha = await createRepo(repoDir, {
+    ...options,
+    configPath: options.repoConfigPath ?? options.configPath ?? '.conductor.yml',
+  });
 
   const configFile = path.join(root, 'conductor.yaml');
   await fs.writeFile(configFile, [
@@ -140,7 +145,7 @@ export async function startHarness(options = {}) {
     trigger_secret: 'test-secret',
     config_path: options.configPath ?? '.conductor.yml',
 
-    // Public by default so that tests about scheduling can read runs back
+    // Public by default so that tests about scheduling can read jobs back
     // without signing in. Visibility itself is covered by its own suite,
     // which creates private projects explicitly.
     visibility: options.visibility ?? 'public',
@@ -187,10 +192,22 @@ export async function startHarness(options = {}) {
       });
     },
 
-    async poll(body = {}) {
+    // Starts a task the deliberate way, rather than by forwarding a push.
+    async createJob(payload, { secret = 'test-secret' } = {}) {
+      const body = JSON.stringify(payload);
+      const signature = `sha256=${crypto.createHmac('sha256', secret).update(body).digest('hex')}`;
       return app.inject({
         method: 'POST',
-        url: '/api/v1/workers/jobs',
+        url: '/api/v1/projects/demo/jobs',
+        headers: { 'content-type': 'application/json', 'x-hub-signature-256': signature },
+        payload: body,
+      });
+    },
+
+    async claim(body = {}) {
+      return app.inject({
+        method: 'POST',
+        url: '/api/v1/tasks/claim',
         headers: { ...this.auth, 'content-type': 'application/json' },
         payload: JSON.stringify(body),
       });

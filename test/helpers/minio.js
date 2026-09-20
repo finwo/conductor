@@ -1,6 +1,6 @@
 // test/helpers/minio.js - a real object store for the tests
 //
-// Runs MinIO, which speaks real S3. The signing code here is written
+// Jobs MinIO, which speaks real S3. The signing code here is written
 // against node:crypto rather than taken from a library, so verifying it
 // against a real server is the only way to know it works: a stub would
 // accept whatever signature we happened to produce, including a wrong one.

@@ -20,38 +20,38 @@ test('every example pipeline compiles', async () => {
   for (const file of files) {
     const text = await fs.readFile(path.join(EXAMPLES, file), 'utf8');
     const pipeline = compilePipeline(text, { source: file });
-    assert.ok(pipeline.jobs.length > 0, `${file} produced no jobs`);
+    assert.ok(pipeline.tasks.length > 0, `${file} produced no tasks`);
   }
 });
 
 test('the distribution example fans in per architecture', async () => {
   const text = await fs.readFile(path.join(EXAMPLES, 'distro.conductor.yml'), 'utf8');
   const pipeline = compilePipeline(text, { source: 'distro.conductor.yml' });
-  const jobs = Object.fromEntries(pipeline.jobs.map((j) => [j.name, j]));
+  const tasks = Object.fromEntries(pipeline.tasks.map((j) => [j.name, j]));
 
   // check, two toolchains, twelve packages, two images, one publish.
-  assert.equal(pipeline.jobs.length, 18);
+  assert.equal(pipeline.tasks.length, 18);
 
   // A package waits only on its own architecture's toolchain.
-  assert.deepEqual(jobs['package:arch=aarch64,pkg=musl'].needs, ['toolchain:arch=aarch64']);
-  assert.deepEqual(jobs['package:arch=x86_64,pkg=grub'].needs, ['toolchain:arch=x86_64']);
+  assert.deepEqual(tasks['package:arch=aarch64,pkg=musl'].needs, ['toolchain:arch=aarch64']);
+  assert.deepEqual(tasks['package:arch=x86_64,pkg=grub'].needs, ['toolchain:arch=x86_64']);
 
   // An image waits on every package for its architecture, and no others.
-  const imageNeeds = jobs['image:arch=x86_64'].needs;
+  const imageNeeds = tasks['image:arch=x86_64'].needs;
   assert.equal(imageNeeds.length, 6);
   assert.ok(imageNeeds.every((n) => n.includes('arch=x86_64')));
 
   // publish has no architecture, so it waits for both, plus check.
-  assert.equal(jobs.publish.needs.length, 3);
-  assert.equal(jobs.publish.depth, 3);
+  assert.equal(tasks.publish.needs.length, 3);
+  assert.equal(tasks.publish.depth, 3);
 });
 
 test('the node example wires services and features', async () => {
   const text = await fs.readFile(path.join(EXAMPLES, 'node-app.conductor.yml'), 'utf8');
   const pipeline = compilePipeline(text, { source: 'node-app.conductor.yml' });
-  const jobs = Object.fromEntries(pipeline.jobs.map((j) => [j.name, j]));
+  const tasks = Object.fromEntries(pipeline.tasks.map((j) => [j.name, j]));
 
-  assert.deepEqual(jobs['test:suite=unit'].services.map((s) => s.alias), ['postgres']);
-  assert.deepEqual(jobs.image.requires, ['docker']);
-  assert.equal(jobs['test:suite=integration'].artifacts.when, 'always');
+  assert.deepEqual(tasks['test:suite=unit'].services.map((s) => s.alias), ['postgres']);
+  assert.deepEqual(tasks.image.requires, ['docker']);
+  assert.equal(tasks['test:suite=integration'].artifacts.when, 'always');
 });

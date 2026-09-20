@@ -1,8 +1,8 @@
-// test/self-pipeline.test.js - the pipeline this project runs on itself
+// test/self-pipeline.test.js - the pipeline this project jobs on itself
 //
 // .conductor.yml is not covered by examples.test.js, and it is the one
 // pipeline whose breakage stops the project from building at all. It also
-// encodes decisions that are easy to undo by accident: which jobs may run
+// encodes decisions that are easy to undo by accident: which tasks may job
 // on any worker, and which need a docker socket.
 
 import test from 'node:test';
@@ -20,25 +20,25 @@ async function selfPipeline(arches = ['x86_64'], ref = 'refs/heads/main') {
   return compilePipeline(text, { source: '.conductor.yml', arches, ref });
 }
 
-test('the pipeline this project runs on itself compiles', async () => {
-  const { jobs } = await selfPipeline();
-  assert.ok(jobs.length > 0, '.conductor.yml produced no jobs');
+test('the pipeline this project jobs on itself compiles', async () => {
+  const { tasks } = await selfPipeline();
+  assert.ok(tasks.length > 0, '.conductor.yml produced no tasks');
 });
 
-test('its jobs declare the features they actually need', async () => {
-  const { jobs } = await selfPipeline();
-  const byName = new Map(jobs.map((job) => [job.name, job]));
+test('its tasks declare the features they actually need', async () => {
+  const { tasks } = await selfPipeline();
+  const byName = new Map(tasks.map((task) => [task.name, task]));
 
   for (const name of ['style', 'test', 'integration', 'images', 'smoke', 'publish']) {
-    assert.ok(byName.has(name), `expected a ${name} job`);
+    assert.ok(byName.has(name), `expected a ${name} task`);
   }
 
-  // The fast job has to actually skip the container-backed tests, or it
+  // The fast task has to actually skip the container-backed tests, or it
   // fails on any worker without a docker socket.
   assert.equal(byName.get('test').env.CONDUCTOR_TEST_NO_DOCKER, '1');
 
   // Anything starting containers has to say so, otherwise it gets handed
-  // to a worker that cannot run it.
+  // to a worker that cannot job it.
   for (const name of ['integration', 'images', 'smoke', 'publish']) {
     assert.ok(
       byName.get(name).requires.includes('docker'),
@@ -46,9 +46,9 @@ test('its jobs declare the features they actually need', async () => {
     );
   }
 
-  // Conversely, the jobs meant to run anywhere must not demand features.
+  // Conversely, the tasks meant to job anywhere must not demand features.
   for (const name of ['style', 'test']) {
-    assert.deepEqual(byName.get(name).requires, [], `${name} should run on any worker`);
+    assert.deepEqual(byName.get(name).requires, [], `${name} should job on any worker`);
   }
 });
 
@@ -56,26 +56,26 @@ test('publishing is restricted to main and release tags', async () => {
   // The cost of getting this wrong is a branch build overwriting :latest
   // on Docker Hub, which is not something a test should leave to trust.
   const onMain = await selfPipeline();
-  assert.ok(onMain.jobs.some((j) => j.name === 'publish'));
+  assert.ok(onMain.tasks.some((j) => j.name === 'publish'));
 
   for (const ref of ['refs/heads/feature', 'refs/heads/main-2', 'refs/pull/7/head', '']) {
-    const { jobs } = compilePipeline(
+    const { tasks } = compilePipeline(
       await fs.readFile(path.join(ROOT, '.conductor.yml'), 'utf8'),
       { source: '.conductor.yml', arches: ['x86_64'], ref },
     );
     assert.ok(
-      !jobs.some((j) => j.name === 'publish'),
-      `publish must not run for ${JSON.stringify(ref)}`,
+      !tasks.some((j) => j.name === 'publish'),
+      `publish must not job for ${JSON.stringify(ref)}`,
     );
-    // The rest of the pipeline still has to run on a branch.
-    assert.ok(jobs.some((j) => j.name === 'test'), `test should still run for ${JSON.stringify(ref)}`);
+    // The rest of the pipeline still has to job on a branch.
+    assert.ok(tasks.some((j) => j.name === 'test'), `test should still job for ${JSON.stringify(ref)}`);
   }
 
   for (const ref of ['refs/heads/main', 'refs/tags/v1.2.0']) {
-    const { jobs } = compilePipeline(
+    const { tasks } = compilePipeline(
       await fs.readFile(path.join(ROOT, '.conductor.yml'), 'utf8'),
       { source: '.conductor.yml', arches: ['x86_64'], ref },
     );
-    assert.ok(jobs.some((j) => j.name === 'publish'), `publish should run for ${ref}`);
+    assert.ok(tasks.some((j) => j.name === 'publish'), `publish should job for ${ref}`);
   }
 });

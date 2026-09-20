@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { createSecretBox } from '../src/lib/secretbox.js';
-import { jobId, slugify, randomId, timeOrderedId, hashToken, safeEqualHex, JOB_ID_MAX } from '../src/lib/ids.js';
+import { newJobId, newTaskId, slugify, randomId, timeOrderedId, hashToken, safeEqualHex } from '../src/lib/ids.js';
 
 const KEY = crypto.randomBytes(32);
 
@@ -64,16 +64,19 @@ test('a key of the wrong size is refused at construction', () => {
   assert.throws(() => createSecretBox(crypto.randomBytes(16)), /32 byte Buffer/);
 });
 
-test('job ids stay readable and within the column width', () => {
-  const runId = timeOrderedId();
-  assert.equal(jobId(runId, 'build'), `${runId}:build`);
+test('task ids are opaque, and say nothing about their job', () => {
+  const jobId = newJobId();
+  const ids = Array.from({ length: 200 }, () => newTaskId());
 
-  const long = 'a'.repeat(300);
-  const id = jobId(runId, long);
-  assert.ok(id.length <= JOB_ID_MAX, `${id.length} exceeds ${JOB_ID_MAX}`);
-  assert.ok(id.startsWith(`${runId}:`));
-  // Distinct long names must not collide after truncation.
-  assert.notEqual(id, jobId(runId, `${long}b`));
+  for (const id of ids) {
+    // A worker holds one of these. It must not be able to read the job,
+    // the project or the task name out of it.
+    assert.match(id, /^[0-9a-hjkmnp-tv-z]{20}$/, `${id} should be a plain base32 id`);
+    assert.ok(!id.includes(jobId), 'a task id must not embed its job id');
+  }
+
+  // No name means no natural key, so uniqueness has to come from the id.
+  assert.equal(new Set(ids).size, ids.length, 'task ids must not collide');
 });
 
 test('time ordered ids sort by creation time', () => {

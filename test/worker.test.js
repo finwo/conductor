@@ -13,7 +13,7 @@ import { loadWorkerConfig, featureNames } from '../src/worker/config.js';
 import { buildScript, shellQuote } from '../src/worker/script.js';
 import { containerName, createRuntime } from '../src/worker/docker.js';
 import { createLogStream } from '../src/worker/logstream.js';
-import { resolveFeatures, patternPrefix, copyOutPaths } from '../src/worker/job.js';
+import { resolveFeatures, patternPrefix, copyOutPaths } from '../src/worker/task.js';
 import { collectArtifacts, shouldCollect } from '../src/worker/artifacts.js';
 
 async function tempDir(prefix = 'conductor-worker-') {
@@ -132,12 +132,12 @@ test('container names are valid for docker and stay unique', () => {
   const b = containerName('conductor', 'run1:package:arch=x86_64,pkg=busybox');
   assert.match(a, /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/);
   assert.notEqual(a, b);
-  // Distinct jobs that differ only past the truncation point still differ.
+  // Distinct tasks that differ only past the truncation point still differ.
   const long = 'x'.repeat(200);
   assert.notEqual(containerName('c', `${long}a`), containerName('c', `${long}b`));
 });
 
-test('run arguments carry mounts, env, network and privilege', () => {
+test('job arguments carry mounts, env, network and privilege', () => {
   const runtime = createRuntime({ docker: 'docker', shell: 'sh' });
   const args = runtime.buildRunArgs({
     name: 'job1',
@@ -162,7 +162,7 @@ test('run arguments carry mounts, env, network and privilege', () => {
   assert.ok(args.indexOf('alpine:3') < args.indexOf('/tmp/entrypoint.sh'));
 });
 
-test('a job container is created without sharing anything with the worker', () => {
+test('a task container is created without sharing anything with the worker', () => {
   // The whole point of copying the tree in: no path of the worker's is
   // handed to the daemon, so nothing has to line up between the two.
   const runtime = createRuntime({ docker: 'docker', shell: 'sh' });
@@ -415,7 +415,7 @@ test('a secret split across two writes is still masked', async () => {
   assert.ok(client.text.includes('[masked]'));
 });
 
-test('a failing conductor does not break the job', async () => {
+test('a failing conductor does not break the task', async () => {
   const client = {
     async appendLog() {
       throw new Error('conductor unreachable');

@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadConfig, stateDirs, parseKey } from '../src/lib/config.js';
 
-// loadConfig reads process.env, so every case runs with a clean slate.
+// loadConfig reads process.env, so every case jobs with a clean slate.
 async function withEnv(env, fn) {
   const saved = {};
   for (const key of Object.keys(process.env)) {

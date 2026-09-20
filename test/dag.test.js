@@ -60,13 +60,13 @@ test('depth reflects the longest path, not insertion order', () => {
   assert.equal(d.get('d'), 2);
 });
 
-test('independent jobs are runnable at the same time', () => {
-  // The prototype could only ever return one job here.
+test('independent tasks are runnable at the same time', () => {
+  // The prototype could only ever return one task here.
   const ready = runnable(GRAPH, states()).map((j) => j.name);
   assert.deepEqual(ready.sort(), ['a', 'island']);
 });
 
-test('a job becomes runnable only once every dependency succeeds', () => {
+test('a task becomes runnable only once every dependency succeeds', () => {
   assert.deepEqual(
     runnable(GRAPH, states({ a: 'success', b: 'success' })).map((j) => j.name).sort(),
     ['c', 'island']

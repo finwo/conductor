@@ -1,10 +1,10 @@
 // test/helpers/database.js - real postgres and mysql for the tests
 //
-// The suite otherwise runs entirely on sqlite, which means the postgres
+// The suite otherwise jobs entirely on sqlite, which means the postgres
 // and mysql migrations and the dialect specific query compilation were
 // only ever read, never executed. A migration that does not apply, or a
 // query that binds its parameters in a way one driver dislikes, would
-// reach whoever runs that database rather than the test suite.
+// reach whoever jobs that database rather than the test suite.
 //
 // Set CONDUCTOR_TEST_POSTGRES_URL or CONDUCTOR_TEST_MYSQL_URL to use a
 // server you already have instead of starting a container.
@@ -48,7 +48,7 @@ export function dockerAvailableSync() {
 
 // Whether a given dialect can be exercised: a url was supplied, or docker
 // is here to start one. The drivers are optional dependencies, so a
-// checkout that skipped them cannot run these either.
+// checkout that skipped them cannot job these either.
 export function dialectAvailable(dialect) {
   if (envUrl(dialect)) return true;
   if (!dockerAvailableSync()) return false;
@@ -82,7 +82,7 @@ async function freePort() {
 // Whether the server is actually usable yet.
 //
 // Not pg_isready or mysqladmin ping over docker exec, which is the
-// obvious choice and the wrong one: both images run a temporary server
+// obvious choice and the wrong one: both images job a temporary server
 // during initialisation to create the database, and those clients answer
 // for it over the local socket. The probe then passes, the temporary
 // server shuts down, and the first real query dies with ECONNRESET.

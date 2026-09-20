@@ -1,9 +1,9 @@
-// test/helpers/containers.js - cleaning up after runs that crashed
+// test/helpers/containers.js - cleaning up after jobs that crashed
 //
-// A test run that is killed never reaches its cleanup hook and leaves its
+// A test job that is killed never reaches its cleanup hook and leaves its
 // containers behind, so each helper tidies up before it starts.
 //
-// Doing that by name prefix alone is wrong, and was: node --test runs
+// Doing that by name prefix alone is wrong, and was: node --test jobs
 // test files in parallel processes, two files each start their own MinIO,
 // and whichever starts second force-removes the container the first is
 // using. The first then waits out its whole timeout and fails with the
@@ -11,7 +11,7 @@
 // which is exactly the wrong thing to go looking for.
 //
 // So age is the thing that makes a container stale, not its name. A
-// sibling that started seconds ago is left alone; a leftover from a run
+// sibling that started seconds ago is left alone; a leftover from a job
 // that died half an hour ago is removed.
 
 import { execFile } from 'node:child_process';
@@ -20,7 +20,7 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 
 // Comfortably longer than any test takes, comfortably shorter than the
-// gap between one run and the next.
+// gap between one job and the next.
 export const STALE_AGE = 30 * 60 * 1000;
 
 export async function reapStale(prefix, maxAgeMs = STALE_AGE) {

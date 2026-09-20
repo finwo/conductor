@@ -5,13 +5,13 @@ import assert from 'node:assert/strict';
 import { compileQuery, bindParams } from '../src/lib/db/query.js';
 
 test('compiles markers to the placeholder each dialect expects', () => {
-  const sql = 'SELECT * FROM jobs WHERE run_id = {run} AND state = {state}';
+  const sql = 'SELECT * FROM tasks WHERE job_id = {job} AND state = {state}';
 
-  assert.equal(compileQuery(sql, 'sqlite').sql, 'SELECT * FROM jobs WHERE run_id = ? AND state = ?');
-  assert.equal(compileQuery(sql, 'mysql').sql, 'SELECT * FROM jobs WHERE run_id = ? AND state = ?');
-  assert.equal(compileQuery(sql, 'postgres').sql, 'SELECT * FROM jobs WHERE run_id = $1 AND state = $2');
+  assert.equal(compileQuery(sql, 'sqlite').sql, 'SELECT * FROM tasks WHERE job_id = ? AND state = ?');
+  assert.equal(compileQuery(sql, 'mysql').sql, 'SELECT * FROM tasks WHERE job_id = ? AND state = ?');
+  assert.equal(compileQuery(sql, 'postgres').sql, 'SELECT * FROM tasks WHERE job_id = $1 AND state = $2');
 
-  assert.deepEqual(compileQuery(sql, 'postgres').keys, ['run', 'state']);
+  assert.deepEqual(compileQuery(sql, 'postgres').keys, ['job', 'state']);
 });
 
 test('numbers postgres placeholders per occurrence, including repeats', () => {

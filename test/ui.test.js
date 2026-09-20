@@ -62,7 +62,7 @@ test('attrs omits absent values and renders bare booleans', () => {
 
 // --- anonymous ---
 
-test('an anonymous visitor sees public runs and an invitation to sign in', async () => {
+test('an anonymous visitor sees public jobs and an invitation to sign in', async () => {
   await withUi({ visibility: 'public' }, async (h) => {
     await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
 
@@ -77,15 +77,15 @@ test('an anonymous visitor sees public runs and an invitation to sign in', async
   });
 });
 
-test('an anonymous visitor cannot see a private run', async () => {
+test('an anonymous visitor cannot see a private job', async () => {
   await withUi({ visibility: 'private' }, async (h) => {
-    const run = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().run_id;
+    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
 
     const list = await get(h, '/');
     assert.ok(!list.body.includes('#1</a>'));
 
-    const detail = await get(h, `/runs/${run}`);
-    assert.match(detail.body, /No such run/);
+    const detail = await get(h, `/jobs/${job}`);
+    assert.match(detail.body, /No such job/);
   });
 });
 
@@ -260,7 +260,7 @@ test('the users page is administrator only and warns about what deletion destroy
     const page = await get(h, '/users', admin);
     assert.match(page.body, /dave/);
     // The confirmation has to say what goes with the account.
-    assert.match(page.body, /also deletes 1 project\(s\) and all of their run history/);
+    assert.match(page.body, /also deletes 1 project\(s\) and all of their job history/);
 
     const asViewer = await signIn(h, 'dave', 'dave-password');
     const denied = await get(h, '/users', asViewer);
@@ -270,64 +270,64 @@ test('the users page is administrator only and warns about what deletion destroy
 
 // --- live regions ---
 
-test('a running run polls, and a finished one stops', async () => {
+test('a running job polls, and a finished one stops', async () => {
   await withUi({ visibility: 'public' }, async (h) => {
-    const run = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().run_id;
+    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
 
-    const running = await get(h, `/runs/${run}`);
-    assert.match(running.body, /hx-get="\/partials\/runs\/[^"]+\/jobs"/);
+    const running = await get(h, `/jobs/${job}`);
+    assert.match(running.body, /hx-get="\/partials\/jobs\/[^"]+\/tasks"/);
     assert.match(running.body, /hx-trigger="every 3s"/);
 
-    await h.services.scheduler.cancelRun(run);
+    await h.services.scheduler.cancelJob(job);
 
-    const finished = await get(h, `/runs/${run}`);
-    assert.ok(!finished.body.includes('/jobs" hx-trigger'), 'a settled run must stop polling');
+    const finished = await get(h, `/jobs/${job}`);
+    assert.ok(!finished.body.includes('/tasks" hx-trigger'), 'a settled job must stop polling');
   });
 });
 
-test('a job page streams the log and stops polling once it completes', async () => {
+test('a task page streams the log and stops polling once it completes', async () => {
   await withUi({ visibility: 'public' }, async (h) => {
     await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
-    const job = (await h.poll({})).json().job;
+    const task = (await h.claim({})).json().task;
 
     await h.app.inject({
       method: 'POST',
-      url: `/api/v1/workers/jobs/${encodeURIComponent(job.id)}/log`,
+      url: `/api/v1/tasks/${task.id}/log`,
       headers: { ...h.auth, 'content-type': 'application/octet-stream' },
       payload: Buffer.from('compiling the thing\n'),
     });
 
-    const live = await get(h, `/jobs/${encodeURIComponent(job.id)}`);
+    const live = await get(h, `/tasks/${encodeURIComponent(task.id)}`);
     assert.match(live.body, /compiling the thing/);
     assert.match(live.body, /hx-trigger="every 2s"/);
 
     await h.app.inject({
       method: 'POST',
-      url: `/api/v1/workers/jobs/${encodeURIComponent(job.id)}/complete`,
+      url: `/api/v1/tasks/${task.id}/complete`,
       headers: { ...h.auth, 'content-type': 'application/json' },
       payload: JSON.stringify({ success: true, exit_code: 0 }),
     });
 
-    const done = await get(h, `/jobs/${encodeURIComponent(job.id)}`);
+    const done = await get(h, `/tasks/${encodeURIComponent(task.id)}`);
     assert.match(done.body, /compiling the thing/);
-    assert.ok(!done.body.includes('hx-trigger="every 2s"'), 'a finished job must stop polling');
+    assert.ok(!done.body.includes('hx-trigger="every 2s"'), 'a finished task must stop polling');
   });
 });
 
-test('log output is escaped, so a job cannot inject markup into the page', async () => {
+test('log output is escaped, so a task cannot inject markup into the page', async () => {
   await withUi({ visibility: 'public' }, async (h) => {
     await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
-    const job = (await h.poll({})).json().job;
+    const task = (await h.claim({})).json().task;
 
     await h.app.inject({
       method: 'POST',
-      url: `/api/v1/workers/jobs/${encodeURIComponent(job.id)}/log`,
+      url: `/api/v1/tasks/${task.id}/log`,
       headers: { ...h.auth, 'content-type': 'application/octet-stream' },
       payload: Buffer.from('<img src=x onerror="alert(1)">\n'),
     });
 
-    const page = await get(h, `/jobs/${encodeURIComponent(job.id)}`);
-    assert.ok(!page.body.includes('<img src=x'), 'job output must not become markup');
+    const page = await get(h, `/tasks/${encodeURIComponent(task.id)}`);
+    assert.ok(!page.body.includes('<img src=x'), 'task output must not become markup');
     assert.match(page.body, /&lt;img src=x/);
   });
 });
@@ -395,7 +395,7 @@ test('the stylesheet and htmx are served, and nothing else is', async () => {
 
 test('the project page shows retention, with server defaults as placeholders', async () => {
   await withUi({
-    retention: { artifact_keep_runs: 8, artifact_keep_days: 25, log_keep_days: 11 },
+    retention: { artifact_keep_jobs: 8, artifact_keep_days: 25, log_keep_days: 11 },
   }, async (h) => {
     const session = await signIn(h);
     const page = await get(h, `/projects/${h.project.id}`, session);
@@ -405,7 +405,7 @@ test('the project page shows retention, with server defaults as placeholders', a
 
     // An unset field shows the default it inherits rather than an empty
     // box that looks like nothing is configured.
-    assert.match(page.body, /name="artifact_keep_runs"[^>]*placeholder="8"/);
+    assert.match(page.body, /name="artifact_keep_jobs"[^>]*placeholder="8"/);
     assert.match(page.body, /name="artifact_keep_days"[^>]*placeholder="25"/);
     assert.match(page.body, /name="log_keep_days"[^>]*placeholder="11"/);
   });
@@ -413,19 +413,19 @@ test('the project page shows retention, with server defaults as placeholders', a
 
 test('saving retention through the form stores it, and empty means inherit', async () => {
   await withUi({
-    retention: { artifact_keep_runs: 8, artifact_keep_days: 25, log_keep_days: 11 },
+    retention: { artifact_keep_jobs: 8, artifact_keep_days: 25, log_keep_days: 11 },
   }, async (h) => {
     const session = await signIn(h);
 
     const saved = await h.app.inject({
       method: 'PATCH',
       url: `/projects/${h.project.id}/retention`,
-      ...form(session, { artifact_keep_runs: '3', artifact_keep_days: '0', log_keep_days: '' }),
+      ...form(session, { artifact_keep_jobs: '3', artifact_keep_days: '0', log_keep_days: '' }),
     });
     assert.ok(saved.statusCode < 400, `unexpected ${saved.statusCode}: ${saved.body}`);
 
     const project = await h.services.projects.get(h.project.id);
-    assert.equal(project.artifact_keep_runs, 3);
+    assert.equal(project.artifact_keep_jobs, 3);
     // Zero and empty have to end up different, or a project cannot say
     // "keep forever" as distinct from "use the default".
     assert.equal(project.artifact_keep_days, 0);

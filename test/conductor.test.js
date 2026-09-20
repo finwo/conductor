@@ -5,7 +5,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { startHarness } from './helpers/harness.js';
+import { startHarness, DEFAULT_PIPELINE } from './helpers/harness.js';
 
 // Tests that exercised the JSON read API, which has been removed. Kept
 // until the suite is rebuilt against the interface.
@@ -21,37 +21,44 @@ async function withHarness(options, fn) {
   }
 }
 
-function jobsByName(payload) {
-  return Object.fromEntries(payload.jobs.map((j) => [j.name, j]));
+function tasksByName(payload) {
+  return Object.fromEntries(payload.tasks.map((j) => [j.name, j]));
 }
 
-// Reads a run and its jobs straight from the database. There is no read API;
+// Reads a job and its tasks straight from the database. There is no read API;
 // the interface is for people, and the tests inspect the data itself.
-async function runState(h, runId) {
-  const run = await h.services.db.get('SELECT * FROM runs WHERE id = {id}', { id: runId });
-  const jobs = await h.services.db.all(
-    'SELECT * FROM jobs WHERE run_id = {run} ORDER BY name', { run: runId }
+async function jobState(h, jobId) {
+  const job = await h.services.db.get('SELECT * FROM jobs WHERE id = {id}', { id: jobId });
+  const tasks = await h.services.db.all(
+    'SELECT * FROM tasks WHERE job_id = {job} ORDER BY name', { job: jobId }
   );
   const deps = await h.services.db.all(
-    `SELECT d.job_id, d.depends_on_id FROM job_deps d
-       JOIN jobs j ON j.id = d.job_id WHERE j.run_id = {run}`,
-    { run: runId }
+    `SELECT d.task_id, d.depends_on_id FROM task_deps d
+       JOIN tasks t ON t.id = d.task_id WHERE t.job_id = {job}`,
+    { job: jobId }
   );
-  const needs = new Map(jobs.map((j) => [j.id, []]));
-  for (const d of deps) needs.get(d.job_id)?.push(d.depends_on_id);
-  return { run, jobs: jobs.map((j) => ({ ...j, needs: needs.get(j.id) ?? [] })) };
+  const needs = new Map(tasks.map((t) => [t.id, []]));
+  for (const d of deps) needs.get(d.task_id)?.push(d.depends_on_id);
+  return { job, tasks: tasks.map((t) => ({ ...t, needs: needs.get(t.id) ?? [] })) };
+}
+
+// The job a task belongs to. A worker is never told this, so a test that
+// needs it asks the database, exactly as the conductor does.
+async function jobIdOf(h, taskId) {
+  const row = await h.services.db.get('SELECT job_id FROM tasks WHERE id = {id}', { id: taskId });
+  return row.job_id;
 }
 
 // Claims everything currently eligible for a worker with the given
-// capabilities, keyed by job name. Tests assert on which jobs appear rather
+// capabilities, keyed by task name. Tests assert on which tasks appear rather
 // than on the order they arrive in, which is not part of the contract.
 async function drain(h, query = {}) {
   const claimed = {};
   for (let i = 0; i < 50; i += 1) {
-    const res = await h.poll(query);
+    const res = await h.claim(query);
     if (res.statusCode === 204) break;
-    const job = res.json().job;
-    claimed[job.name] = job;
+    const task = res.json().task;
+    claimed[task.name] = task;
   }
   return claimed;
 }
@@ -60,10 +67,10 @@ async function claimNamed(h, name, query) {
   return (await drain(h, query))[name] ?? null;
 }
 
-async function finish(h, jobId, { success = true, exitCode = 0, error = null } = {}) {
+async function finish(h, taskId, { success = true, exitCode = 0, error = null } = {}) {
   const res = await h.app.inject({
     method: 'POST',
-    url: `/api/v1/workers/jobs/${encodeURIComponent(jobId)}/complete`,
+    url: `/api/v1/tasks/${taskId}/complete`,
     headers: { ...h.auth, 'content-type': 'application/json' },
     payload: JSON.stringify({ success, exit_code: exitCode, error }),
   });
@@ -80,7 +87,7 @@ test('health reports the selected drivers', async () => {
   });
 });
 
-test('a signed trigger creates a run and expands the pipeline', async () => {
+test('a signed trigger creates a job and expands the pipeline', async () => {
   await withHarness({}, async (h) => {
     const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main', actor: 'alice' });
     assert.equal(res.statusCode, 200);
@@ -88,17 +95,22 @@ test('a signed trigger creates a run and expands the pipeline', async () => {
     const body = res.json();
     assert.equal(body.status, 'created');
     // lint + 2 build + 2 package + publish
-    assert.equal(body.jobs, 6);
+    assert.equal(body.tasks, 6);
 
-    const detail = await runState(h, body.run_id);
-    assert.equal(detail.run.state, 'running');
-    assert.equal(detail.run.actor, 'alice');
-    assert.equal(detail.run.title, 'initial commit');
-    assert.equal(detail.run.number, 1);
+    const detail = await jobState(h, body.job_id);
+    assert.equal(detail.job.state, 'running');
+    assert.equal(detail.job.actor, 'alice');
+    assert.equal(detail.job.title, 'initial commit');
+    assert.equal(detail.job.number, 1);
 
-    const jobs = jobsByName(detail);
-    assert.deepEqual(jobs['package:arch=x86_64,pkg=musl'].needs, [`${body.run_id}:build:arch=x86_64`]);
-    assert.equal(jobs.publish.needs.length, 3);
+    // Task ids are opaque, so the edge is checked by resolving the name
+    // rather than by reconstructing an id the conductor no longer derives.
+    const tasks = tasksByName(detail);
+    assert.deepEqual(
+      tasks['package:arch=x86_64,pkg=musl'].needs,
+      [tasks['build:arch=x86_64'].id]
+    );
+    assert.equal(tasks.publish.needs.length, 3);
   });
 });
 
@@ -146,12 +158,12 @@ test('a branch deletion is ignored rather than failing', async () => {
 });
 
 test('a broken pipeline is reported as a client error with detail', async () => {
-  await withHarness({ pipeline: 'version: 1\njobs:\n  a:\n    script: [x]\n' }, async (h) => {
+  await withHarness({ pipeline: 'version: 1\ntasks:\n  a:\n    script: [x]\n' }, async (h) => {
     const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
     assert.equal(res.statusCode, 422);
     const body = res.json();
     assert.equal(body.error, 'invalid pipeline');
-    assert.ok(body.problems.some((p) => p.path === 'jobs.a.image'));
+    assert.ok(body.problems.some((p) => p.path === 'tasks.a.image'));
   });
 });
 
@@ -163,51 +175,194 @@ test('a missing pipeline file is reported clearly', async () => {
   });
 });
 
+test('a pipeline may be spelled .conductor.yaml instead of .conductor.yml', async () => {
+  // The project was never told about the other spelling; it is only the
+  // default, so both conventional names are acceptable.
+  await withHarness({ repoConfigPath: '.conductor.yaml' }, async (h) => {
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(res.json().tasks, 6);
+  });
+});
+
+test('a project pointed at a specific file gets no fallback', async () => {
+  // An explicit path means that file. Guessing at a neighbour would make a
+  // typo silently build the wrong pipeline.
+  await withHarness({ configPath: 'ci/build.yml', repoConfigPath: '.conductor.yml' }, async (h) => {
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    assert.equal(res.statusCode, 422);
+    assert.match(res.json().detail, /ci\/build\.yml not found/);
+  });
+});
+
+test('a repository carrying both spellings is refused rather than guessed at', async () => {
+  await withHarness({}, async (h) => {
+    const sha = await h.commit({ '.conductor.yaml': DEFAULT_PIPELINE }, 'add the other spelling');
+    const res = await h.trigger({ sha, ref: 'refs/heads/main' });
+    assert.equal(res.statusCode, 422);
+    assert.match(res.json().detail, /both exist/);
+  });
+});
+
+test('a pipeline still using the jobs key is told what it was renamed to', async () => {
+  const old = 'version: 1\njobs:\n  build:\n    image: alpine\n    script: [make]\n';
+  await withHarness({}, async (h) => {
+    const sha = await h.commit({ '.conductor.yml': old }, 'pre-rename pipeline');
+    const res = await h.trigger({ sha, ref: 'refs/heads/main' });
+    assert.equal(res.statusCode, 422);
+    assert.match(res.json().detail, /was renamed to tasks/);
+  });
+});
+
+test('a job can be created directly, without a push payload to imitate', async () => {
+  await withHarness({}, async (h) => {
+    const res = await h.createJob({ sha: h.sha, ref: 'refs/heads/main', actor: 'alice' });
+    assert.equal(res.statusCode, 200, res.body);
+
+    const body = res.json();
+    assert.equal(body.status, 'created');
+    assert.equal(body.tasks, 6);
+
+    const detail = await jobState(h, body.job_id);
+    assert.equal(detail.job.state, 'running');
+    assert.equal(detail.job.actor, 'alice');
+    // Recorded as its own kind of trigger, so a job started deliberately is
+    // distinguishable from one a hook forwarded.
+    assert.equal(detail.job.trigger_type, 'api');
+  });
+});
+
+test('creating a job requires the same signature as a trigger', async () => {
+  await withHarness({}, async (h) => {
+    const unsigned = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/projects/demo/jobs',
+      headers: { 'content-type': 'application/json' },
+      payload: JSON.stringify({ sha: h.sha }),
+    });
+    assert.equal(unsigned.statusCode, 401);
+
+    const wrong = await h.createJob({ sha: h.sha }, { secret: 'not-the-secret' });
+    assert.equal(wrong.statusCode, 401);
+  });
+});
+
+test('creating a job insists on a real commit rather than inferring one', async () => {
+  await withHarness({}, async (h) => {
+    assert.equal((await h.createJob({ ref: 'refs/heads/main' })).statusCode, 400);
+    assert.equal((await h.createJob({ sha: 'abc' })).statusCode, 400);
+  });
+});
+
+test('a job can be read back, with the state of every task', async () => {
+  await withHarness({}, async (h) => {
+    const jobId = (await h.createJob({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
+
+    const signature = h.sign('');
+    const signed = await h.app.inject({
+      method: 'GET',
+      url: `/api/v1/projects/demo/jobs/${jobId}`,
+      headers: { 'content-type': 'application/json', 'x-hub-signature-256': signature },
+    });
+    assert.equal(signed.statusCode, 200, signed.body);
+
+    const body = signed.json();
+    assert.equal(body.job.id, jobId);
+    assert.equal(body.job.state, 'running');
+    assert.equal(body.tasks.length, 6);
+    assert.ok(body.tasks.every((t) => t.state === 'queued'));
+    assert.ok(body.tasks.some((t) => t.name === 'build:arch=x86_64'));
+  });
+});
+
+test('a public job is readable without any credential at all', async () => {
+  await withHarness({}, async (h) => {
+    const jobId = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
+
+    const res = await h.app.inject({ method: 'GET', url: `/api/v1/projects/demo/jobs/${jobId}` });
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(res.json().job.visibility, 'public');
+  });
+});
+
+test('a private job needs the trigger secret, and is otherwise absent', async () => {
+  const pipeline = DEFAULT_PIPELINE.replace('version: 1\n', 'version: 1\nvisibility: private\n');
+  await withHarness({ pipeline }, async (h) => {
+    const jobId = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
+
+    // A 404 rather than a 403, so this cannot be used to find out which
+    // jobs exist.
+    const anon = await h.app.inject({ method: 'GET', url: `/api/v1/projects/demo/jobs/${jobId}` });
+    assert.equal(anon.statusCode, 404);
+
+    const signed = await h.app.inject({
+      method: 'GET',
+      url: `/api/v1/projects/demo/jobs/${jobId}`,
+      headers: { 'content-type': 'application/json', 'x-hub-signature-256': h.sign('') },
+    });
+    assert.equal(signed.statusCode, 200, signed.body);
+    assert.equal(signed.json().job.visibility, 'private');
+  });
+});
+
+test('a job of another project cannot be read through this one', async () => {
+  await withHarness({}, async (h) => {
+    const jobId = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
+    const signature = h.sign('');
+    const res = await h.app.inject({
+      method: 'GET',
+      url: `/api/v1/projects/absent/jobs/${jobId}`,
+      headers: { 'content-type': 'application/json', 'x-hub-signature-256': signature },
+    });
+    assert.equal(res.statusCode, 404);
+  });
+});
+
 test('the worker api rejects missing and invalid tokens', async () => {
   await withHarness({}, async (h) => {
-    const none = await h.app.inject({ method: 'POST', url: '/api/v1/workers/jobs' });
+    const none = await h.app.inject({ method: 'POST', url: '/api/v1/tasks/claim' });
     assert.equal(none.statusCode, 401);
 
     const bad = await h.app.inject({
-      method: 'POST', url: '/api/v1/workers/jobs', headers: { authorization: 'Bearer nope' },
+      method: 'POST', url: '/api/v1/tasks/claim', headers: { authorization: 'Bearer nope' },
     });
     assert.equal(bad.statusCode, 401);
   });
 });
 
-test('independent jobs dispatch concurrently', async () => {
+test('independent tasks dispatch concurrently', async () => {
   await withHarness({}, async (h) => {
     await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
 
-    // The prototype could only ever hand out one job at a time.
+    // The prototype could only ever hand out one task at a time.
     const [a, b, c] = await Promise.all([
-      h.poll({ arches: 'x86_64,aarch64' }),
-      h.poll({ arches: 'x86_64,aarch64' }),
-      h.poll({ arches: 'x86_64,aarch64' }),
+      h.claim({ arches: 'x86_64,aarch64' }),
+      h.claim({ arches: 'x86_64,aarch64' }),
+      h.claim({ arches: 'x86_64,aarch64' }),
     ]);
 
-    const names = [a, b, c].map((r) => r.json().job.name);
-    assert.equal(new Set(names).size, 3, `expected three distinct jobs, got ${names.join(', ')}`);
+    const names = [a, b, c].map((r) => r.json().task.name);
+    assert.equal(new Set(names).size, 3, `expected three distinct tasks, got ${names.join(', ')}`);
     assert.deepEqual(names.slice().sort(), ['build:arch=aarch64', 'build:arch=x86_64', 'lint']);
   });
 });
 
-test('a job is only offered to a worker that satisfies its requires', async () => {
+test('a task is only offered to a worker that satisfies its requires', async () => {
   await withHarness({}, async (h) => {
     await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
 
-    // Clear the three root jobs so only package and publish remain.
+    // Clear the three root tasks so only package and publish remain.
     const roots = await drain(h, { arches: 'x86_64,aarch64' });
     assert.deepEqual(Object.keys(roots).sort(), ['build:arch=aarch64', 'build:arch=x86_64', 'lint']);
-    for (const job of Object.values(roots)) await finish(h, job.id, { success: true });
+    for (const task of Object.values(roots)) await finish(h, task.id, { success: true });
 
     // package requires sign-key, which this worker does not advertise.
-    const without = await h.poll({ arches: 'x86_64,aarch64' });
+    const without = await h.claim({ arches: 'x86_64,aarch64' });
     assert.equal(without.statusCode, 204);
 
-    const with_ = await h.poll({ arches: 'x86_64,aarch64', features: 'sign-key' });
+    const with_ = await h.claim({ arches: 'x86_64,aarch64', features: 'sign-key' });
     assert.equal(with_.statusCode, 200);
-    assert.match(with_.json().job.name, /^package:/);
+    assert.match(with_.json().task.name, /^package:/);
   });
 });
 
@@ -217,9 +372,9 @@ test('a worker is not offered work for an architecture it cannot build', async (
 
     const claimed = [];
     for (let i = 0; i < 3; i += 1) {
-      const res = await h.poll({ arches: 'aarch64' });
+      const res = await h.claim({ arches: 'aarch64' });
       if (res.statusCode === 204) break;
-      claimed.push(res.json().job);
+      claimed.push(res.json().task);
     }
 
     // lint has no arch so it is eligible; the x86_64 build is not.
@@ -228,33 +383,39 @@ test('a worker is not offered work for an architecture it cannot build', async (
   });
 });
 
-test('a claimed job carries everything the worker needs', async () => {
+test('a claimed task carries everything the worker needs', async () => {
   await withHarness({}, async (h) => {
     await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
-    const job = await claimNamed(h, 'build:arch=x86_64', { arches: 'x86_64' });
+    const task = await claimNamed(h, 'build:arch=x86_64', { arches: 'x86_64' });
 
-    assert.equal(job.image, 'debian:bookworm-slim');
-    assert.deepEqual(job.script, ['./build.sh $ARCH']);
-    assert.equal(job.env.ARCH, 'x86_64');
-    assert.equal(job.sha, h.sha);
-    assert.match(job.endpoints.source, /^http:\/\/conductor\.test\/api\/v1\/workers\/jobs\//);
-    assert.ok(job.endpoints.source.endsWith('/source.tar.gz'));
-    assert.ok(job.endpoints.log.endsWith('/log'));
+    assert.equal(task.image, 'debian:bookworm-slim');
+    assert.deepEqual(task.script, ['./build.sh $ARCH']);
+    assert.equal(task.env.ARCH, 'x86_64');
+    assert.equal(task.sha, h.sha);
+    assert.match(task.endpoints.source, /^http:\/\/conductor\.test\/api\/v1\/tasks\//);
+    assert.ok(task.endpoints.source.endsWith('/source.tar.gz'));
+    assert.ok(task.endpoints.log.endsWith('/log'));
 
     // The worker resolves features from these, so a missing field
     // silently disables them.
-    assert.deepEqual(job.requires, []);
-    assert.equal(job.project_id, 'demo');
-    assert.ok(Number.isInteger(job.heartbeat_interval) && job.heartbeat_interval > 0);
-    assert.deepEqual(job.masked, []);
+    assert.deepEqual(task.requires, []);
+    assert.ok(Number.isInteger(task.heartbeat_interval) && task.heartbeat_interval > 0);
+    assert.deepEqual(task.masked, []);
+
+    // A worker is given a context and a script. Which project or job the
+    // work belongs to is none of its business, and the id it holds carries
+    // no structure to read it out of either.
+    assert.equal(task.project_id, undefined);
+    assert.equal(task.job_id, undefined);
+    assert.ok(!task.id.includes(':'), `task id should be opaque, got ${task.id}`);
   });
 });
 
-test('a job that requires a feature reports it to the worker', async () => {
+test('a task that requires a feature reports it to the worker', async () => {
   await withHarness({}, async (h) => {
     await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
     const roots = await drain(h, { arches: 'x86_64,aarch64' });
-    for (const job of Object.values(roots)) await finish(h, job.id, { success: true });
+    for (const task of Object.values(roots)) await finish(h, task.id, { success: true });
 
     const pkg = (await drain(h, { arches: 'x86_64', features: 'sign-key' }))['package:arch=x86_64,pkg=musl'];
     assert.ok(pkg);
@@ -262,29 +423,33 @@ test('a job that requires a feature reports it to the worker', async () => {
   });
 });
 
-test('the standard conductor variables are present in the job environment', async () => {
+test('the standard conductor variables are present in the task environment', async () => {
   await withHarness({}, async (h) => {
-    const run = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().run_id;
-    const job = await claimNamed(h, 'lint', {});
+    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
+    const task = await claimNamed(h, 'lint', {});
 
-    assert.equal(job.env.CONDUCTOR_PROJECT, 'demo');
-    assert.equal(job.env.CONDUCTOR_RUN_ID, run);
-    assert.equal(job.env.CONDUCTOR_RUN_NUMBER, '1');
-    assert.equal(job.env.CONDUCTOR_JOB, 'lint');
-    assert.equal(job.env.CONDUCTOR_SHA, h.sha);
-    assert.equal(job.env.CONDUCTOR_REF, 'refs/heads/main');
-    assert.equal(job.env.CONDUCTOR_ATTEMPT, '1');
+    // The worker is not told any of this, but the script is: these reach
+    // the container as ordinary environment, which is the only place the
+    // build legitimately needs them.
+    assert.equal(task.env.CONDUCTOR_PROJECT, 'demo');
+    assert.equal(task.env.CONDUCTOR_JOB_ID, job);
+    assert.equal(task.env.CONDUCTOR_JOB_NUMBER, '1');
+    assert.equal(task.env.CONDUCTOR_TASK, 'lint');
+    assert.equal(task.env.CONDUCTOR_TASK_ID, task.id);
+    assert.equal(task.env.CONDUCTOR_SHA, h.sha);
+    assert.equal(task.env.CONDUCTOR_REF, 'refs/heads/main');
+    assert.equal(task.env.CONDUCTOR_ATTEMPT, '1');
   });
 });
 
 test('the source tarball is served from the mirror', async () => {
   await withHarness({}, async (h) => {
     await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
-    const job = await claimNamed(h, 'lint', {});
+    const task = await claimNamed(h, 'lint', {});
 
     const res = await h.app.inject({
       method: 'GET',
-      url: `/api/v1/workers/jobs/${encodeURIComponent(job.id)}/source.tar.gz`,
+      url: `/api/v1/tasks/${task.id}/source.tar.gz`,
       headers: h.auth,
     });
     assert.equal(res.statusCode, 200);
@@ -295,15 +460,15 @@ test('the source tarball is served from the mirror', async () => {
   });
 });
 
-test('a worker cannot touch a job it does not hold', async () => {
+test('a worker cannot touch a task it does not hold', async () => {
   await withHarness({}, async (h) => {
     await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
-    const job = await claimNamed(h, 'lint', {});
+    const task = await claimNamed(h, 'lint', {});
 
     const other = await h.services.workerTokens.create('intruder');
     const res = await h.app.inject({
       method: 'POST',
-      url: `/api/v1/workers/jobs/${encodeURIComponent(job.id)}/log`,
+      url: `/api/v1/tasks/${task.id}/log`,
       headers: { authorization: `Bearer ${other.token}`, 'content-type': 'application/octet-stream' },
       payload: Buffer.from('malicious'),
     });
@@ -314,8 +479,8 @@ test('a worker cannot touch a job it does not hold', async () => {
 test('log appends are resumable and deduplicated by offset', async () => {
   await withHarness({}, async (h) => {
     await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
-    const job = await claimNamed(h, 'lint', {});
-    const url = `/api/v1/workers/jobs/${encodeURIComponent(job.id)}/log`;
+    const task = await claimNamed(h, 'lint', {});
+    const url = `/api/v1/tasks/${task.id}/log`;
     const headers = { ...h.auth, 'content-type': 'application/octet-stream' };
 
     const first = await h.app.inject({
@@ -336,11 +501,11 @@ test('log appends are resumable and deduplicated by offset', async () => {
     assert.equal(gap.statusCode, 409);
     assert.equal(gap.json().expected_offset, 12);
 
-    const tail = await h.services.logs.read(job.run_id, job.id, { offset: 0, limit: 1024 });
+    const tail = await h.services.logs.read(await jobIdOf(h, task.id), task.id, { offset: 0, limit: 1024 });
     assert.equal(tail.data.toString('utf8'), 'hello\nworld\n');
     assert.equal(tail.size, 12);
 
-    const partial = await h.services.logs.read(job.run_id, job.id, { offset: 6, limit: 1024 });
+    const partial = await h.services.logs.read(await jobIdOf(h, task.id), task.id, { offset: 6, limit: 1024 });
     assert.equal(partial.data.toString('utf8'), 'world\n');
   });
 });
@@ -348,36 +513,36 @@ test('log appends are resumable and deduplicated by offset', async () => {
 test('an oversized log chunk is refused', async () => {
   await withHarness({}, async (h) => {
     await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
-    const job = await claimNamed(h, 'lint', {});
+    const task = await claimNamed(h, 'lint', {});
 
     // Artifacts are streamed and may be large, but a single log append is
     // buffered, so it has to be bounded or a worker can exhaust memory.
     const res = await h.app.inject({
       method: 'POST',
-      url: `/api/v1/workers/jobs/${encodeURIComponent(job.id)}/log`,
+      url: `/api/v1/tasks/${task.id}/log`,
       headers: { ...h.auth, 'content-type': 'application/octet-stream' },
       payload: Buffer.alloc(2 * 1024 * 1024, 0x41),
     });
 
     assert.equal(res.statusCode, 413);
-    assert.equal(await h.services.logs.size(job.run_id, job.id), 0, 'nothing should have been written');
+    assert.equal(await h.services.logs.size(await jobIdOf(h, task.id), task.id), 0, 'nothing should have been written');
   });
 });
 
 test('a finished log moves to storage and is still readable', async () => {
   await withHarness({}, async (h) => {
     await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
-    const job = await claimNamed(h, 'lint', {});
+    const task = await claimNamed(h, 'lint', {});
 
     await h.app.inject({
       method: 'POST',
-      url: `/api/v1/workers/jobs/${encodeURIComponent(job.id)}/log`,
+      url: `/api/v1/tasks/${task.id}/log`,
       headers: { ...h.auth, 'content-type': 'application/octet-stream' },
       payload: Buffer.from('compiling\ndone\n'),
     });
-    await finish(h, job.id, { success: true });
+    await finish(h, task.id, { success: true });
 
-    const row = await h.services.db.get('SELECT log_key FROM jobs WHERE id = {id}', { id: job.id });
+    const row = await h.services.db.get('SELECT log_key FROM tasks WHERE id = {id}', { id: task.id });
     assert.ok(row.log_key, 'the log should have moved to storage');
     const object = await h.services.storage.get(row.log_key);
     const parts = [];
@@ -389,11 +554,11 @@ test('a finished log moves to storage and is still readable', async () => {
 test('artifacts are stored, hashed, and stripped of traversal', async () => {
   await withHarness({}, async (h) => {
     await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
-    const job = await claimNamed(h, 'build:arch=x86_64', { arches: 'x86_64' });
+    const task = await claimNamed(h, 'build:arch=x86_64', { arches: 'x86_64' });
 
     const upload = await h.app.inject({
       method: 'POST',
-      url: `/api/v1/workers/jobs/${encodeURIComponent(job.id)}/artifacts`,
+      url: `/api/v1/tasks/${task.id}/artifacts`,
       headers: {
         ...h.auth,
         'content-type': 'application/octet-stream',
@@ -409,13 +574,13 @@ test('artifacts are stored, hashed, and stripped of traversal', async () => {
     assert.match(body.sha256, /^[0-9a-f]{64}$/);
 
     const artifacts = await h.services.db.all(
-      'SELECT id FROM artifacts WHERE job_id = {job}', { job: job.id }
+      'SELECT id FROM artifacts WHERE task_id = {task}', { task: task.id }
     );
     assert.equal(artifacts.length, 1);
 
     const download = await h.app.inject({
       method: 'GET',
-      url: `/api/v1/projects/${job.project_id}/runs/${job.run_id}/jobs/${encodeURIComponent(job.id)}/artifacts/${artifacts[0].id}`,
+      url: `/api/v1/projects/demo/jobs/${await jobIdOf(h, task.id)}/tasks/${task.id}/artifacts/${artifacts[0].id}`,
     });
     assert.equal(download.statusCode, 200);
     assert.equal(download.body, 'artifact bytes');
@@ -425,11 +590,11 @@ test('artifacts are stored, hashed, and stripped of traversal', async () => {
 test('an artifact shorter than its content-length is rejected', async () => {
   await withHarness({}, async (h) => {
     await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
-    const job = await claimNamed(h, 'lint', {});
+    const task = await claimNamed(h, 'lint', {});
 
     const res = await h.app.inject({
       method: 'POST',
-      url: `/api/v1/workers/jobs/${encodeURIComponent(job.id)}/artifacts`,
+      url: `/api/v1/tasks/${task.id}/artifacts`,
       headers: {
         ...h.auth,
         'content-type': 'application/octet-stream',
@@ -444,7 +609,7 @@ test('an artifact shorter than its content-length is rejected', async () => {
 
 test('success releases dependents, matched on shared dimensions', async () => {
   await withHarness({}, async (h) => {
-    const run = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().run_id;
+    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
 
     const roots = await drain(h, { arches: 'x86_64,aarch64', features: 'sign-key' });
     await finish(h, roots['build:arch=x86_64'].id, { success: true });
@@ -455,33 +620,33 @@ test('success releases dependents, matched on shared dimensions', async () => {
     assert.ok(next['package:arch=x86_64,pkg=musl'], 'x86_64 package should be released');
     assert.ok(!next['package:arch=aarch64,pkg=musl'], 'aarch64 package should still be waiting');
 
-    const state = jobsByName(await runState(h, run));
+    const state = tasksByName(await jobState(h, job));
     assert.equal(state['package:arch=aarch64,pkg=musl'].state, 'queued');
   });
 });
 
 test('failure skips transitive dependents, not just direct ones', async () => {
   await withHarness({}, async (h) => {
-    const run = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().run_id;
+    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
 
     const build = await claimNamed(h, 'build:arch=x86_64', { arches: 'x86_64' });
     const outcome = await finish(h, build.id, { success: false, exitCode: 2, error: 'compile failed' });
     assert.equal(outcome.state, 'failed');
 
-    const jobs = jobsByName(await runState(h, run));
+    const tasks = tasksByName(await jobState(h, job));
     // Direct dependent.
-    assert.equal(jobs['package:arch=x86_64,pkg=musl'].state, 'skipped');
+    assert.equal(tasks['package:arch=x86_64,pkg=musl'].state, 'skipped');
     // Transitive dependent: the prototype left this queued and dispatchable.
-    assert.equal(jobs.publish.state, 'skipped');
+    assert.equal(tasks.publish.state, 'skipped');
     // Unrelated branches are untouched.
-    assert.equal(jobs['build:arch=aarch64'].state, 'queued');
-    assert.equal(jobs['package:arch=aarch64,pkg=musl'].state, 'queued');
+    assert.equal(tasks['build:arch=aarch64'].state, 'queued');
+    assert.equal(tasks['package:arch=aarch64,pkg=musl'].state, 'queued');
   });
 });
 
-test('a run settles as failed once every job is terminal', async () => {
+test('a job settles as failed once every task is terminal', async () => {
   await withHarness({}, async (h) => {
-    const run = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().run_id;
+    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
 
     const roots = await drain(h, { arches: 'x86_64,aarch64', features: 'sign-key' });
 
@@ -493,16 +658,16 @@ test('a run settles as failed once every job is terminal', async () => {
     const released = await drain(h, { arches: 'aarch64', features: 'sign-key' });
     const last = await finish(h, released['package:arch=aarch64,pkg=musl'].id, { success: true });
 
-    assert.equal(last.run_state, 'failed');
-    assert.equal((await runState(h, run)).run.state, 'failed');
+    assert.equal(last.job_state, 'failed');
+    assert.equal((await jobState(h, job)).job.state, 'failed');
   });
 });
 
-test('a run settles as success when everything passes', async () => {
+test('a job settles as success when everything passes', async () => {
   // Quoted, because an unquoted true in YAML is a boolean, not a command.
   const pipeline = `
 version: 1
-jobs:
+tasks:
   a:
     image: alpine
     script: ['true']
@@ -512,22 +677,22 @@ jobs:
     needs: [a]
 `;
   await withHarness({ pipeline }, async (h) => {
-    const run = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().run_id;
+    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
 
     const a = await claimNamed(h, 'a', {});
     await finish(h, a.id, { success: true });
     const b = await claimNamed(h, 'b', {});
     const last = await finish(h, b.id, { success: true });
 
-    assert.equal(last.run_state, 'success');
-    assert.equal((await runState(h, run)).run.state, 'success');
+    assert.equal(last.job_state, 'success');
+    assert.equal((await jobState(h, job)).job.state, 'success');
   });
 });
 
-test('an allowed failure does not fail the run or block dependents', async () => {
+test('an allowed failure does not fail the job or block dependents', async () => {
   const pipeline = `
 version: 1
-jobs:
+tasks:
   flaky:
     image: alpine
     script: ['false']
@@ -538,31 +703,31 @@ jobs:
     needs: [flaky]
 `;
   await withHarness({ pipeline }, async (h) => {
-    const run = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().run_id;
+    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
 
     const flaky = await claimNamed(h, 'flaky', {});
     const outcome = await finish(h, flaky.id, { success: false, exitCode: 1 });
     assert.deepEqual(outcome.skipped, []);
 
     const after = await claimNamed(h, 'after', {});
-    assert.ok(after, 'dependent should still run after an allowed failure');
+    assert.ok(after, 'dependent should still job after an allowed failure');
     const last = await finish(h, after.id, { success: true });
-    assert.equal(last.run_state, 'success');
-    assert.equal((await runState(h, run)).run.state, 'success');
+    assert.equal(last.job_state, 'success');
+    assert.equal((await jobState(h, job)).job.state, 'success');
   });
 });
 
-test('a job with retries left is requeued instead of failing the run', async () => {
+test('a task with retries left is requeued instead of failing the job', async () => {
   const pipeline = `
 version: 1
-jobs:
+tasks:
   retried:
     image: alpine
     script: [maybe]
     max_attempts: 2
 `;
   await withHarness({ pipeline }, async (h) => {
-    const run = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().run_id;
+    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
 
     const first = await claimNamed(h, 'retried', {});
     const outcome = await finish(h, first.id, { success: false, exitCode: 1 });
@@ -573,93 +738,93 @@ jobs:
     assert.equal(second.attempt, 2);
     const last = await finish(h, second.id, { success: false, exitCode: 1 });
     assert.equal(last.state, 'failed');
-    assert.equal((await runState(h, run)).run.state, 'failed');
+    assert.equal((await jobState(h, job)).job.state, 'failed');
   });
 });
 
-test('heartbeats keep a job alive and report cancellation', async () => {
+test('heartbeats keep a task alive and report cancellation', async () => {
   await withHarness({}, async (h) => {
-    const run = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().run_id;
-    const job = await claimNamed(h, 'lint', {});
+    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
+    const task = await claimNamed(h, 'lint', {});
 
     const beat = await h.app.inject({
       method: 'POST',
-      url: `/api/v1/workers/jobs/${encodeURIComponent(job.id)}/heartbeat`,
+      url: `/api/v1/tasks/${task.id}/heartbeat`,
       headers: { ...h.auth, 'content-type': 'application/json' },
       payload: '{}',
     });
     assert.deepEqual(beat.json(), { cancelled: false });
 
-    await h.services.scheduler.cancelRun(run);
+    await h.services.scheduler.cancelJob(job);
 
     const after = await h.app.inject({
       method: 'POST',
-      url: `/api/v1/workers/jobs/${encodeURIComponent(job.id)}/heartbeat`,
+      url: `/api/v1/tasks/${task.id}/heartbeat`,
       headers: { ...h.auth, 'content-type': 'application/json' },
       payload: '{}',
     });
     assert.equal(after.json().cancelled, true);
-    assert.equal((await runState(h, run)).run.state, 'cancelled');
+    assert.equal((await jobState(h, job)).job.state, 'cancelled');
   });
 });
 
-test('the reaper fails a job whose worker stopped reporting', async () => {
+test('the reaper fails a task whose worker stopped reporting', async () => {
   await withHarness({}, async (h) => {
-    const run = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().run_id;
-    const job = await claimNamed(h, 'lint', {});
-    assert.equal(jobsByName(await runState(h, run)).lint.state, 'running');
+    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
+    const task = await claimNamed(h, 'lint', {});
+    assert.equal(tasksByName(await jobState(h, job)).lint.state, 'running');
 
     // Backdate the heartbeat rather than waiting out the real timeout.
     await h.services.db.run(
-      'UPDATE jobs SET heartbeat_at = {then} WHERE id = {id}',
-      { then: Date.now() - 10 * 60 * 1000, id: job.id }
+      'UPDATE tasks SET heartbeat_at = {then} WHERE id = {id}',
+      { then: Date.now() - 10 * 60 * 1000, id: task.id }
     );
 
     const reaped = await h.services.scheduler.reap();
     assert.ok(reaped.length > 0);
 
-    const after = jobsByName(await runState(h, run)).lint;
+    const after = tasksByName(await jobState(h, job)).lint;
     assert.equal(after.state, 'failed');
     assert.match(after.error, /stopped reporting/);
 
-    // The worker that lost the job can no longer complete it.
-    const late = await finish(h, job.id, { success: true });
+    // The worker that lost the task can no longer complete it.
+    const late = await finish(h, task.id, { success: true });
     assert.match(String(late.error ?? ''), /not running|another worker/);
   });
 });
 
-test('a second push produces an independent, numbered run', async () => {
+test('a second push produces an independent, numbered job', async () => {
   await withHarness({}, async (h) => {
     const first = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json();
     const sha2 = await h.commit({ 'README.md': 'changed\n' }, 'second commit');
     const second = (await h.trigger({ sha: sha2, ref: 'refs/heads/main' })).json();
 
-    assert.notEqual(first.run_id, second.run_id);
-    const detail = await runState(h, second.run_id);
-    assert.equal(detail.run.number, 2);
-    assert.equal(detail.run.title, 'second commit');
-    assert.equal(detail.run.head_sha, sha2);
+    assert.notEqual(first.job_id, second.job_id);
+    const detail = await jobState(h, second.job_id);
+    assert.equal(detail.job.number, 2);
+    assert.equal(detail.job.title, 'second commit');
+    assert.equal(detail.job.head_sha, sha2);
   });
 });
 
-test('runs can be listed and filtered by project', apiGone, async () => {
+test('jobs can be listed and filtered by project', apiGone, async () => {
   await withHarness({}, async (h) => {
     await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
 
-    const all = await h.app.inject({ method: 'GET', url: '/api/runs' });
-    assert.equal(all.json().runs.length, 1);
+    const all = await h.app.inject({ method: 'GET', url: '/api/jobs' });
+    assert.equal(all.json().jobs.length, 1);
 
-    const mine = await h.app.inject({ method: 'GET', url: '/api/runs?project=demo' });
-    assert.equal(mine.json().runs.length, 1);
+    const mine = await h.app.inject({ method: 'GET', url: '/api/jobs?project=demo' });
+    assert.equal(mine.json().jobs.length, 1);
 
-    const other = await h.app.inject({ method: 'GET', url: '/api/runs?project=absent' });
-    assert.equal(other.json().runs.length, 0);
+    const other = await h.app.inject({ method: 'GET', url: '/api/jobs?project=absent' });
+    assert.equal(other.json().jobs.length, 0);
   });
 });
 
-test('unknown runs, jobs and artifacts return 404', apiGone, async () => {
+test('unknown jobs, tasks and artifacts return 404', apiGone, async () => {
   await withHarness({}, async (h) => {
-    for (const url of ['/api/runs/nope', '/api/jobs/nope', '/api/jobs/nope/log', '/api/artifacts/nope']) {
+    for (const url of ['/api/jobs/nope', '/api/tasks/nope', '/api/tasks/nope/log', '/api/artifacts/nope']) {
       const res = await h.app.inject({ method: 'GET', url });
       assert.equal(res.statusCode, 404, `${url} should be 404`);
     }
@@ -694,18 +859,18 @@ test('a commit that is not in the repository is refused', async () => {
   });
 });
 
-test('a job is told to fetch an archive, and never the repository itself', async () => {
+test('a task is told to fetch an archive, and never the repository itself', async () => {
   await withHarness({}, async (h) => {
     await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
-    const job = await claimNamed(h, 'lint', {});
+    const task = await claimNamed(h, 'lint', {});
 
-    assert.match(job.endpoints.source, /\/source\.tar\.gz$/);
+    assert.match(task.endpoints.source, /\/source\.tar\.gz$/);
 
     // A worker holds no repository credentials and can reach no ref other
     // than the commit it was given work for, so the repository location
     // has no business being in the payload.
-    assert.equal(job.source, undefined, 'there is one way to get the source, so there is no mode');
-    assert.ok(!JSON.stringify(job).includes(h.repoDir), 'the repository path must not reach the worker');
+    assert.equal(task.source, undefined, 'there is one way to get the source, so there is no mode');
+    assert.ok(!JSON.stringify(task).includes(h.repoDir), 'the repository path must not reach the worker');
   });
 });
 
@@ -715,11 +880,11 @@ test('the source archive is the bare tree, with no wrapping directory', async ()
   // wrapping directory in the archive would land one level too deep.
   await withHarness({}, async (h) => {
     await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
-    const job = await claimNamed(h, 'lint', {});
+    const task = await claimNamed(h, 'lint', {});
 
     const archive = await h.app.inject({
       method: 'GET',
-      url: new URL(job.endpoints.source).pathname,
+      url: new URL(task.endpoints.source).pathname,
       headers: h.auth,
     });
     assert.equal(archive.statusCode, 200);
@@ -748,7 +913,7 @@ test('the working directory is resolved from the pipeline, then the project', as
     'workdir: /usr/src/app',
     'defaults:',
     '  image: alpine:3',
-    'jobs:',
+    'tasks:',
     '  build:',
     "    script: ['make']",
     '',
@@ -756,8 +921,8 @@ test('the working directory is resolved from the pipeline, then the project', as
 
   await withHarness({ pipeline }, async (h) => {
     await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
-    const job = await claimNamed(h, 'build', {});
-    assert.equal(job.workdir, '/usr/src/app', 'the repository has the final say');
+    const task = await claimNamed(h, 'build', {});
+    assert.equal(task.workdir, '/usr/src/app', 'the repository has the final say');
   });
 
   // With the repository silent, the project decides.
@@ -767,15 +932,15 @@ test('the working directory is resolved from the pipeline, then the project', as
       { dir: '/srv/build', id: h.project.id }
     );
     await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
-    const job = await claimNamed(h, 'lint', {});
-    assert.equal(job.workdir, '/srv/build');
+    const task = await claimNamed(h, 'lint', {});
+    assert.equal(task.workdir, '/srv/build');
   });
 
   // With neither, there is a default.
   await withHarness({}, async (h) => {
     await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
-    const job = await claimNamed(h, 'lint', {});
-    assert.equal(job.workdir, '/work');
+    const task = await claimNamed(h, 'lint', {});
+    assert.equal(task.workdir, '/work');
   });
 });
 
@@ -786,7 +951,7 @@ test('an unusable working directory is refused rather than sanitised', async () 
       `workdir: ${JSON.stringify(workdir)}`,
       'defaults:',
       '  image: alpine:3',
-      'jobs:',
+      'tasks:',
       '  build:',
       "    script: ['make']",
       '',

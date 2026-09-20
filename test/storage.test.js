@@ -1,6 +1,6 @@
 // test/storage.test.js - object storage backends
 //
-// The local backend is always exercised. The S3 backend runs against a real
+// The local backend is always exercised. The S3 backend jobs against a real
 // MinIO, started automatically when docker is available, because the
 // signing code is written by hand here and a stub would happily accept a
 // signature a real server rejects.
@@ -37,7 +37,7 @@ test('key validation rejects traversal and absolute paths', () => {
   for (const bad of ['../etc/passwd', '/abs', 'a//b', 'a/../b', 'a/./b', '', 'a\\b', 'a\0b']) {
     assert.throws(() => assertKey(bad), new RegExp('storage key'), `expected ${JSON.stringify(bad)} to be rejected`);
   }
-  assert.equal(assertKey('artifacts/run/job/dist/app.tar.gz'), 'artifacts/run/job/dist/app.tar.gz');
+  assert.equal(assertKey('artifacts/job/task/dist/app.tar.gz'), 'artifacts/job/task/dist/app.tar.gz');
 });
 
 test('sanitizeRelativePath strips traversal from worker supplied paths', () => {
@@ -220,7 +220,7 @@ test('s3 accepts a stream when the size is known', s3Options, async () => {
 
 test('a presigned url is usable without credentials', s3Options, async () => {
   const st = await s3Storage();
-  const key = 'artifacts/run/job/dist/app bin+v1.tar.gz';
+  const key = 'artifacts/job/task/dist/app bin+v1.tar.gz';
   await st.put(key, Buffer.from('presigned content'));
 
   const url = await st.presign(key, { expires: 300 });

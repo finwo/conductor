@@ -19,7 +19,7 @@ import { gitEnv } from '../src/lib/git.js';
 
 const execFileAsync = promisify(execFile);
 
-test('git runs with safe.directory set', () => {
+test('git jobs with safe.directory set', () => {
   const env = gitEnv({});
   assert.equal(env.GIT_CONFIG_COUNT, '1');
   assert.equal(env.GIT_CONFIG_KEY_0, 'safe.directory');
@@ -75,7 +75,7 @@ test('a file missing from a commit reads as missing, whatever sits in the workin
   // absence. The conductor decides a project has no pipeline from that
   // message, so the wrong wording turned a missing pipeline into a 500.
   // Reproduced here rather than left to the happy accident that the test
-  // suite runs from a directory containing a .conductor.yml.
+  // suite jobs from a directory containing a .conductor.yml.
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'conductor-cwd-'));
   const work = path.join(dir, 'work');
   const mirror = path.join(dir, 'mirror.git');
@@ -95,7 +95,7 @@ test('a file missing from a commit reads as missing, whatever sits in the workin
     const sha = stdout.trim();
 
     // A name that is absent from the commit but present in the directory
-    // the suite runs from.
+    // the suite jobs from.
     const decoy = 'package.json';
     assert.ok(existsSync(path.join(process.cwd(), decoy)), `expected ${decoy} in the working directory`);
 
@@ -110,7 +110,7 @@ test('a file missing from a commit reads as missing, whatever sits in the workin
       stderr = error.stderr ?? '';
     }
 
-    // Run inside the bare mirror there is no work tree to confuse it.
+    // Job inside the bare mirror there is no work tree to confuse it.
     assert.match(stderr, /does not exist/);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
