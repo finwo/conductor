@@ -62,7 +62,7 @@ test('a token signed with another secret is refused', () => {
 });
 
 test('a tampered payload is refused', () => {
-  const token = issueToken('secret', { sub: 'u1', name: 'a', role: 'viewer' });
+  const token = issueToken('secret', { sub: 'u1', name: 'a', role: 'user' });
   const [header, payload, signature] = token.split('.');
   const forged = Buffer.from(JSON.stringify({
     ...JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')),

@@ -120,13 +120,13 @@ test('a token carrying the admin role authenticates as an administrator', apiGon
   });
 });
 
-test('a token without the admin role is a viewer', apiGone, async () => {
+test('a token without the admin role is an ordinary user', apiGone, async () => {
   await withOidcConductor({}, async (h) => {
     const headers = await oidc.headers('persona-viewer');
 
     const me = await h.app.inject({ method: 'GET', url: '/api/auth/me', headers });
     assert.equal(me.json().user.username, 'bob');
-    assert.equal(me.json().user.role, 'viewer');
+    assert.equal(me.json().user.role, 'user');
 
     assert.equal((await h.app.inject({ method: 'GET', url: '/api/admin/users', headers })).statusCode, 403);
   });
@@ -211,10 +211,10 @@ test('a role revoked at the provider is lost on the next request', apiGone, asyn
     // The provider stops asserting the role for that subject.
     const account = await h.services.users.byExternalId(`${oidc.issuer}|alice-sub`);
     await h.services.users.upsertExternal({
-      externalId: `${oidc.issuer}|alice-sub`, username: 'alice', role: 'viewer',
+      externalId: `${oidc.issuer}|alice-sub`, username: 'alice', role: 'user',
     });
     const refreshed = await h.services.users.get(account.id);
-    assert.equal(refreshed.role, 'viewer');
+    assert.equal(refreshed.role, 'user');
   });
 });
 

@@ -195,7 +195,7 @@ test('a user cannot open or delete a project they do not own', async () => {
   await withUi({}, async (h) => {
     const admin = await signIn(h);
     await h.app.inject({
-      method: 'POST', url: '/users', ...form(admin, { username: 'mallory', password: 'mallory-password', role: 'viewer' }),
+      method: 'POST', url: '/users', ...form(admin, { username: 'mallory', password: 'mallory-password', role: 'user' }),
     });
     const other = await signIn(h, 'mallory', 'mallory-password');
 
@@ -234,7 +234,7 @@ test('an ordinary user cannot create shared capacity from the form', async () =>
   await withUi({}, async (h) => {
     const admin = await signIn(h);
     await h.app.inject({
-      method: 'POST', url: '/users', ...form(admin, { username: 'carol', password: 'carol-password', role: 'viewer' }),
+      method: 'POST', url: '/users', ...form(admin, { username: 'carol', password: 'carol-password', role: 'user' }),
     });
     const carol = await signIn(h, 'carol', 'carol-password');
 
@@ -252,7 +252,7 @@ test('the users page is administrator only and warns about what deletion destroy
   await withUi({}, async (h) => {
     const admin = await signIn(h);
     await h.app.inject({
-      method: 'POST', url: '/users', ...form(admin, { username: 'dave', password: 'dave-password', role: 'viewer' }),
+      method: 'POST', url: '/users', ...form(admin, { username: 'dave', password: 'dave-password', role: 'user' }),
     });
     const dave = await h.services.users.byUsername('dave');
     await h.services.projects.setOwner('demo', dave.id);

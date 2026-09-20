@@ -104,5 +104,5 @@ export function duration(from, to) {
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
-export const ACTIVE_RUN_STATES = ['pending', 'running'];
-export const ACTIVE_JOB_STATES = ['queued', 'running'];
+export const ACTIVE_JOB_STATES = ['pending', 'running'];
+export const ACTIVE_TASK_STATES = ['queued', 'running'];

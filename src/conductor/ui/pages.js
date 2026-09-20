@@ -6,7 +6,7 @@
 // polling stops by itself rather than needing to be cancelled.
 
 import { html, raw } from './html.js';
-import { badge, notice, oneTimeSecret, shortSha, ago, duration, ACTIVE_RUN_STATES, ACTIVE_JOB_STATES } from './layout.js';
+import { badge, notice, oneTimeSecret, shortSha, ago, duration, ACTIVE_JOB_STATES, ACTIVE_TASK_STATES } from './layout.js';
 
 const poll = (url, seconds = 3) => raw(`hx-get="${url}" hx-trigger="every ${seconds}s" hx-swap="outerHTML"`);
 
@@ -21,7 +21,7 @@ export function jobsPage({ jobs, user, anonymous }) {
 }
 
 export function jobsTable(jobs) {
-  const live = jobs.some((r) => ACTIVE_RUN_STATES.includes(r.state));
+  const live = jobs.some((r) => ACTIVE_JOB_STATES.includes(r.state));
   return html`<div id="jobs" ${live ? poll('/partials/jobs', 4) : ''}>
     <table>
       <thead><tr>
@@ -68,7 +68,7 @@ export function jobPage({ job, tasks, canManage }) {
 }
 
 export function tasksTable(job, tasks) {
-  const live = ACTIVE_RUN_STATES.includes(job.state);
+  const live = ACTIVE_JOB_STATES.includes(job.state);
 
   // Grouped by graph depth, which is how the pipeline reads.
   const byId = new Map(tasks.map((j) => [j.id, j]));
@@ -138,7 +138,7 @@ export function taskPage({ task, artifacts, log }) {
 }
 
 export function taskLog(task, log) {
-  const live = ACTIVE_JOB_STATES.includes(task.state);
+  const live = ACTIVE_TASK_STATES.includes(task.state);
   return html`<pre id="log" class="log" ${live ? poll(`/partials/tasks/${task.id}/log`, 2) : ''}>${
     log || (live ? 'Waiting for output.' : 'No output.')
   }</pre>`;
