@@ -392,8 +392,11 @@ export default async function uiRoutes(fastify, services) {
     const { username, password } = req.body ?? {};
     const user = await users.authenticate(String(username ?? ''), String(password ?? ''));
     if (!user) {
-      return reply.code(401).header('content-type', 'text/html; charset=utf-8')
-        .send(toHtml(loginPage({ error: 'Invalid username or password.' })));
+      return page(reply, {
+        title: 'sign in',
+        user: null,
+        body: loginPage({ error: 'Invalid username or password.' }),
+      });
     }
 
     const ttl = cfg.auth.session_ttl;
@@ -691,7 +694,12 @@ export default async function uiRoutes(fastify, services) {
         role: req.body?.role === 'admin' ? 'admin' : 'user',
       });
     } catch (e) {
-      return fail(reply, e.message);
+      return page(reply, {
+        title: 'users',
+        user: await currentUser(req),
+        active: 'users',
+        body: usersPage({ users: await users.listWithHoldings(), localLogin: auth.localLogin, error: e.message }),
+      });
     }
     return refresh(reply);
   });

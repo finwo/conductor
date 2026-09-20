@@ -151,7 +151,7 @@ export function loginPage({ error }) {
     <div class="panel narrow">
       <h2>Sign in</h2>
       ${notice(error)}
-      <form hx-post="/login" hx-target="body" hx-swap="none">
+      <form hx-post="/login" hx-target="body" hx-swap="outerHTML">
         <label>username<input name="username" autocomplete="username" required autofocus></label>
         <label>password<input name="password" type="password" autocomplete="current-password" required></label>
         <div class="actions"><button type="submit">sign in</button></div>
@@ -313,12 +313,28 @@ export function projectPage({ project, variables, triggerUrl, secret, user, rete
         <button hx-post="/projects/${project.id}/trigger-secret" hx-target="body" hx-swap="none">
           rotate trigger secret
         </button>
-        <button class="danger"
-          hx-delete="/projects/${project.id}"
-          hx-confirm="Delete ${project.id} and all of its jobs?"
-          hx-swap="none">delete project</button>
+        <button class="danger" onclick="setupDeleteProjectDialog('${project.id}')">delete project</button>
       </div>
     </div>
+
+    <dialog id="deleteProjectDialog">
+      <p>Delete "<span id="deleteProjectId"></span>" and all of its jobs?</p>
+      <div class="actions">
+        <button type="button" id="deleteProjectConfirm" class="danger">delete project</button>
+        <button type="button" onclick="this.closest('dialog').close()">cancel</button>
+      </div>
+    </dialog>
+
+    <script>
+    function setupDeleteProjectDialog(id) {
+      document.getElementById('deleteProjectId').textContent = id;
+      document.getElementById('deleteProjectConfirm').onclick = function() {
+        htmx.ajax('DELETE', '/projects/' + id, { target: 'body', swap: 'none' });
+        document.getElementById('deleteProjectDialog').close();
+      };
+      document.getElementById('deleteProjectDialog').showModal();
+    }
+    </script>
   `;
 }
 
@@ -429,16 +445,17 @@ export function workersTable(tokens, user) {
 
 // --- users ---
 
-export function usersPage({ users, localLogin }) {
+export function usersPage({ users, localLogin, error }) {
   return html`
     <h2>Users</h2>
     ${localLogin ? '' : html`<p class="muted">
       Authentication goes through the identity provider, so these accounts are inactive.
     </p>`}
+    ${error ? notice(error) : ''}
 
     <div class="panel">
       <h3>Add a user</h3>
-      <form hx-post="/users" hx-target="body" hx-swap="none">
+      <form hx-post="/users" hx-target="body" hx-swap="outerHTML">
         <div class="grid">
           <label>username<input name="username" required></label>
           <label>password<input name="password" type="password" required></label>
@@ -451,6 +468,25 @@ export function usersPage({ users, localLogin }) {
     </div>
 
     ${usersTable(users)}
+
+    <dialog id="removeUserDialog">
+      <p id="removeUserMessage"></p>
+      <div class="actions">
+        <button type="button" id="removeUserConfirm" class="danger">remove</button>
+        <button type="button" onclick="this.closest('dialog').close()">cancel</button>
+      </div>
+    </dialog>
+
+    <script>
+    function setupRemoveUserDialog(id, message) {
+      document.getElementById('removeUserMessage').textContent = message;
+      document.getElementById('removeUserConfirm').onclick = function() {
+        htmx.ajax('DELETE', '/users/' + id, { target: '#users', swap: 'outerHTML' });
+        document.getElementById('removeUserDialog').close();
+      };
+      document.getElementById('removeUserDialog').showModal();
+    }
+    </script>
   `;
 }
 
@@ -469,8 +505,7 @@ export function usersTable(users) {
         <td class="row-actions">
           <button class="link" hx-patch="/users/${u.id}" hx-vals='{"disabled": ${u.disabled === 1 ? 'false' : 'true'}}'
             hx-target="#users" hx-swap="outerHTML">${u.disabled === 1 ? 'enable' : 'disable'}</button>
-          <button class="link danger" hx-delete="/users/${u.id}"
-            hx-confirm="${deleteWarning(u)}" hx-target="#users" hx-swap="outerHTML">remove</button>
+          <button class="link danger" onclick="setupRemoveUserDialog('${u.id}', ${JSON.stringify(deleteWarning(u))})">remove</button>
         </td>
       </tr>`)}
     </tbody>
