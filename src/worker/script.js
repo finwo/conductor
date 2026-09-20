@@ -1,11 +1,11 @@
-// src/worker/script.js - turning a job's commands into a shell script
+// src/worker/script.js - turning a task's commands into a shell script
 //
 // The script is copied into the container and run by path rather than
 // piped to the shell's stdin, so that a command which itself reads stdin
 // cannot swallow the rest of the script.
 //
 // It lives outside the tree, so that a repository cannot shadow it and
-// nothing the job does to its own working directory can lose it.
+// nothing the task does to its own working directory can lose it.
 
 // Single quoting is the only form that is safe for arbitrary text in POSIX
 // sh: everything inside is literal, and an embedded quote is closed,

@@ -1,6 +1,6 @@
 // src/worker/logstream.js - batching log shipper with masking
 //
-// Job output arrives as many small writes; shipping each one would be a
+// Task output arrives as many small writes; shipping each one would be a
 // request per line. Output is accumulated and flushed on a timer, or as soon
 // as it grows past a threshold.
 //
@@ -114,7 +114,7 @@ export function createLogStream(client, url, { masked = [], flushMs = FLUSH_MS, 
           }
           offset = result.size;
         } catch (e) {
-          // Losing log output must not fail an otherwise good job.
+          // Losing log output must not fail an otherwise good task.
           failed = e;
           logger.warn?.(`log shipping failed, dropping ${chunk.length} bytes: ${e.message}`);
         }
@@ -139,7 +139,7 @@ export function createLogStream(client, url, { masked = [], flushMs = FLUSH_MS, 
       else schedule();
     },
 
-    // A line from the worker rather than the job, so the log can explain a
+    // A line from the worker rather than the task, so the log can explain a
     // timeout, a cancellation or a setup failure.
     note(line) {
       this.write(`${line}\n`);

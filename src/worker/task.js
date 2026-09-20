@@ -1,4 +1,4 @@
-// src/worker/job.js - running one job
+// src/worker/task.js - running one task
 //
 // Sequence: create the container, put the tree and the script into it,
 // start any services on a private network, run it, ship its output,
@@ -9,10 +9,10 @@
 // the worker needs no directory the host can also see, and therefore no
 // mounts, no matching paths, and no storage of its own. What little it
 // does write goes to a scratch directory that lives and dies with the
-// job.
+// task.
 //
 // Cleanup runs whatever happened. A worker that leaks containers or
-// networks stops being usable after a few dozen jobs.
+// networks stops being usable after a few dozen tasks.
 
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -21,7 +21,7 @@ import { containerName } from './docker.js';
 import { createLogStream } from './logstream.js';
 import { sourceIntoContainer } from './source.js';
 
-// Where a job runs when the conductor did not say. The conductor resolves
+// Where a task runs when the conductor did not say. The conductor resolves
 // this from the pipeline and the project, so this only covers a worker
 // talking to one too old to have an opinion.
 const FALLBACK_WORKDIR = '/work';
@@ -44,7 +44,7 @@ export function patternPrefix(pattern) {
   return literal.join('/');
 }
 
-// The set of paths to copy out for a job's artifact patterns, with any
+// The set of paths to copy out for a task's artifact patterns, with any
 // path that is covered by another removed.
 export function copyOutPaths(patterns) {
   const prefixes = (patterns ?? []).map(patternPrefix);
@@ -54,15 +54,15 @@ export function copyOutPaths(patterns) {
   return unique.filter((p, i) => !unique.slice(0, i).some((other) => p === other || p.startsWith(`${other}/`)));
 }
 
-// Resolves the features a job asked for into local resources.
-export function resolveFeatures(job, available) {
+// Resolves the features a task asked for into local resources.
+export function resolveFeatures(task, available) {
   const mounts = [];
   const env = {};
   const devices = [];
   let privileged = false;
   const missing = [];
 
-  for (const name of job.requires ?? []) {
+  for (const name of task.requires ?? []) {
     const feature = available[name];
     if (!feature) {
       missing.push(name);
@@ -77,17 +77,17 @@ export function resolveFeatures(job, available) {
   return { mounts, env, devices, privileged, missing };
 }
 
-export async function runJob({ cfg, client, runtime, job, logger = console }) {
-  const network = containerName('conductor-net', job.id);
-  const jobContainer = containerName('conductor', job.id);
-  const workdir = job.workdir || FALLBACK_WORKDIR;
+export async function runTask({ cfg, client, runtime, task, logger = console }) {
+  const network = containerName('conductor-net', task.id);
+  const taskContainer = containerName('conductor', task.id);
+  const workdir = task.workdir || FALLBACK_WORKDIR;
 
   // Worker local, and only ever written by the worker: the generated
   // script on its way in, and artifacts on their way out. The container
   // never sees it.
   let scratch = null;
 
-  const log = createLogStream(client, job.endpoints.log, { masked: job.masked ?? [], logger });
+  const log = createLogStream(client, task.endpoints.log, { masked: task.masked ?? [], logger });
 
   const services = [];
   let networkCreated = false;
@@ -100,15 +100,15 @@ export async function runJob({ cfg, client, runtime, job, logger = console }) {
   let failure = null;
 
   try {
-    scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'conductor-job-'));
+    scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'conductor-task-'));
 
-    log.note(`[conductor] job ${job.name} on ${cfg.name}`);
-    log.note(`[conductor] commit ${String(job.sha).slice(0, 12)} attempt ${job.attempt}`);
-    log.note(`[conductor] image ${job.image}`);
+    log.note(`[conductor] task ${task.name} on ${cfg.name}`);
+    log.note(`[conductor] commit ${String(task.sha).slice(0, 12)} attempt ${task.attempt}`);
+    log.note(`[conductor] image ${task.image}`);
 
-    const features = resolveFeatures(job, cfg.features);
+    const features = resolveFeatures(task, cfg.features);
     if (features.missing.length > 0) {
-      // The conductor should never send such a job, so this means the two
+      // The conductor should never send such a task, so this means the two
       // sides disagree about what this worker offers.
       throw new Error(`worker does not provide required feature(s): ${features.missing.join(', ')}`);
     }
@@ -116,8 +116,8 @@ export async function runJob({ cfg, client, runtime, job, logger = console }) {
     await runtime.createNetwork(network);
     networkCreated = true;
 
-    for (const service of job.services ?? []) {
-      const name = containerName('conductor-svc', job.id, service.alias);
+    for (const service of task.services ?? []) {
+      const name = containerName('conductor-svc', task.id, service.alias);
       log.note(`[conductor] starting service ${service.image} as ${service.alias}`);
       await runtime.startService({
         name,
@@ -135,11 +135,11 @@ export async function runJob({ cfg, client, runtime, job, logger = console }) {
     // starts and read after it exits. Feature mounts are still bind
     // mounts, since those name host paths the operator chose deliberately.
     await runtime.create({
-      name: jobContainer,
-      image: job.image,
+      name: taskContainer,
+      image: task.image,
       network,
       workdir,
-      env: { ...features.env, ...job.env },
+      env: { ...features.env, ...task.env },
       mounts: features.mounts,
       devices: features.devices,
       privileged: features.privileged,
@@ -148,38 +148,38 @@ export async function runJob({ cfg, client, runtime, job, logger = console }) {
     });
     containerCreated = true;
 
-    await sourceIntoContainer({ client, runtime, job, container: jobContainer, workdir });
+    await sourceIntoContainer({ client, runtime, task, container: taskContainer, workdir });
 
     const scriptPath = path.join(scratch, SCRIPT_NAME);
-    await fs.writeFile(scriptPath, buildScript(job.script), { mode: 0o755 });
-    await runtime.copyIn(jobContainer, scriptPath, SCRIPT_PATH);
+    await fs.writeFile(scriptPath, buildScript(task.script), { mode: 0o755 });
+    await runtime.copyIn(taskContainer, scriptPath, SCRIPT_PATH);
 
-    const { child } = runtime.startCreated(jobContainer);
+    const { child } = runtime.startCreated(taskContainer);
 
     child.stdout.on('data', (chunk) => log.write(chunk));
     child.stderr.on('data', (chunk) => log.write(chunk));
 
     // Report in, and find out whether the run was cancelled underneath us.
-    const beatEvery = Math.max(5, Number(job.heartbeat_interval) || 30) * 1000;
+    const beatEvery = Math.max(5, Number(task.heartbeat_interval) || 30) * 1000;
     heartbeat = setInterval(async () => {
       try {
-        const result = await client.heartbeat(job.endpoints.heartbeat);
+        const result = await client.heartbeat(task.endpoints.heartbeat);
         if (result.cancelled && !cancelled) {
           cancelled = true;
           log.note('[conductor] cancelled, stopping the container');
-          await runtime.kill(jobContainer);
+          await runtime.kill(taskContainer);
         }
       } catch (e) {
-        logger.warn?.(`heartbeat failed for ${job.name}: ${e.message}`);
+        logger.warn?.(`heartbeat failed for ${task.name}: ${e.message}`);
       }
     }, beatEvery);
     heartbeat.unref?.();
 
-    const limit = (Number(job.timeout) || cfg.default_timeout) * 1000;
+    const limit = (Number(task.timeout) || cfg.default_timeout) * 1000;
     timeoutTimer = setTimeout(async () => {
       timedOut = true;
       log.note(`[conductor] timed out after ${Math.round(limit / 1000)}s, stopping the container`);
-      await runtime.kill(jobContainer);
+      await runtime.kill(taskContainer);
     }, limit);
     timeoutTimer.unref?.();
 
@@ -200,31 +200,31 @@ export async function runJob({ cfg, client, runtime, job, logger = console }) {
   // Artifacts are collected before teardown, and even after a failure
   // when the pipeline asked for that. They come out of the stopped
   // container, which still has its filesystem until it is removed.
-  if (containerCreated && job.artifacts && shouldCollect(job.artifacts.when, success)) {
+  if (containerCreated && task.artifacts && shouldCollect(task.artifacts.when, success)) {
     try {
       const staged = await stageArtifacts();
-      const files = await collectArtifacts(staged, job.artifacts.paths, { logger });
+      const files = await collectArtifacts(staged, task.artifacts.paths, { logger });
       if (files.length > 0) {
         log.note(`[conductor] uploading ${files.length} artifact(s)`);
-        await uploadArtifacts(client, job.endpoints.artifact, files, { logger });
+        await uploadArtifacts(client, task.endpoints.artifact, files, { logger });
       } else {
         log.note('[conductor] no files matched the artifact patterns');
       }
     } catch (e) {
       log.note(`[conductor] artifact collection failed: ${e.message}`);
-      logger.warn?.(`artifact collection failed for ${job.name}: ${e.message}`);
+      logger.warn?.(`artifact collection failed for ${task.name}: ${e.message}`);
     }
   }
 
   const error = failure
     ? failure.message
     : timedOut
-      ? 'job timed out'
+      ? 'task timed out'
       : cancelled
-        ? 'job cancelled'
+        ? 'task cancelled'
         : exitCode === 0
           ? null
-          : `job exited ${exitCode}`;
+          : `task exited ${exitCode}`;
 
   if (error) log.note(`[conductor] ${error}`);
   else log.note('[conductor] done');
@@ -235,9 +235,9 @@ export async function runJob({ cfg, client, runtime, job, logger = console }) {
   await cleanup();
 
   try {
-    await client.done(job.endpoints.done, { success, exitCode, error });
+    await client.done(task.endpoints.done, { success, exitCode, error });
   } catch (e) {
-    logger.error?.(`could not report completion of ${job.name}: ${e.message}`);
+    logger.error?.(`could not report completion of ${task.name}: ${e.message}`);
   }
 
   return { success, exitCode, error, cancelled, timedOut };
@@ -253,10 +253,10 @@ export async function runJob({ cfg, client, runtime, job, logger = console }) {
     const staged = path.join(scratch, 'artifacts');
     await fs.mkdir(staged, { recursive: true });
 
-    for (const relative of copyOutPaths(job.artifacts.paths)) {
+    for (const relative of copyOutPaths(task.artifacts.paths)) {
       if (relative === '') {
         // The trailing /. copies the contents rather than the directory.
-        await runtime.copyOut(jobContainer, `${workdir}/.`, staged);
+        await runtime.copyOut(taskContainer, `${workdir}/.`, staged);
         break;
       }
 
@@ -264,7 +264,7 @@ export async function runJob({ cfg, client, runtime, job, logger = console }) {
       // unlike copying in.
       const parent = path.join(staged, path.dirname(relative));
       await fs.mkdir(parent, { recursive: true });
-      await runtime.copyOut(jobContainer, `${workdir}/${relative}`, parent);
+      await runtime.copyOut(taskContainer, `${workdir}/${relative}`, parent);
     }
 
     return staged;
@@ -272,10 +272,10 @@ export async function runJob({ cfg, client, runtime, job, logger = console }) {
 
   async function cleanup() {
     for (const name of services) await runtime.remove(name);
-    await runtime.remove(jobContainer);
+    await runtime.remove(taskContainer);
     if (networkCreated) await runtime.removeNetwork(network);
 
-    // Nothing here was written by the job, so there is no root owned
+    // Nothing here was written by the task, so there is no root owned
     // output to work around: removing the container took that with it.
     if (scratch) {
       await fs.rm(scratch, { recursive: true, force: true })

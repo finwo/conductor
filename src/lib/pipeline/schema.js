@@ -180,7 +180,7 @@ export function typeName(v) {
   return `a ${typeof v}`;
 }
 
-// Job and matrix value names appear in generated job names, storage keys and
+// Task and matrix value names appear in generated task names, storage keys and
 // environment variables, so the character set is deliberately narrow.
 export const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 export const MATRIX_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;

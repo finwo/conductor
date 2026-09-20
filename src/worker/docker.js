@@ -14,9 +14,9 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
-// Docker requires [a-zA-Z0-9][a-zA-Z0-9_.-]*, while job names contain
-// colons, commas and equals signs. A hash suffix keeps names unique after
-// the unsafe characters are folded away.
+// Task ids are already within what docker accepts, but the sanitising stays
+// because the suffix is a caller supplied service alias and the id is not
+// this function's to trust. The hash keeps names unique if either is folded.
 export function containerName(prefix, id, suffix = '') {
   const digest = crypto.createHash('sha256').update(id).digest('hex').slice(0, 8);
   const safe = id.replace(/[^a-zA-Z0-9_.-]/g, '-').replace(/^[^a-zA-Z0-9]+/, '').slice(0, 40);
@@ -38,7 +38,7 @@ export function createRuntime(cfg, { logger = console } = {}) {
     }
   }
 
-  // Turns a job and the worker's feature definitions into run arguments.
+  // Turns a task and the worker's feature definitions into run arguments.
   function buildRunArgs({ name, image, network, workdir = null, env = {}, mounts = [], privileged = false, devices = [], command = [], entrypoint = null, detach = false, networkAlias = null }) {
     const args = ['run', '--rm', '--name', name];
     if (detach) args.push('--detach');
@@ -63,7 +63,7 @@ export function createRuntime(cfg, { logger = console } = {}) {
     return args;
   }
 
-  // A job container is created rather than run, so its filesystem can be
+  // A task container is created rather than run, so its filesystem can be
   // populated before it starts and read after it exits. Nothing from the
   // worker's own filesystem is mounted into it: the source arrives over
   // the docker API, which means the worker needs no shared directory with
@@ -167,12 +167,12 @@ export function createRuntime(cfg, { logger = console } = {}) {
       }
     },
 
-    // Services run detached; their output is not part of the job log.
+    // Services run detached; their output is not part of the task log.
     async startService(options) {
       return run(buildRunArgs({ ...options, detach: true }));
     },
 
-    // Starts the job container and hands back the process. The caller reads
+    // Starts the task container and hands back the process. The caller reads
     // stdout and stderr, and awaits the exit code.
     start(options) {
       const args = buildRunArgs({ ...options, detach: false });
@@ -181,7 +181,7 @@ export function createRuntime(cfg, { logger = console } = {}) {
     },
 
     // Runs a container to completion and returns its output. Used for
-    // short housekeeping tasks rather than for jobs.
+    // short housekeeping work rather than for running a task.
     async runOnce(options, { timeout = 120000 } = {}) {
       return run(buildRunArgs({ ...options, detach: false }), { timeout });
     },

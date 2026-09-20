@@ -1,9 +1,9 @@
-// src/worker/artifacts.js - collecting and uploading job output
+// src/worker/artifacts.js - collecting and uploading task output
 //
 // Patterns are matched with the glob support built into node, so there is
-// nothing to install. Matches are confined to the workspace: a job can write
+// nothing to install. Matches are confined to the workspace: a task can write
 // a symlink pointing anywhere it likes, and following one would upload a
-// file the job was never given.
+// file the task was never given.
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -72,7 +72,7 @@ export async function uploadArtifacts(client, url, files, { logger = console } =
       const result = await client.uploadArtifact(url, file.path, body, file.size);
       uploaded.push(result);
     } catch (e) {
-      // An artifact that cannot be stored is worth reporting, but the job
+      // An artifact that cannot be stored is worth reporting, but the task
       // itself already succeeded or failed on its own merits.
       logger.warn?.(`could not upload ${file.path}: ${e.message}`);
     }

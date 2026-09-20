@@ -31,8 +31,8 @@ export function assertWorkdir(value) {
 
 const COLUMNS = `
   id, name, repo_url, default_branch, config_path, workdir,
-  trigger_secret, enabled, run_counter, owner_id, visibility,
-  artifact_keep_runs, artifact_keep_days, log_keep_days,
+  trigger_secret, enabled, job_counter, owner_id, visibility,
+  artifact_keep_jobs, artifact_keep_days, log_keep_days,
   created_at, updated_at
 `;
 
@@ -83,7 +83,7 @@ export function createProjects({ db, secrets }) {
       await db.run(
         `INSERT INTO projects
            (id, name, repo_url, default_branch, config_path, workdir,
-            trigger_secret, enabled, run_counter, owner_id, visibility,
+            trigger_secret, enabled, job_counter, owner_id, visibility,
             created_at, updated_at)
          VALUES
            ({id}, {name}, {repo_url}, {branch}, {config_path}, {workdir},
@@ -140,7 +140,7 @@ export function createProjects({ db, secrets }) {
     // default; zero means keep forever, and has to stay distinguishable
     // from null or a project could not opt out of a default that deletes.
     async setRetention(id, values) {
-      const columns = ['artifact_keep_runs', 'artifact_keep_days', 'log_keep_days'];
+      const columns = ['artifact_keep_jobs', 'artifact_keep_days', 'log_keep_days'];
       const updates = [];
       const params = { id, now: Date.now() };
 
@@ -184,13 +184,13 @@ export function createProjects({ db, secrets }) {
       await db.run('DELETE FROM projects WHERE id = {id}', { id });
     },
 
-    // Allocates the next run number. Must run inside the same transaction
-    // as the run insert, or two concurrent pushes can collide on the
+    // Allocates the next job number. Must run inside the same transaction
+    // as the job insert, or two concurrent pushes can collide on the
     // unique (project_id, number) index.
-    async nextRunNumber(tx, projectId) {
-      await tx.run('UPDATE projects SET run_counter = run_counter + 1 WHERE id = {id}', { id: projectId });
-      const row = await tx.get('SELECT run_counter FROM projects WHERE id = {id}', { id: projectId });
-      return row.run_counter;
+    async nextJobNumber(tx, projectId) {
+      await tx.run('UPDATE projects SET job_counter = job_counter + 1 WHERE id = {id}', { id: projectId });
+      const row = await tx.get('SELECT job_counter FROM projects WHERE id = {id}', { id: projectId });
+      return row.job_counter;
     },
   };
 }

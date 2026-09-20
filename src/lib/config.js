@@ -81,11 +81,11 @@ const DEFAULTS = {
     max_size: 64 * 1024 * 1024,
   },
   // What happens to build output over time. A project may override any of
-  // these; see migrations/sqlite/004_retention.sql for how the artifact
+  // these; see migrations/sqlite/001_initial.sql for how the artifact
   // rules combine. Zero means keep forever.
   retention: {
     // The last this many runs keep their artifacts whatever their age.
-    artifact_keep_runs: 10,
+    artifact_keep_jobs: 10,
     // Artifacts younger than this are kept whatever has followed them.
     artifact_keep_days: 30,
     // Logs go purely by age, and are the reason this exists at all: they
@@ -103,14 +103,14 @@ const DEFAULTS = {
     // considered lost and is requeued or failed.
     heartbeat_timeout: 120,
     reap_interval: 30,
-    default_job_timeout: 3600,
+    default_task_timeout: 3600,
     max_attempts: 3,
   },
 };
 
 // [environment variable, dotted config path, parser]
 const ENV_MAP = [
-  ['CONDUCTOR_RETENTION_ARTIFACT_RUNS', 'retention.artifact_keep_runs', toInt],
+  ['CONDUCTOR_RETENTION_ARTIFACT_JOBS', 'retention.artifact_keep_jobs', toInt],
   ['CONDUCTOR_RETENTION_ARTIFACT_DAYS', 'retention.artifact_keep_days', toInt],
   ['CONDUCTOR_RETENTION_LOG_DAYS',      'retention.log_keep_days',      toInt],
   ['CONDUCTOR_RETENTION_SWEEP_INTERVAL','retention.sweep_interval',     toInt],
@@ -265,7 +265,7 @@ function validate(cfg) {
 
   // Retention deletes things, so a nonsensical value here is worth
   // refusing at startup rather than discovering from missing artifacts.
-  for (const key of ['artifact_keep_runs', 'artifact_keep_days', 'log_keep_days']) {
+  for (const key of ['artifact_keep_jobs', 'artifact_keep_days', 'log_keep_days']) {
     const value = cfg.retention[key];
     if (!Number.isInteger(value) || value < 0) {
       errors.push(`retention.${key} must be a whole number of zero or more, got ${JSON.stringify(value)}`);

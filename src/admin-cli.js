@@ -13,12 +13,12 @@
 //   node src/admin-cli.js var:set <project> <NAME> <value> [--visible]
 //   node src/admin-cli.js var:list <project>
 //   node src/admin-cli.js var:remove <project> <NAME>
-//   node src/admin-cli.js user:add <username> <password> [--role admin|viewer]
+//   node src/admin-cli.js user:add <username> <password> [--role admin|user]
 //   node src/admin-cli.js user:list
 //   node src/admin-cli.js user:passwd <username> <password>
 //   node src/admin-cli.js user:remove <username>
-//   node src/admin-cli.js run:trigger <project> <sha> [--ref r] [--base b]
-//   node src/admin-cli.js run:cancel <run-id>
+//   node src/admin-cli.js job:trigger <project> <sha> [--ref r] [--base b]
+//   node src/admin-cli.js job:cancel <job-id>
 //
 // This runs against the database directly, so it works before the first
 // account exists and when the server is down.
@@ -67,12 +67,12 @@ function usage(message) {
       '  var:set <project> <NAME> <value> [--visible]',
       '  var:list <project>',
       '  var:remove <project> <NAME>',
-      '  user:add <username> <password> [--role admin|viewer]',
+      '  user:add <username> <password> [--role admin|user]',
       '  user:list',
       '  user:passwd <username> <password>',
       '  user:remove <username>',
-      '  run:trigger <project> <sha> [--ref r] [--base b]',
-      '  run:cancel <run-id>',
+      '  job:trigger <project> <sha> [--ref r] [--base b]',
+      '  job:cancel <job-id>',
     ].join('\n')
   );
   process.exit(message ? 1 : 0);
@@ -137,9 +137,9 @@ try {
         branch: p.default_branch,
         config: p.config_path,
         enabled: p.enabled ? 'yes' : 'no',
-        runs: p.run_counter,
+        jobs: p.job_counter,
       }));
-      table(rows, ['id', 'repo_url', 'branch', 'config', 'source', 'enabled', 'runs']);
+      table(rows, ['id', 'repo_url', 'branch', 'config', 'source', 'enabled', 'jobs']);
       break;
     }
 
@@ -230,7 +230,7 @@ try {
       const user = await users.create({
         username,
         password,
-        role: flags.role ? String(flags.role) : 'viewer',
+        role: flags.role ? String(flags.role) : 'user',
       });
       console.log(`created user ${user.username} with role ${user.role}`);
       break;
@@ -268,28 +268,28 @@ try {
       break;
     }
 
-    case 'run:trigger': {
+    case 'job:trigger': {
       const [projectId, sha] = positional;
-      if (!projectId || !sha) usage('run:trigger needs a project and a commit');
+      if (!projectId || !sha) usage('job:trigger needs a project and a commit');
       const project = await projects.get(projectId);
       if (!project) usage(`unknown project ${projectId}`);
 
-      const result = await scheduler.createRun(project, {
+      const result = await scheduler.createJob(project, {
         headSha: sha,
         ref: flags.ref ? String(flags.ref) : null,
         baseSha: flags.base ? String(flags.base) : null,
         trigger: 'manual',
         actor: 'admin-cli',
       });
-      console.log(`created run ${result.runId} with ${result.jobCount} job(s)`);
+      console.log(`created job ${result.jobId} with ${result.taskCount} task(s)`);
       break;
     }
 
-    case 'run:cancel': {
-      const [runId] = positional;
-      if (!runId) usage('run:cancel needs a run id');
-      const result = await scheduler.cancelRun(runId);
-      console.log(result.ok ? `cancelled ${runId}` : `could not cancel: ${result.reason}`);
+    case 'job:cancel': {
+      const [jobId] = positional;
+      if (!jobId) usage('job:cancel needs a job id');
+      const result = await scheduler.cancelJob(jobId);
+      console.log(result.ok ? `cancelled ${jobId}` : `could not cancel: ${result.reason}`);
       break;
     }
 

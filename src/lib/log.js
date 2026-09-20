@@ -1,8 +1,8 @@
-// src/lib/log.js - job log spool
+// src/lib/log.js - task log spool
 //
-// Logs are written to local disk while a job runs, then copied to object
+// Logs are written to local disk while a task runs, then copied to object
 // storage when it finishes. The spool is always local even when S3 is
-// configured, because a running job produces many small appends and a live
+// configured, because a running task produces many small appends and a live
 // tail wants cheap random reads; neither suits an object store.
 //
 // Appends carry the offset the worker believes it is writing at, which makes
@@ -44,10 +44,11 @@ export function createLogStore(cfg) {
     }
   }
 
-  // Job ids contain a colon, which is fine on every filesystem we target,
-  // but the run id still gives a directory per run to keep listings sane.
-  function spoolPath(runId, jobId) {
-    return path.join(root, encodeURIComponent(runId), `${encodeURIComponent(jobId)}.log`);
+  // A directory per job keeps listings sane, and lets a whole job's spool
+  // be removed in one go. Both ids are encoded anyway, which costs nothing
+  // now that neither carries a separator.
+  function spoolPath(jobId, taskId) {
+    return path.join(root, encodeURIComponent(jobId), `${encodeURIComponent(taskId)}.log`);
   }
 
   async function currentSize(file) {
@@ -62,15 +63,15 @@ export function createLogStore(cfg) {
   return {
     spoolPath,
 
-    async size(runId, jobId) {
-      return currentSize(spoolPath(runId, jobId));
+    async size(jobId, taskId) {
+      return currentSize(spoolPath(jobId, taskId));
     },
 
     // Returns the new total size. When offset is omitted the chunk is simply
     // appended, which is what a worker that never retries will do.
-    async append(runId, jobId, chunk, offset) {
-      const file = spoolPath(runId, jobId);
-      const key = `${runId}/${jobId}`;
+    async append(jobId, taskId, chunk, offset) {
+      const file = spoolPath(jobId, taskId);
+      const key = `${jobId}/${taskId}`;
       const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8');
 
       return withLock(key, async () => {
@@ -112,8 +113,8 @@ export function createLogStore(cfg) {
 
     // Reads a window for the live tail. Returns the total size too, so the
     // caller knows whether more is already available.
-    async read(runId, jobId, { offset = 0, limit = 256 * 1024 } = {}) {
-      const file = spoolPath(runId, jobId);
+    async read(jobId, taskId, { offset = 0, limit = 256 * 1024 } = {}) {
+      const file = spoolPath(jobId, taskId);
       const size = await currentSize(file);
       if (size === 0 || offset >= size) {
         return { data: Buffer.alloc(0), offset: Math.min(offset, size), size };
@@ -133,8 +134,8 @@ export function createLogStore(cfg) {
 
     // Copies the finished log into object storage and drops the spool copy.
     // Storage is the durable home; the spool only exists to serve a tail.
-    async finalize(runId, jobId, storage, storageKey) {
-      const file = spoolPath(runId, jobId);
+    async finalize(jobId, taskId, storage, storageKey) {
+      const file = spoolPath(jobId, taskId);
       const size = await currentSize(file);
       if (size === 0) return { key: null, size: 0 };
 
@@ -152,12 +153,12 @@ export function createLogStore(cfg) {
       return { key: storageKey, size };
     },
 
-    async remove(runId, jobId) {
-      await fs.rm(spoolPath(runId, jobId), { force: true });
+    async remove(jobId, taskId) {
+      await fs.rm(spoolPath(jobId, taskId), { force: true });
     },
 
-    async removeRun(runId) {
-      await fs.rm(path.join(root, encodeURIComponent(runId)), { recursive: true, force: true });
+    async removeJob(jobId) {
+      await fs.rm(path.join(root, encodeURIComponent(jobId)), { recursive: true, force: true });
     },
   };
 }

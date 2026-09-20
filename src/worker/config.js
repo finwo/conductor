@@ -7,7 +7,7 @@
 // which it is in the official image.
 //
 // Features are the important part. A feature is a name the worker
-// advertises, plus whatever local resources a job asking for it should get:
+// advertises, plus whatever local resources a task asking for it should get:
 // mounts, environment, or a privileged container. The conductor only ever
 // sees the name, so a signing key can be handed to a build without the
 // server holding it.
@@ -27,9 +27,9 @@ const DEFAULTS = {
   poll_interval: 5,
   // Container runtime CLI. Podman and nerdctl are argument compatible.
   docker: 'docker',
-  // Shell used to run a job script inside its image.
+  // Shell used to run a task script inside its image.
   shell: 'sh',
-  // Applied when a job does not ask for something longer.
+  // Applied when a task does not ask for something longer.
   default_timeout: 3600,
 };
 

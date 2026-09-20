@@ -18,7 +18,7 @@ export function randomId(length = 24) {
   return out;
 }
 
-// Sortable by creation time, which keeps run listings stable without relying
+// Sortable by creation time, which keeps job listings stable without relying
 // on a clock skewed created_at. 8 chars of millisecond timestamp in base32
 // followed by 12 random chars.
 export function timeOrderedId(now = Date.now()) {
@@ -31,29 +31,21 @@ export function timeOrderedId(now = Date.now()) {
   return stamp + randomId(12);
 }
 
-export const newRunId = () => timeOrderedId();
+export const newJobId = () => timeOrderedId();
 export const newProjectId = () => randomId(16);
 export const newArtifactId = () => randomId(24);
 export const newUserId = () => randomId(16);
 export const newWorkerTokenId = () => randomId(16);
 
-// Job ids stay human readable, since they appear in logs, storage keys and
-// URLs. The jobs.id column is 96 characters, so an unusually long job name
-// falls back to a truncated form with a hash suffix rather than being
-// rejected or silently colliding.
-export const JOB_ID_MAX = 96;
-
-export function jobId(runId, jobName) {
-  const direct = `${runId}:${jobName}`;
-  if (direct.length <= JOB_ID_MAX) return direct;
-
-  const digest = crypto.createHash('sha256').update(jobName).digest('hex').slice(0, 12);
-  const room = JOB_ID_MAX - runId.length - 1 - 1 - digest.length;
-  if (room < 1) {
-    throw new Error(`run id ${runId} leaves no room for a job id`);
-  }
-  return `${runId}:${jobName.slice(0, room)}~${digest}`;
-}
+// Task ids carry no structure at all. A worker holding one cannot tell which
+// job or project it belongs to, which is the point: a worker is given a
+// context and a script, and has no business knowing what they are for.
+//
+// It also removes a class of nuisance. The previous form embedded the task
+// name, so an id could contain ':' ',' and '=', and every use had to escape
+// it for a URL, sanitize it for a container name and encode it for a storage
+// key. Time ordered so that tasks of one job still group naturally.
+export const newTaskId = () => timeOrderedId();
 
 // Worker and session tokens. The plaintext is shown once and only its hash
 // is stored, so a database leak does not yield usable credentials.

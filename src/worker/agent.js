@@ -16,7 +16,7 @@ import { loadWorkerConfig, featureNames } from './config.js';
 import { createClient } from './client.js';
 import { createRuntime } from './docker.js';
 
-import { runJob } from './job.js';
+import { runTask } from './task.js';
 
 const stamp = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
 
@@ -49,11 +49,11 @@ export async function main(argv = process.argv.slice(2)) {
   const client = createClient(cfg);
   const runtime = createRuntime(cfg, { logger });
 
-  // Fail at startup rather than on the first job, when a missing tool would
+  // Fail at startup rather than on the first task, when a missing tool would
   // otherwise look like a broken pipeline.
   //
   // The runtime is the only thing a worker needs. The tree is unpacked
-  // into the job container over the docker API rather than on this side,
+  // into the task container over the docker API rather than on this side,
   // so there is nothing else to look for on PATH.
   if (!(await runtime.available())) {
     throw new Error(`container runtime ${JSON.stringify(cfg.docker)} is not usable; is the daemon running?`);
@@ -92,20 +92,20 @@ export async function main(argv = process.argv.slice(2)) {
       process.exit(1);
     }
     stopping = true;
-    logger.info(`${signal} received, finishing ${running.size} running job(s)`);
+    logger.info(`${signal} received, finishing ${running.size} running task(s)`);
     for (const wake of [...sleepers]) wake();
   };
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => shutdown(signal));
 
-  // One loop per concurrency slot. Each polls independently, so a slow job
+  // One loop per concurrency slot. Each polls independently, so a slow task
   // in one slot does not stall the others.
   async function slot(index) {
     let backoff = cfg.poll_interval;
 
     while (!stopping) {
-      let job = null;
+      let task = null;
       try {
-        job = await client.poll({ arches: cfg.arches, features, name: cfg.name });
+        task = await client.claim({ arches: cfg.arches, features, name: cfg.name });
         backoff = cfg.poll_interval;
       } catch (e) {
         // A conductor that is down or restarting should not become a busy
@@ -116,23 +116,23 @@ export async function main(argv = process.argv.slice(2)) {
         continue;
       }
 
-      if (!job) {
+      if (!task) {
         if (args.once) return;
         await sleep(cfg.poll_interval * 1000);
         continue;
       }
 
-      running.add(job.id);
-      logger.info(`[${index}] ${job.name} (${job.image})`);
+      running.add(task.id);
+      logger.info(`[${index}] ${task.name} (${task.image})`);
       const started = Date.now();
       try {
-        const result = await runJob({ cfg, client, runtime, job, logger });
+        const result = await runTask({ cfg, client, runtime, task, logger });
         const seconds = ((Date.now() - started) / 1000).toFixed(1);
-        logger.info(`[${index}] ${job.name} ${result.success ? 'succeeded' : 'failed'} in ${seconds}s`);
+        logger.info(`[${index}] ${task.name} ${result.success ? 'succeeded' : 'failed'} in ${seconds}s`);
       } catch (e) {
-        logger.error(`[${index}] ${job.name} crashed the worker loop: ${e.stack ?? e.message}`);
+        logger.error(`[${index}] ${task.name} crashed the worker loop: ${e.stack ?? e.message}`);
       } finally {
-        running.delete(job.id);
+        running.delete(task.id);
       }
 
       if (args.once) return;

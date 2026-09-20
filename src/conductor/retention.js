@@ -1,20 +1,20 @@
 // src/conductor/retention.js - deleting build output that is past its time
 //
-// Everything a run produces is kept forever unless something removes it,
-// and logs are the worst of it: written for every job, read for almost
+// Everything a job produces is kept forever unless something removes it,
+// and logs are the worst of it: written for every task, read for almost
 // none, and never stopping. This sweeps both.
 //
 // Artifacts follow two rules per project, and an artifact survives if
-// either wants it. The last artifact_keep_runs runs keep their artifacts
+// either wants it. The last artifact_keep_jobs jobs keep their artifacts
 // however old they are, and anything younger than artifact_keep_days is
-// kept however many runs have followed. The most recent successful run is
+// kept however many jobs have followed. The most recent successful job is
 // kept regardless, so a project that has gone quiet still has something
 // to download.
 //
-// A job that set artifacts.expire in its pipeline overrides all of that
+// A task that set artifacts.expire in its pipeline overrides all of that
 // with an exact deadline, in either direction. That is deliberate: the
 // point of the key is to drop a bulky intermediate early, and a
-// node_modules tree is not worth keeping just because its run was green.
+// node_modules tree is not worth keeping just because its job was green.
 //
 // Logs go by age alone.
 //
@@ -72,49 +72,49 @@ export function createRetention({ cfg, db, storage, logs, logger = {} }) {
   }
 
   async function sweepProjectArtifacts(project, now, batch) {
-    const keepRuns = setting(project.artifact_keep_runs, defaults.artifact_keep_runs);
+    const keepJobs = setting(project.artifact_keep_jobs, defaults.artifact_keep_jobs);
     const keepDays = setting(project.artifact_keep_days, defaults.artifact_keep_days);
 
     // Both rules off means keep everything, and with the rules combined by
     // whichever keeps longer there is nothing left to delete.
-    if (keepRuns === 0 && keepDays === 0) return { deleted: 0, bytes: 0 };
+    if (keepJobs === 0 && keepDays === 0) return { deleted: 0, bytes: 0 };
 
-    const protectedRuns = new Set();
+    const protectedJobs = new Set();
 
-    if (keepRuns > 0) {
+    if (keepJobs > 0) {
       const recent = await db.all(
-        `SELECT id FROM runs WHERE project_id = {project}
+        `SELECT id FROM jobs WHERE project_id = {project}
           ORDER BY number DESC
           LIMIT {limit}`,
-        { project: project.id, limit: keepRuns }
+        { project: project.id, limit: keepJobs }
       );
-      for (const run of recent) protectedRuns.add(run.id);
+      for (const job of recent) protectedJobs.add(job.id);
     }
 
-    // The last green run, however old. Looked up separately rather than
+    // The last green job, however old. Looked up separately rather than
     // folded into the query above, since it may be far outside the recent
     // window on a project that has been failing for a while.
     const lastGood = await db.get(
-      `SELECT id FROM runs WHERE project_id = {project} AND state = 'success'
+      `SELECT id FROM jobs WHERE project_id = {project} AND state = 'success'
         ORDER BY number DESC
         LIMIT 1`,
       { project: project.id }
     );
-    if (lastGood) protectedRuns.add(lastGood.id);
+    if (lastGood) protectedJobs.add(lastGood.id);
 
-    // With no age rule, anything outside the run window goes; otherwise
+    // With no age rule, anything outside the job window goes; otherwise
     // only what is also older than the cutoff.
     const cutoff = keepDays > 0 ? now - keepDays * DAY : now;
 
     const candidates = await db.all(
-      `SELECT a.id, a.storage_key, a.size, a.run_id
+      `SELECT a.id, a.storage_key, a.size, a.job_id
          FROM artifacts a
-         JOIN runs r ON r.id = a.run_id
-        WHERE r.project_id = {project}
+         JOIN jobs j ON j.id = a.job_id
+        WHERE j.project_id = {project}
           AND a.expires_at IS NULL
-          AND r.created_at < {cutoff}
-          AND r.finished_at IS NOT NULL
-        ORDER BY r.created_at
+          AND j.created_at < {cutoff}
+          AND j.finished_at IS NOT NULL
+        ORDER BY j.created_at
         LIMIT {batch}`,
       { project: project.id, cutoff, batch }
     );
@@ -122,7 +122,7 @@ export function createRetention({ cfg, db, storage, logs, logger = {} }) {
     let deleted = 0;
     let bytes = 0;
     for (const row of candidates) {
-      if (protectedRuns.has(row.run_id)) continue;
+      if (protectedJobs.has(row.job_id)) continue;
       if (!(await deleteObject(row.storage_key, 'artifact'))) continue;
       await db.run('DELETE FROM artifacts WHERE id = {id}', { id: row.id });
       deleted += 1;
@@ -138,14 +138,14 @@ export function createRetention({ cfg, db, storage, logs, logger = {} }) {
     const cutoff = now - keepDays * DAY;
 
     const rows = await db.all(
-      `SELECT j.id, j.run_id, j.log_key, j.log_size
-         FROM jobs j
-         JOIN runs r ON r.id = j.run_id
-        WHERE r.project_id = {project}
-          AND j.log_expired_at IS NULL
-          AND j.finished_at IS NOT NULL
-          AND j.finished_at < {cutoff}
-        ORDER BY j.finished_at
+      `SELECT t.id, t.job_id, t.log_key, t.log_size
+         FROM tasks t
+         JOIN jobs j ON j.id = t.job_id
+        WHERE j.project_id = {project}
+          AND t.log_expired_at IS NULL
+          AND t.finished_at IS NOT NULL
+          AND t.finished_at < {cutoff}
+        ORDER BY t.finished_at
         LIMIT {batch}`,
       { project: project.id, cutoff, batch }
     );
@@ -155,14 +155,14 @@ export function createRetention({ cfg, db, storage, logs, logger = {} }) {
     for (const row of rows) {
       if (!(await deleteObject(row.log_key, 'log'))) continue;
 
-      // A job that never finished archiving still has a spool file, and a
-      // job with nothing to say has neither. Both are fine to ask about.
-      await logs.remove(row.run_id, row.id).catch((e) => {
+      // A task that never finished archiving still has a spool file, and a
+      // task with nothing to say has neither. Both are fine to ask about.
+      await logs.remove(row.job_id, row.id).catch((e) => {
         logger.warn?.(`retention: could not remove spooled log for ${row.id}: ${e.message}`);
       });
 
       await db.run(
-        'UPDATE jobs SET log_key = NULL, log_expired_at = {now} WHERE id = {id}',
+        'UPDATE tasks SET log_key = NULL, log_expired_at = {now} WHERE id = {id}',
         { id: row.id, now }
       );
       deleted += 1;
@@ -184,7 +184,7 @@ export function createRetention({ cfg, db, storage, logs, logger = {} }) {
       total.artifactBytes += expired.bytes;
 
       const projects = await db.all(
-        `SELECT id, artifact_keep_runs, artifact_keep_days, log_keep_days
+        `SELECT id, artifact_keep_jobs, artifact_keep_days, log_keep_days
            FROM projects`,
         {}
       );

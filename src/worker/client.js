@@ -2,7 +2,7 @@
 //
 // Built on fetch, so there is nothing to install. Every call carries the
 // worker token. Network errors are surfaced rather than retried here; the
-// agent decides what a failure means, since a failed poll and a failed log
+// agent decides what a failure means, since a failed claim and a failed log
 // append want very different handling.
 
 export class ConductorError extends Error {
@@ -35,19 +35,20 @@ export function createClient(cfg) {
   }
 
   return {
-    // Returns a job, or null when there is nothing to do.
-    async poll({ arches, features, name }) {
-      const res = await fetch(`${base}/api/v1/workers/jobs`, {
+    // Returns a task, or null when there is nothing to do. This is the only
+    // URL the worker knows; everything else it needs arrives with the task.
+    async claim({ arches, features, name }) {
+      const res = await fetch(`${base}/api/v1/tasks/claim`, {
         method: 'POST',
         headers: { ...auth, 'content-type': 'application/json' },
         body: JSON.stringify({ arches, features, name }),
       });
       if (res.status === 204) return null;
-      if (!res.ok) throw await readError(res, 'poll');
-      return (await res.json()).job;
+      if (!res.ok) throw await readError(res, 'claim');
+      return (await res.json()).task;
     },
 
-    // The tree at the job's commit. Returned as a web stream so it can be
+    // The tree at the task's commit. Returned as a web stream so it can be
     // piped straight into tar without buffering.
     async source(url) {
       const res = await fetch(url, { headers: auth });
@@ -88,7 +89,7 @@ export function createClient(cfg) {
       return await res.json();
     },
 
-    // Reports that the job is alive, and learns whether it should stop.
+    // Reports that the task is alive, and learns whether it should stop.
     async heartbeat(url) {
       const res = await fetch(url, {
         method: 'POST',

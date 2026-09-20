@@ -2,7 +2,7 @@
 //
 // Each live region follows the same htmx pattern: the fragment carries its
 // own polling attribute only while there is something left to happen. When
-// the run or job finishes, the replacement fragment has no trigger, so
+// the job or task finishes, the replacement fragment has no trigger, so
 // polling stops by itself rather than needing to be cancelled.
 
 import { html, raw } from './html.js';
@@ -10,126 +10,126 @@ import { badge, notice, oneTimeSecret, shortSha, ago, duration, ACTIVE_RUN_STATE
 
 const poll = (url, seconds = 3) => raw(`hx-get="${url}" hx-trigger="every ${seconds}s" hx-swap="outerHTML"`);
 
-// --- runs ---
+// --- jobs ---
 
-export function runsPage({ runs, user, anonymous }) {
+export function jobsPage({ jobs, user, anonymous }) {
   return html`
-    <h2>Runs</h2>
-    ${anonymous ? html`<p class="muted">Showing public runs. <a href="/login">Sign in</a> to see your own.</p>` : ''}
-    ${runsTable(runs)}
+    <h2>Jobs</h2>
+    ${anonymous ? html`<p class="muted">Showing public jobs. <a href="/login">Sign in</a> to see your own.</p>` : ''}
+    ${jobsTable(jobs)}
   `;
 }
 
-export function runsTable(runs) {
-  const live = runs.some((r) => ACTIVE_RUN_STATES.includes(r.state));
-  return html`<div id="runs" ${live ? poll('/partials/runs', 4) : ''}>
+export function jobsTable(jobs) {
+  const live = jobs.some((r) => ACTIVE_RUN_STATES.includes(r.state));
+  return html`<div id="jobs" ${live ? poll('/partials/jobs', 4) : ''}>
     <table>
       <thead><tr>
-        <th>run</th><th>project</th><th>ref</th><th>commit</th><th>state</th><th>started</th>
+        <th>job</th><th>project</th><th>ref</th><th>commit</th><th>state</th><th>started</th>
       </tr></thead>
       <tbody>
-        ${runs.length === 0
-    ? html`<tr><td colspan="6" class="muted">No runs to show.</td></tr>`
-    : runs.map((run) => html`<tr>
-            <td><a href="/runs/${run.id}">#${run.number}</a></td>
-            <td>${run.project_id}</td>
-            <td class="muted">${(run.ref ?? '').replace('refs/heads/', '')}</td>
-            <td class="mono muted">${shortSha(run.head_sha)}</td>
-            <td>${badge(run.state)}</td>
-            <td class="muted">${ago(run.created_at)}</td>
+        ${jobs.length === 0
+    ? html`<tr><td colspan="6" class="muted">No jobs to show.</td></tr>`
+    : jobs.map((job) => html`<tr>
+            <td><a href="/jobs/${job.id}">#${job.number}</a></td>
+            <td>${job.project_id}</td>
+            <td class="muted">${(job.ref ?? '').replace('refs/heads/', '')}</td>
+            <td class="mono muted">${shortSha(job.head_sha)}</td>
+            <td>${badge(job.state)}</td>
+            <td class="muted">${ago(job.created_at)}</td>
           </tr>`)}
       </tbody>
     </table>
   </div>`;
 }
 
-export function runPage({ run, jobs, canManage }) {
+export function jobPage({ job, tasks, canManage }) {
   return html`
     <div class="panel">
-      <h2>${run.title || `Run #${run.number}`}</h2>
+      <h2>${job.title || `Job #${job.number}`}</h2>
       <div class="row">
-        ${field('project', html`<a href="/runs?project=${run.project_id}">${run.project_id}</a>`)}
-        ${field('state', badge(run.state))}
-        ${field('ref', (run.ref ?? '').replace('refs/heads/', '') || '-')}
-        ${field('commit', html`<span class="mono">${shortSha(run.head_sha)}</span>`)}
-        ${field('trigger', `${run.trigger_type}${run.actor ? ` by ${run.actor}` : ''}`)}
-        ${field('visibility', run.visibility)}
-        ${field('duration', duration(run.started_at, run.finished_at))}
+        ${field('project', html`<a href="/jobs?project=${job.project_id}">${job.project_id}</a>`)}
+        ${field('state', badge(job.state))}
+        ${field('ref', (job.ref ?? '').replace('refs/heads/', '') || '-')}
+        ${field('commit', html`<span class="mono">${shortSha(job.head_sha)}</span>`)}
+        ${field('trigger', `${job.trigger_type}${job.actor ? ` by ${job.actor}` : ''}`)}
+        ${field('visibility', job.visibility)}
+        ${field('duration', duration(job.started_at, job.finished_at))}
       </div>
       ${canManage ? html`<div class="actions">
-        ${run.state === 'running'
-    ? html`<button hx-post="/runs/${run.id}/cancel" hx-target="#jobs" hx-swap="outerHTML">cancel</button>`
+        ${job.state === 'running'
+    ? html`<button hx-post="/jobs/${job.id}/cancel" hx-target="#tasks" hx-swap="outerHTML">cancel</button>`
     : ''}
-        <button hx-post="/runs/${run.id}/retry" hx-swap="none">run again</button>
+        <button hx-post="/jobs/${job.id}/retry" hx-swap="none">run again</button>
       </div>` : ''}
     </div>
-    ${jobsTable(run, jobs)}
+    ${tasksTable(job, tasks)}
   `;
 }
 
-export function jobsTable(run, jobs) {
-  const live = ACTIVE_RUN_STATES.includes(run.state);
+export function tasksTable(job, tasks) {
+  const live = ACTIVE_RUN_STATES.includes(job.state);
 
   // Grouped by graph depth, which is how the pipeline reads.
-  const byId = new Map(jobs.map((j) => [j.id, j]));
-  const depthOf = (job, seen = new Set()) => {
-    if (seen.has(job.id)) return 0;
-    seen.add(job.id);
-    const deps = (job.needs ?? []).map((id) => byId.get(id)).filter(Boolean);
+  const byId = new Map(tasks.map((j) => [j.id, j]));
+  const depthOf = (task, seen = new Set()) => {
+    if (seen.has(task.id)) return 0;
+    seen.add(task.id);
+    const deps = (task.needs ?? []).map((id) => byId.get(id)).filter(Boolean);
     return deps.length === 0 ? 0 : Math.max(...deps.map((d) => depthOf(d, seen) + 1));
   };
 
   const stages = new Map();
-  for (const job of jobs) {
-    const depth = depthOf(job);
+  for (const task of tasks) {
+    const depth = depthOf(task);
     if (!stages.has(depth)) stages.set(depth, []);
-    stages.get(depth).push(job);
+    stages.get(depth).push(task);
   }
 
-  return html`<div id="jobs" ${live ? poll(`/partials/runs/${run.id}/jobs`, 3) : ''}>
+  return html`<div id="tasks" ${live ? poll(`/partials/jobs/${job.id}/tasks`, 3) : ''}>
     ${[...stages.keys()].sort((a, b) => a - b).map((depth) => html`
       <div class="stage">
         <h3>stage ${depth + 1}</h3>
         <table><tbody>
-          ${stages.get(depth).sort((a, b) => a.name.localeCompare(b.name)).map((job) => html`<tr>
-            <td><a href="/jobs/${job.id}">${job.name}</a></td>
-            <td>${badge(job.state)}</td>
-            <td class="muted">${job.arch ?? ''}</td>
-            <td class="muted">${job.worker_name ?? ''}</td>
-            <td class="muted">${duration(job.started_at, job.finished_at)}</td>
-            <td class="muted">${job.exit_code === null ? '' : `exit ${job.exit_code}`}</td>
+          ${stages.get(depth).sort((a, b) => a.name.localeCompare(b.name)).map((task) => html`<tr>
+            <td><a href="/tasks/${task.id}">${task.name}</a></td>
+            <td>${badge(task.state)}</td>
+            <td class="muted">${task.arch ?? ''}</td>
+            <td class="muted">${task.worker_name ?? ''}</td>
+            <td class="muted">${duration(task.started_at, task.finished_at)}</td>
+            <td class="muted">${task.exit_code === null ? '' : `exit ${task.exit_code}`}</td>
           </tr>`)}
         </tbody></table>
       </div>`)}
   </div>`;
 }
 
-// --- jobs ---
+// --- tasks ---
 
-export function jobPage({ job, artifacts, log }) {
+export function taskPage({ task, artifacts, log }) {
   return html`
     <div class="panel">
-      <h2>${job.name}</h2>
+      <h2>${task.name}</h2>
       <div class="row">
-        ${field('state', badge(job.state))}
-        ${field('run', html`<a href="/runs/${job.run_id}">back to run</a>`)}
-        ${field('image', html`<span class="mono">${job.image}</span>`)}
-        ${field('arch', job.arch ?? '-')}
-        ${field('attempt', `${job.attempt} of ${job.max_attempts}`)}
-        ${field('worker', job.worker_name ?? '-')}
-        ${field('duration', duration(job.started_at, job.finished_at))}
+        ${field('state', badge(task.state))}
+        ${field('job', html`<a href="/jobs/${task.job_id}">back to job</a>`)}
+        ${field('image', html`<span class="mono">${task.image}</span>`)}
+        ${field('arch', task.arch ?? '-')}
+        ${field('attempt', `${task.attempt} of ${task.max_attempts}`)}
+        ${field('worker', task.worker_name ?? '-')}
+        ${field('duration', duration(task.started_at, task.finished_at))}
       </div>
-      ${job.error ? notice(job.error) : ''}
+      ${task.error ? notice(task.error) : ''}
     </div>
 
     <h3>log</h3>
-    <div class="logpane">${jobLog(job, log)}</div>
+    <div class="logpane">${taskLog(task, log)}</div>
 
     ${artifacts.length === 0 ? '' : html`
       <h3>artifacts</h3>
       <table><tbody>
         ${artifacts.map((a) => html`<tr>
-          <td><a href="/api/v1/projects/${job.project_id}/runs/${job.run_id}/jobs/${job.id}/artifacts/${a.id}">${a.path}</a></td>
+          <td><a href="/api/v1/projects/${task.project_id}/jobs/${task.job_id}/tasks/${task.id}/artifacts/${a.id}">${a.path}</a></td>
           <td class="muted">${a.size} bytes</td>
           <td class="mono muted">${a.sha256.slice(0, 12)}</td>
         </tr>`)}
@@ -137,9 +137,9 @@ export function jobPage({ job, artifacts, log }) {
   `;
 }
 
-export function jobLog(job, log) {
-  const live = ACTIVE_JOB_STATES.includes(job.state);
-  return html`<pre id="log" class="log" ${live ? poll(`/partials/jobs/${job.id}/log`, 2) : ''}>${
+export function taskLog(task, log) {
+  const live = ACTIVE_JOB_STATES.includes(task.state);
+  return html`<pre id="log" class="log" ${live ? poll(`/partials/tasks/${task.id}/log`, 2) : ''}>${
     log || (live ? 'Waiting for output.' : 'No output.')
   }</pre>`;
 }
@@ -190,7 +190,7 @@ export function projectsPage({ projects, user }) {
 
 export function projectsTable(projects, user) {
   return html`<table id="projects">
-    <thead><tr><th>project</th><th>repository</th><th>visibility</th><th>owner</th><th>runs</th><th></th></tr></thead>
+    <thead><tr><th>project</th><th>repository</th><th>visibility</th><th>owner</th><th>jobs</th><th></th></tr></thead>
     <tbody>
       ${projects.length === 0
     ? html`<tr><td colspan="6" class="muted">No projects yet.</td></tr>`
@@ -221,7 +221,7 @@ export function projectPage({ project, variables, triggerUrl, secret, user, rete
         ${field('pipeline', html`<span class="mono">${project.config_path}</span>`)}
 
         ${field('owner', project.owner_id === null ? 'shared' : (project.owner_id === user.id ? 'you' : project.owner_id))}
-        ${field('runs', project.run_counter)}
+        ${field('jobs', project.run_counter)}
       </div>
       <p class="muted">Trigger endpoint</p>
       <input class="wide mono" type="text" readonly value="${triggerUrl}" onclick="this.select()">
@@ -251,7 +251,7 @@ export function projectPage({ project, variables, triggerUrl, secret, user, rete
         <p class="muted">
           A pipeline may override visibility per commit with a top level
           visibility key, and the working directory with a workdir key.
-          Left empty, jobs run in ${retention.workdir}.
+          Left empty, tasks run in ${retention.workdir}.
         </p>
         <div class="actions"><button type="submit">save</button></div>
       </form>
@@ -265,10 +265,10 @@ export function projectPage({ project, variables, triggerUrl, secret, user, rete
       </p>
       <form hx-patch="/projects/${project.id}/retention" hx-target="body" hx-swap="none">
         <div class="grid">
-          <label>keep artifacts for runs
-            <input name="artifact_keep_runs" type="number" min="0" inputmode="numeric"
-                   placeholder="${retention.artifact_keep_runs}"
-                   value="${project.artifact_keep_runs ?? ''}">
+          <label>keep artifacts for jobs
+            <input name="artifact_keep_jobs" type="number" min="0" inputmode="numeric"
+                   placeholder="${retention.artifact_keep_jobs}"
+                   value="${project.artifact_keep_jobs ?? ''}">
           </label>
           <label>keep artifacts for days
             <input name="artifact_keep_days" type="number" min="0" inputmode="numeric"
@@ -283,8 +283,8 @@ export function projectPage({ project, variables, triggerUrl, secret, user, rete
         </div>
         <p class="muted">
           An artifact is kept if either rule wants it, so the last
-          ${project.artifact_keep_runs ?? retention.artifact_keep_runs} runs survive
-          whatever their age. The most recent successful run is always kept. A job
+          ${project.artifact_keep_jobs ?? retention.artifact_keep_jobs} jobs survive
+          whatever their age. The most recent successful job is always kept. A task
           that sets artifacts.expire overrides all of this.
         </p>
         <div class="actions"><button type="submit">save</button></div>
@@ -293,7 +293,7 @@ export function projectPage({ project, variables, triggerUrl, secret, user, rete
 
     <div class="panel">
       <h3>Variables</h3>
-      <p class="muted">Injected into every job. Masked values are redacted from logs.</p>
+      <p class="muted">Injected into every task. Masked values are redacted from logs.</p>
       ${variablesTable(project, variables)}
       <form hx-put="/projects/${project.id}/variables" hx-target="#variables" hx-swap="outerHTML">
         <div class="grid">
@@ -315,7 +315,7 @@ export function projectPage({ project, variables, triggerUrl, secret, user, rete
         </button>
         <button class="danger"
           hx-delete="/projects/${project.id}"
-          hx-confirm="Delete ${project.id} and all of its runs?"
+          hx-confirm="Delete ${project.id} and all of its jobs?"
           hx-swap="none">delete project</button>
       </div>
     </div>
@@ -343,8 +343,8 @@ export function workersPage({ tokens, user, created }) {
   return html`
     <h2>Workers</h2>
     <p class="muted">
-      A worker you register only ever receives jobs from your own projects.
-      ${user.role === 'admin' ? 'A shared worker receives jobs from any project.' : ''}
+      A worker you register only ever receives tasks from your own projects.
+      ${user.role === 'admin' ? 'A shared worker receives tasks from any project.' : ''}
     </p>
     ${created ? oneTimeSecret(
     `Worker token for ${created.name}`,
@@ -408,7 +408,7 @@ export function usersPage({ users, localLogin }) {
           <label>username<input name="username" required></label>
           <label>password<input name="password" type="password" required></label>
           <label>role
-            <select name="role"><option value="viewer">viewer</option><option value="admin">admin</option></select>
+            <select name="role"><option value="user">user</option><option value="admin">admin</option></select>
           </label>
         </div>
         <div class="actions"><button type="submit">create</button></div>
@@ -450,7 +450,7 @@ function deleteWarning(user) {
   }
   const parts = [];
   if (user.project_count > 0) {
-    parts.push(`${user.project_count} project(s) and all of their run history`);
+    parts.push(`${user.project_count} project(s) and all of their job history`);
   }
   if (user.worker_count > 0) parts.push(`${user.worker_count} worker token(s)`);
   return `Remove ${user.username}? This also deletes ${parts.join(' and ')}. This cannot be undone.`;

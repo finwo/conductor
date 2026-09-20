@@ -2,7 +2,7 @@
 //
 // Queries are written once, against every dialect, using {name} markers:
 //
-//   db.get('SELECT * FROM jobs WHERE run_id = {run} AND state = {state}',
+//   db.get('SELECT * FROM tasks WHERE job_id = {job} AND state = {state}',
 //          { run: runId, state: 'queued' })
 //
 // The marker is compiled to whatever the driver wants (? for sqlite and

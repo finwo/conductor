@@ -1,18 +1,18 @@
 // src/conductor/routes/artifacts.js - artifact downloads
 //
-// The one read endpoint that is not the interface: the job page links here,
+// The one read endpoint that is not the interface: the task page links here,
 // so a browser can download build output without the conductor proxying the
 // bytes when the store can presign them.
 //
-// Visibility matches the interface: a public run is downloadable by anyone,
-// a private one by its owner or an administrator. The project, run and job
+// Visibility matches the interface: a public job is downloadable by anyone,
+// a private one by its owner or an administrator. The project, job and task
 // in the path must all agree with the artifact, so a guessed identifier
 // cannot reach anything.
 
 import { StorageNotFound } from '../../lib/storage/index.js';
 
 export default async function artifactRoutes(fastify, { db, storage, auth = null }) {
-  async function viewer(req) {
+  async function currentUser(req) {
     if (!auth) return null;
     try {
       return await auth.identify(req);
@@ -25,28 +25,28 @@ export default async function artifactRoutes(fastify, { db, storage, auth = null
     if (user && user.role === 'admin') return { sql: '1 = 1', params: {} };
     if (user) {
       return {
-        sql: "(r.visibility = 'public' OR p.owner_id = {viewerId})",
+        sql: "(j.visibility = 'public' OR p.owner_id = {viewerId})",
         params: { viewerId: user.id },
       };
     }
-    return { sql: "r.visibility = 'public'", params: {} };
+    return { sql: "j.visibility = 'public'", params: {} };
   }
 
-  fastify.get('/projects/:project/runs/:run/jobs/:job/artifacts/:artifact', async (req, reply) => {
-    const visible = scope(await viewer(req));
+  fastify.get('/projects/:project/jobs/:job/tasks/:task/artifacts/:artifact', async (req, reply) => {
+    const visible = scope(await currentUser(req));
     const artifact = await db.get(
       `SELECT a.id, a.path, a.storage_key, a.size
          FROM artifacts a
+         JOIN tasks t ON t.id = a.task_id
          JOIN jobs j ON j.id = a.job_id
-         JOIN runs r ON r.id = a.run_id
-         JOIN projects p ON p.id = r.project_id
+         JOIN projects p ON p.id = j.project_id
         WHERE a.id = {id}
-          AND a.job_id = {job} AND a.run_id = {run} AND r.project_id = {project}
+          AND a.task_id = {task} AND a.job_id = {job} AND j.project_id = {project}
           AND ${visible.sql}`,
       {
         id: req.params.artifact,
+        task: req.params.task,
         job: req.params.job,
-        run: req.params.run,
         project: req.params.project,
         ...visible.params,
       }

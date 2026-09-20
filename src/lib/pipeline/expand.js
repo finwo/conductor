@@ -1,23 +1,23 @@
 // src/lib/pipeline/expand.js - matrix and architecture expansion
 //
-// Turns each job template into one concrete job per combination of its
-// dimensions, then resolves needs between the concrete jobs.
+// Turns each task template into one concrete task per combination of its
+// dimensions, then resolves needs between the concrete tasks.
 //
-// Dimension matching is the part worth understanding. When a job declares
+// Dimension matching is the part worth understanding. When a task declares
 // needs on a template that shares a dimension with it, the dependency is
 // matched on that dimension rather than fanned out across all of it. So an
-// aarch64 package job needs the aarch64 build, not every build. Dimensions
+// aarch64 package task needs the aarch64 build, not every build. Dimensions
 // the dependency has but the dependent does not are fanned out, which is
-// what you want when a single publish job waits for every architecture.
-// Write `{ job: name, match: all }` to opt out.
+// what you want when a single publish task waits for every architecture.
+// Write `{ task: name, match: all }` to opt out.
 
 import { Problems, MATRIX_KEY_PATTERN } from './schema.js';
 
 // Matches ${{ arch }} and ${{ matrix.pkg }}, tolerating inner whitespace.
 const INTERPOLATION = /\$\{\{\s*([^}]*?)\s*\}\}/g;
 
-// jobs.name is 191 characters in the mysql schema.
-export const MAX_JOB_NAME = 191;
+// tasks.name is 191 characters in the mysql schema.
+export const MAX_TASK_NAME = 191;
 
 export function interpolate(problems, path, text, context) {
   if (typeof text !== 'string') return text;
@@ -25,7 +25,7 @@ export function interpolate(problems, path, text, context) {
   return text.replace(INTERPOLATION, (whole, expr) => {
     if (expr === 'arch') {
       if (context.arch === null) {
-        problems.add(path, 'refers to ${{ arch }} but the job declares no arch');
+        problems.add(path, 'refers to ${{ arch }} but the task declares no arch');
         return whole;
       }
       return context.arch;
@@ -38,7 +38,7 @@ export function interpolate(problems, path, text, context) {
         const known = Object.keys(context.matrix);
         problems.add(
           path,
-          `refers to \${{ matrix.${key} }} which the job does not define` +
+          `refers to \${{ matrix.${key} }} which the task does not define` +
           (known.length > 0 ? `; available: ${known.join(', ')}` : '')
         );
         return whole;
@@ -70,10 +70,10 @@ function instanceName(baseName, dims) {
   return `${baseName}:${entries.map(([k, v]) => `${k}=${v}`).join(',')}`;
 }
 
-function dimensionsOf(job) {
+function dimensionsOf(task) {
   const dims = [];
-  if (job.arch.length > 0) dims.push(['arch', job.arch]);
-  for (const [key, values] of Object.entries(job.matrix)) dims.push([key, values]);
+  if (task.arch.length > 0) dims.push(['arch', task.arch]);
+  for (const [key, values] of Object.entries(task.matrix)) dims.push([key, values]);
   return dims;
 }
 
@@ -82,12 +82,12 @@ export function expandPipeline(pipeline, options = {}) {
   const defaultTimeout = options.defaultTimeout ?? 3600;
   const defaultAttempts = options.defaultAttempts ?? 1;
 
-  // Pass one: build every concrete job.
+  // Pass one: build every concrete task.
   const byBase = new Map();
   const instances = [];
 
-  for (const [baseName, job] of Object.entries(pipeline.jobs)) {
-    const dims = dimensionsOf(job);
+  for (const [baseName, task] of Object.entries(pipeline.tasks)) {
+    const dims = dimensionsOf(task);
     const combos = cartesian(dims);
     const made = [];
 
@@ -97,18 +97,18 @@ export function expandPipeline(pipeline, options = {}) {
       delete matrix.arch;
 
       const name = instanceName(baseName, combo);
-      const path = `jobs.${baseName}`;
-      if (name.length > MAX_JOB_NAME) {
-        problems.add(path, `expands to a job name longer than ${MAX_JOB_NAME} characters: ${name}`);
+      const path = `tasks.${baseName}`;
+      if (name.length > MAX_TASK_NAME) {
+        problems.add(path, `expands to a task name longer than ${MAX_TASK_NAME} characters: ${name}`);
         continue;
       }
 
       const context = { arch, matrix };
       const env = {};
-      for (const [key, value] of Object.entries(job.env)) {
+      for (const [key, value] of Object.entries(task.env)) {
         env[key] = interpolate(problems, `${path}.env.${key}`, value, context);
       }
-      // Dimension values are exposed to the script, so a matrix job rarely
+      // Dimension values are exposed to the script, so a matrix task rarely
       // needs interpolation at all.
       if (arch !== null) env.ARCH = arch;
       for (const [key, value] of Object.entries(matrix)) {
@@ -121,10 +121,10 @@ export function expandPipeline(pipeline, options = {}) {
         arch,
         matrix,
         dims: combo,
-        image: interpolate(problems, `${path}.image`, job.image, context),
-        script: job.script.map((line, i) => interpolate(problems, `${path}.script[${i}]`, line, context)),
-        requires: job.requires.map((r, i) => interpolate(problems, `${path}.requires[${i}]`, r, context)),
-        services: job.services.map((service, i) => ({
+        image: interpolate(problems, `${path}.image`, task.image, context),
+        script: task.script.map((line, i) => interpolate(problems, `${path}.script[${i}]`, line, context)),
+        requires: task.requires.map((r, i) => interpolate(problems, `${path}.requires[${i}]`, r, context)),
+        services: task.services.map((service, i) => ({
           image: interpolate(problems, `${path}.services[${i}].image`, service.image, context),
           alias: service.alias,
           env: Object.fromEntries(Object.entries(service.env).map(([k, v]) => [
@@ -134,59 +134,59 @@ export function expandPipeline(pipeline, options = {}) {
           command: service.command,
         })),
         env,
-        artifacts: job.artifacts
+        artifacts: task.artifacts
           ? {
-            ...job.artifacts,
-            paths: job.artifacts.paths.map((p, i) => interpolate(problems, `${path}.artifacts.paths[${i}]`, p, context)),
+            ...task.artifacts,
+            paths: task.artifacts.paths.map((p, i) => interpolate(problems, `${path}.artifacts.paths[${i}]`, p, context)),
           }
           : null,
-        allow_failure: job.allow_failure,
-        timeout: job.timeout ?? defaultTimeout,
-        max_attempts: job.max_attempts ?? defaultAttempts,
-        // Every instance of a matrix job inherits the ref rule, so a
-        // restricted job stays restricted across all of its expansions.
-        only: job.only ?? null,
+        allow_failure: task.allow_failure,
+        timeout: task.timeout ?? defaultTimeout,
+        max_attempts: task.max_attempts ?? defaultAttempts,
+        // Every instance of a matrix task inherits the ref rule, so a
+        // restricted task stays restricted across all of its expansions.
+        only: task.only ?? null,
         needs: [],
       });
     }
 
-    byBase.set(baseName, { job, dimensionNames: dims.map(([k]) => k), instances: made });
+    byBase.set(baseName, { task, dimensionNames: dims.map(([k]) => k), instances: made });
     instances.push(...made);
   }
 
   const byName = new Map(instances.map((i) => [i.name, i]));
 
-  // Pass two: resolve needs now that every concrete job exists.
+  // Pass two: resolve needs now that every concrete task exists.
   for (const [baseName, entry] of byBase) {
     for (const instance of entry.instances) {
       const resolved = new Set();
 
-      for (const need of entry.job.needs) {
-        const path = `jobs.${baseName}.needs`;
+      for (const need of entry.task.needs) {
+        const path = `tasks.${baseName}.needs`;
 
-        // An exact concrete job name wins, which is the escape hatch for
+        // An exact concrete task name wins, which is the escape hatch for
         // depending on one specific combination.
-        if (byName.has(need.job)) {
-          if (need.job === instance.name) {
-            problems.add(path, `job ${JSON.stringify(baseName)} cannot depend on itself`);
+        if (byName.has(need.task)) {
+          if (need.task === instance.name) {
+            problems.add(path, `task ${JSON.stringify(baseName)} cannot depend on itself`);
           } else {
-            resolved.add(need.job);
+            resolved.add(need.task);
           }
           continue;
         }
 
-        const target = byBase.get(need.job);
+        const target = byBase.get(need.task);
         if (!target) {
           const known = [...byBase.keys()].filter((n) => n !== baseName);
           problems.add(
             path,
-            `refers to unknown job ${JSON.stringify(need.job)}` +
-            (known.length > 0 ? `; defined jobs are ${known.join(', ')}` : '')
+            `refers to unknown task ${JSON.stringify(need.task)}` +
+            (known.length > 0 ? `; defined tasks are ${known.join(', ')}` : '')
           );
           continue;
         }
-        if (need.job === baseName) {
-          problems.add(path, `job ${JSON.stringify(baseName)} cannot depend on itself`);
+        if (need.task === baseName) {
+          problems.add(path, `task ${JSON.stringify(baseName)} cannot depend on itself`);
           continue;
         }
 
@@ -198,8 +198,8 @@ export function expandPipeline(pipeline, options = {}) {
             if (candidates.length === 0) {
               problems.add(
                 path,
-                `no instance of ${JSON.stringify(need.job)} matches ${instance.name} on ` +
-                `${shared.join(', ')}; add the missing value, or use { job: ${need.job}, match: all }`
+                `no instance of ${JSON.stringify(need.task)} matches ${instance.name} on ` +
+                `${shared.join(', ')}; add the missing value, or use { task: ${need.task}, match: all }`
               );
               continue;
             }

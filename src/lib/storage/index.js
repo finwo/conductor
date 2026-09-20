@@ -23,6 +23,6 @@ export function createStorage(cfg) {
 
 // Key layout, kept in one place so every caller agrees.
 export const keys = {
-  artifact: (runId, jobId, relPath) => `artifacts/${runId}/${jobId}/${relPath}`,
-  log: (runId, jobId) => `logs/${runId}/${jobId}.log`,
+  artifact: (jobId, taskId, relPath) => `artifacts/${jobId}/${taskId}/${relPath}`,
+  log: (jobId, taskId) => `logs/${jobId}/${taskId}.log`,
 };

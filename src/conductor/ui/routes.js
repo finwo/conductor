@@ -12,7 +12,7 @@ import crypto from 'node:crypto';
 import { toHtml, html } from './html.js';
 import { layout } from './layout.js';
 import {
-  runsPage, runsTable, runPage, jobsTable, jobPage, jobLog, loginPage,
+  jobsPage, jobsTable, jobPage, tasksTable, taskPage, taskLog, loginPage,
   projectsPage, projectPage, variablesTable, workersPage, workersTable,
   usersPage, usersTable,
 } from './pages.js';
@@ -49,7 +49,7 @@ export default async function uiRoutes(fastify, services) {
     return send(reply, layout({ title, user, body, active, localLogin: auth.localLogin }));
   }
 
-  const viewer = (req) => auth.identify(req).catch(() => null);
+  const currentUser = (req) => auth.identify(req).catch(() => null);
 
   // Only a path on this conductor, so a crafted link cannot bounce someone
   // to another site after signing in.
@@ -80,7 +80,7 @@ export default async function uiRoutes(fastify, services) {
   // A signed in user, or a redirect to sign in. With OIDC that means the
   // provider; otherwise the built-in sign in page.
   async function required(req, reply) {
-    const user = await viewer(req);
+    const user = await currentUser(req);
     if (user) return user;
 
     if (auth.oidc) {
@@ -122,189 +122,189 @@ export default async function uiRoutes(fastify, services) {
       .send(toHtml(html`<p class="error">${message}</p>`));
   }
 
-  // --- runs ---
+  // --- jobs ---
 
-  async function visibleRuns(user, projectId = null) {
+  async function visibleJobs(user, projectId = null) {
     const scope = user && user.role === 'admin'
       ? { sql: '1 = 1', params: {} }
       : user
-        ? { sql: "(r.visibility = 'public' OR p.owner_id = {viewerId})", params: { viewerId: user.id } }
-        : { sql: "r.visibility = 'public'", params: {} };
+        ? { sql: "(j.visibility = 'public' OR p.owner_id = {viewerId})", params: { viewerId: user.id } }
+        : { sql: "j.visibility = 'public'", params: {} };
 
     return db.all(
-      `SELECT r.id, r.project_id, r.number, r.ref, r.head_sha, r.state, r.visibility,
-              r.title, r.created_at, r.started_at, r.finished_at
-         FROM runs r JOIN projects p ON p.id = r.project_id
-        WHERE ${scope.sql} ${projectId ? 'AND r.project_id = {project}' : ''}
-        ORDER BY r.created_at DESC LIMIT 50`,
+      `SELECT j.id, j.project_id, j.number, j.ref, j.head_sha, j.state, j.visibility,
+              j.title, j.created_at, j.started_at, j.finished_at
+         FROM jobs j JOIN projects p ON p.id = j.project_id
+        WHERE ${scope.sql} ${projectId ? 'AND j.project_id = {project}' : ''}
+        ORDER BY j.created_at DESC LIMIT 50`,
       { ...scope.params, ...(projectId ? { project: projectId } : {}) }
     );
   }
 
   fastify.get('/', async (req, reply) => {
-    const user = await viewer(req);
-    const runs = await visibleRuns(user, typeof req.query.project === 'string' ? req.query.project : null);
+    const user = await currentUser(req);
+    const jobs = await visibleJobs(user, typeof req.query.project === 'string' ? req.query.project : null);
     return page(reply, {
-      title: 'runs',
+      title: 'jobs',
       user,
-      active: 'runs',
-      body: runsPage({ runs, user, anonymous: !user }),
+      active: 'jobs',
+      body: jobsPage({ jobs, user, anonymous: !user }),
     });
   });
 
-  fastify.get('/runs', async (req, reply) => {
-    const user = await viewer(req);
-    const runs = await visibleRuns(user, typeof req.query.project === 'string' ? req.query.project : null);
-    return page(reply, { title: 'runs', user, active: 'runs', body: runsPage({ runs, user, anonymous: !user }) });
+  fastify.get('/jobs', async (req, reply) => {
+    const user = await currentUser(req);
+    const jobs = await visibleJobs(user, typeof req.query.project === 'string' ? req.query.project : null);
+    return page(reply, { title: 'jobs', user, active: 'jobs', body: jobsPage({ jobs, user, anonymous: !user }) });
   });
 
-  fastify.get('/partials/runs', async (req, reply) => {
-    const user = await viewer(req);
-    return send(reply, runsTable(await visibleRuns(user)));
+  fastify.get('/partials/jobs', async (req, reply) => {
+    const user = await currentUser(req);
+    return send(reply, jobsTable(await visibleJobs(user)));
   });
 
-  // Loads a run the caller may see, along with whether they may act on it.
-  async function runFor(req, reply) {
-    const user = await viewer(req);
-    const run = await db.get('SELECT * FROM runs WHERE id = {id}', { id: req.params.id });
-    if (!run) {
+  // Loads a job the caller may see, along with whether they may act on it.
+  async function jobFor(req, reply) {
+    const user = await currentUser(req);
+    const job = await db.get('SELECT * FROM jobs WHERE id = {id}', { id: req.params.id });
+    if (!job) {
       reply.code(404);
-      return { user, run: null };
+      return { user, job: null };
     }
-    const project = await projects.get(run.project_id);
-    if (run.visibility !== 'public' && !canManageProject(user, project)) {
+    const project = await projects.get(job.project_id);
+    if (job.visibility !== 'public' && !canManageProject(user, project)) {
       reply.code(404);
-      return { user, run: null };
+      return { user, job: null };
     }
-    return { user, run, project, canManage: canManageProject(user, project) };
+    return { user, job, project, canManage: canManageProject(user, project) };
   }
 
-  async function jobsOf(runId) {
-    const jobs = await db.all(
+  async function tasksOf(jobId) {
+    const tasks = await db.all(
       `SELECT id, name, arch, state, worker_name, exit_code, started_at, finished_at
-         FROM jobs WHERE run_id = {run} ORDER BY name`,
-      { run: runId }
+         FROM tasks WHERE job_id = {job} ORDER BY name`,
+      { job: jobId }
     );
     const deps = await db.all(
-      `SELECT d.job_id, d.depends_on_id FROM job_deps d
-         JOIN jobs j ON j.id = d.job_id WHERE j.run_id = {run}`,
-      { run: runId }
+      `SELECT d.task_id, d.depends_on_id FROM task_deps d
+         JOIN tasks t ON t.id = d.task_id WHERE t.job_id = {job}`,
+      { job: jobId }
     );
-    const needs = new Map(jobs.map((j) => [j.id, []]));
-    for (const d of deps) needs.get(d.job_id)?.push(d.depends_on_id);
-    return jobs.map((j) => ({ ...j, needs: needs.get(j.id) ?? [] }));
+    const needs = new Map(tasks.map((t) => [t.id, []]));
+    for (const d of deps) needs.get(d.task_id)?.push(d.depends_on_id);
+    return tasks.map((j) => ({ ...j, needs: needs.get(j.id) ?? [] }));
   }
 
-  fastify.get('/runs/:id', async (req, reply) => {
-    const { user, run, canManage } = await runFor(req, reply);
-    if (!run) return page(reply, { title: 'not found', user, body: html`<p class="error">No such run.</p>` });
+  fastify.get('/jobs/:id', async (req, reply) => {
+    const { user, job, canManage } = await jobFor(req, reply);
+    if (!job) return page(reply, { title: 'not found', user, body: html`<p class="error">No such job.</p>` });
 
     return page(reply, {
-      title: `run #${run.number}`,
+      title: `job #${job.number}`,
       user,
-      active: 'runs',
-      body: runPage({ run, jobs: await jobsOf(run.id), canManage }),
+      active: 'jobs',
+      body: jobPage({ job, tasks: await tasksOf(job.id), canManage }),
     });
   });
 
-  fastify.get('/partials/runs/:id/jobs', async (req, reply) => {
-    const { run } = await runFor(req, reply);
-    if (!run) return reply.send('');
-    return send(reply, jobsTable(run, await jobsOf(run.id)));
+  fastify.get('/partials/jobs/:id/tasks', async (req, reply) => {
+    const { job } = await jobFor(req, reply);
+    if (!job) return reply.send('');
+    return send(reply, tasksTable(job, await tasksOf(job.id)));
   });
 
-  fastify.post('/runs/:id/cancel', async (req, reply) => {
+  fastify.post('/jobs/:id/cancel', async (req, reply) => {
     if (!fromUi(req, reply)) return reply;
     const user = await required(req, reply);
     if (!user) return reply;
 
-    const { run, canManage } = await runFor(req, reply);
-    if (!run || !canManage) return fail(reply, 'Not yours to manage.', 403);
+    const { job, canManage } = await jobFor(req, reply);
+    if (!job || !canManage) return fail(reply, 'Not yours to manage.', 403);
 
-    await scheduler.cancelRun(run.id, `cancelled by ${user.username}`);
-    const fresh = await db.get('SELECT * FROM runs WHERE id = {id}', { id: run.id });
-    return send(reply, jobsTable(fresh, await jobsOf(run.id)));
+    await scheduler.cancelJob(job.id, `cancelled by ${user.username}`);
+    const fresh = await db.get('SELECT * FROM jobs WHERE id = {id}', { id: job.id });
+    return send(reply, tasksTable(fresh, await tasksOf(job.id)));
   });
 
-  fastify.post('/runs/:id/retry', async (req, reply) => {
+  fastify.post('/jobs/:id/retry', async (req, reply) => {
     if (!fromUi(req, reply)) return reply;
     const user = await required(req, reply);
     if (!user) return reply;
 
-    const { run, project, canManage } = await runFor(req, reply);
-    if (!run || !canManage) return fail(reply, 'Not yours to manage.', 403);
+    const { job, project, canManage } = await jobFor(req, reply);
+    if (!job || !canManage) return fail(reply, 'Not yours to manage.', 403);
 
     try {
-      const created = await scheduler.createRun(project, {
-        ref: run.ref,
-        baseSha: run.base_sha,
-        headSha: run.head_sha,
+      const created = await scheduler.createJob(project, {
+        ref: job.ref,
+        baseSha: job.base_sha,
+        headSha: job.head_sha,
         trigger: 'manual',
         actor: user.username,
       });
-      return refresh(reply, `/runs/${created.runId}`);
+      return refresh(reply, `/jobs/${created.jobId}`);
     } catch (e) {
       return fail(reply, e instanceof PipelineError ? e.message : String(e.message ?? e), 422);
     }
   });
 
-  // --- jobs ---
+  // --- tasks ---
 
-  fastify.get('/jobs/:id', async (req, reply) => {
-    const user = await viewer(req);
-    const job = await db.get(
-      `SELECT j.*, r.visibility, r.project_id FROM jobs j
-         JOIN runs r ON r.id = j.run_id WHERE j.id = {id}`,
+  fastify.get('/tasks/:id', async (req, reply) => {
+    const user = await currentUser(req);
+    const task = await db.get(
+      `SELECT t.*, j.visibility, j.project_id FROM tasks t
+         JOIN jobs j ON j.id = t.job_id WHERE t.id = {id}`,
       { id: req.params.id }
     );
-    if (!job) return page(reply, { title: 'not found', user, body: html`<p class="error">No such job.</p>` });
+    if (!task) return page(reply, { title: 'not found', user, body: html`<p class="error">No such task.</p>` });
 
-    const project = await projects.get(job.project_id);
-    if (job.visibility !== 'public' && !canManageProject(user, project)) {
-      return page(reply, { title: 'not found', user, body: html`<p class="error">No such job.</p>` });
+    const project = await projects.get(task.project_id);
+    if (task.visibility !== 'public' && !canManageProject(user, project)) {
+      return page(reply, { title: 'not found', user, body: html`<p class="error">No such task.</p>` });
     }
 
     const artifacts = await db.all(
-      'SELECT id, path, size, sha256 FROM artifacts WHERE job_id = {job} ORDER BY path',
-      { job: job.id }
+      'SELECT id, path, size, sha256 FROM artifacts WHERE task_id = {task} ORDER BY path',
+      { task: task.id }
     );
 
     return page(reply, {
-      title: job.name,
+      title: task.name,
       user,
-      active: 'runs',
-      body: jobPage({ job, artifacts, log: await tailOf(job) }),
+      active: 'jobs',
+      body: taskPage({ task, artifacts, log: await tailOf(task) }),
     });
   });
 
-  fastify.get('/partials/jobs/:id/log', async (req, reply) => {
-    const user = await viewer(req);
-    const job = await db.get(
-      `SELECT j.*, r.visibility, r.project_id FROM jobs j
-         JOIN runs r ON r.id = j.run_id WHERE j.id = {id}`,
+  fastify.get('/partials/tasks/:id/log', async (req, reply) => {
+    const user = await currentUser(req);
+    const task = await db.get(
+      `SELECT t.*, j.visibility, j.project_id FROM tasks t
+         JOIN jobs j ON j.id = t.job_id WHERE t.id = {id}`,
       { id: req.params.id }
     );
-    if (!job) return reply.send('');
+    if (!task) return reply.send('');
 
-    const project = await projects.get(job.project_id);
-    if (job.visibility !== 'public' && !canManageProject(user, project)) return reply.send('');
+    const project = await projects.get(task.project_id);
+    if (task.visibility !== 'public' && !canManageProject(user, project)) return reply.send('');
 
-    return send(reply, jobLog(job, await tailOf(job)));
+    return send(reply, taskLog(task, await tailOf(task)));
   });
 
   // The last window of output. Replacing the whole pane each poll keeps the
   // fragment self contained, and a cap keeps a runaway log from being
   // re-sent in full every two seconds.
-  async function tailOf(job) {
-    if (!job.log_key) {
-      const size = await logs.size(job.run_id, job.id);
+  async function tailOf(task) {
+    if (!task.log_key) {
+      const size = await logs.size(task.job_id, task.id);
       const offset = Math.max(0, size - LOG_TAIL_BYTES);
-      const chunk = await logs.read(job.run_id, job.id, { offset, limit: LOG_TAIL_BYTES });
+      const chunk = await logs.read(task.job_id, task.id, { offset, limit: LOG_TAIL_BYTES });
       return chunk.data.toString('utf8');
     }
     try {
-      const start = Math.max(0, (job.log_size ?? 0) - LOG_TAIL_BYTES);
-      const object = await services.storage.get(job.log_key, { range: { start } });
+      const start = Math.max(0, (task.log_size ?? 0) - LOG_TAIL_BYTES);
+      const object = await services.storage.get(task.log_key, { range: { start } });
       const parts = [];
       for await (const part of object.stream) parts.push(part);
       return Buffer.concat(parts).toString('utf8');
@@ -316,7 +316,7 @@ export default async function uiRoutes(fastify, services) {
   // --- session ---
 
   fastify.get('/login', async (req, reply) => {
-    const user = await viewer(req);
+    const user = await currentUser(req);
     if (user) return reply.redirect('/', 302);
 
     // With the provider in charge, asking for the sign in page is asking to
@@ -525,7 +525,7 @@ export default async function uiRoutes(fastify, services) {
 
     const body = req.body ?? {};
     const values = {};
-    for (const key of ['artifact_keep_runs', 'artifact_keep_days', 'log_keep_days']) {
+    for (const key of ['artifact_keep_jobs', 'artifact_keep_days', 'log_keep_days']) {
       if (!Object.hasOwn(body, key)) continue;
       const raw = String(body[key] ?? '').trim();
       // An empty field means "follow the server default", which is a null
@@ -614,7 +614,7 @@ export default async function uiRoutes(fastify, services) {
     const name = String(req.body?.name ?? '').trim();
     if (!name) return fail(reply, 'A name is required.');
 
-    // Only an administrator can create capacity that runs anyone's work.
+    // Only an administrator can create capacity that jobs anyone's work.
     const shared = user.role === 'admin' && req.body?.shared === 'true';
     const created = await workerTokens.create(name, { ownerId: shared ? null : user.id });
 
@@ -688,7 +688,7 @@ export default async function uiRoutes(fastify, services) {
       await users.create({
         username: String(req.body?.username ?? ''),
         password: String(req.body?.password ?? ''),
-        role: req.body?.role === 'admin' ? 'admin' : 'viewer',
+        role: req.body?.role === 'admin' ? 'admin' : 'user',
       });
     } catch (e) {
       return fail(reply, e.message);

@@ -1,6 +1,6 @@
 // src/lib/pipeline/parse.js - reads and validates a .conductor.yml
 //
-// Produces a normalized document: every job has every field filled in from
+// Produces a normalized document: every task has every field filled in from
 // defaults, so later stages never have to ask whether something was set.
 // Nothing here expands matrices or resolves dependencies; see expand.js.
 
@@ -22,13 +22,13 @@ import {
   NAME_PATTERN,
 } from './schema.js';
 
-const TOP_KEYS = ['version', 'visibility', 'workdir', 'defaults', 'jobs'];
+const TOP_KEYS = ['version', 'visibility', 'workdir', 'defaults', 'tasks'];
 
 // A repository decides whether its own build results are readable without
 // signing in. Unset means the project's setting stands.
 export const VISIBILITIES = ['public', 'private'];
 
-// Where the tree is put inside a job container, and the directory every
+// Where the tree is put inside a task container, and the directory every
 // script starts in. Unset means the project's setting stands, and failing
 // that the server default.
 export const DEFAULT_WORKDIR = '/work';
@@ -72,7 +72,7 @@ const JOB_KEYS = [
   'only',
 ];
 
-// Fields a job may inherit from defaults.
+// Fields a task may inherit from defaults.
 const DEFAULT_KEYS = [
   'image', 'arch', 'requires', 'env', 'services',
   'allow_failure', 'timeout', 'max_attempts',
@@ -104,6 +104,16 @@ export function parsePipeline(text, options = {}) {
     throw new PipelineError([{ path: '', message: `expected a mapping at the top level, got ${typeName(doc)}` }], source);
   }
 
+  // The key was called jobs before a job became the thing that contains
+  // these. Named outright rather than left to checkUnknown, whose nearest
+  // match would be a guess at a word that used to be correct.
+  if (doc.jobs !== undefined && doc.tasks === undefined) {
+    throw new PipelineError(
+      [{ path: 'jobs', message: 'was renamed to tasks; a job is now the pipeline run that these tasks belong to' }],
+      source
+    );
+  }
+
   checkUnknown(problems, '', doc, TOP_KEYS);
 
   if (doc.version === undefined) {
@@ -124,34 +134,34 @@ export function parsePipeline(text, options = {}) {
 
   const defaults = parseDefaults(problems, doc.defaults);
 
-  if (doc.jobs === undefined) {
-    problems.add('jobs', 'is required');
-  } else if (!isPlainObject(doc.jobs)) {
-    problems.add('jobs', `expected a mapping of job names, got ${typeName(doc.jobs)}`);
-  } else if (Object.keys(doc.jobs).length === 0) {
-    problems.add('jobs', 'must define at least one job');
+  if (doc.tasks === undefined) {
+    problems.add('tasks', 'is required');
+  } else if (!isPlainObject(doc.tasks)) {
+    problems.add('tasks', `expected a mapping of task names, got ${typeName(doc.tasks)}`);
+  } else if (Object.keys(doc.tasks).length === 0) {
+    problems.add('tasks', 'must define at least one task');
   }
 
-  const jobs = {};
-  if (isPlainObject(doc.jobs)) {
-    for (const [name, raw] of Object.entries(doc.jobs)) {
-      const path = `jobs.${name}`;
+  const tasks = {};
+  if (isPlainObject(doc.tasks)) {
+    for (const [name, raw] of Object.entries(doc.tasks)) {
+      const path = `tasks.${name}`;
       if (!NAME_PATTERN.test(name) || name.length > 100) {
-        problems.add(path, 'job name must start with a letter or digit and contain only letters, digits, underscore, dot and hyphen');
+        problems.add(path, 'task name must start with a letter or digit and contain only letters, digits, underscore, dot and hyphen');
         continue;
       }
       if (!isPlainObject(raw)) {
         problems.add(path, `expected a mapping, got ${typeName(raw)}`);
         continue;
       }
-      jobs[name] = parseJob(problems, path, raw, defaults);
+      tasks[name] = parseTask(problems, path, raw, defaults);
     }
   }
 
   const workdir = doc.workdir === undefined ? null : parseWorkdir(problems, 'workdir', doc.workdir);
 
   problems.throwIfAny(source);
-  return { version: SUPPORTED_VERSION, visibility, workdir, defaults, jobs, source };
+  return { version: SUPPORTED_VERSION, visibility, workdir, defaults, tasks, source };
 }
 
 function parseDefaults(problems, raw) {
@@ -202,12 +212,12 @@ function parseArch(problems, path, raw) {
   return out;
 }
 
-function parseJob(problems, path, raw, defaults) {
+function parseTask(problems, path, raw, defaults) {
   checkUnknown(problems, path, raw, JOB_KEYS);
 
   const image = raw.image === undefined ? defaults.image : asString(problems, `${path}.image`, raw.image);
   if (image === undefined) {
-    problems.add(`${path}.image`, 'is required; set it on the job or under defaults');
+    problems.add(`${path}.image`, 'is required; set it on the task or under defaults');
   }
 
   if (raw.script === undefined) {
@@ -246,15 +256,15 @@ function parseJob(problems, path, raw, defaults) {
   };
 }
 
-// Restricts a job to certain refs. Deliberately not inheritable from
-// defaults: a rule that silently applied to every job is the kind of thing
+// Restricts a task to certain refs. Deliberately not inheritable from
+// defaults: a rule that silently applied to every task is the kind of thing
 // that stops a pipeline running at all and takes an afternoon to find.
 //
 //   only:
 //     refs: [refs/heads/main, 'refs/tags/v*']
 //
 // Patterns match the whole ref, so refs/heads/main rather than main, with
-// * standing for any run of characters. Absent means the job always runs.
+// * standing for any run of characters. Absent means the task always runs.
 function parseOnly(problems, path, raw) {
   if (raw === undefined || raw === null) return null;
   if (!isPlainObject(raw)) {
@@ -282,7 +292,7 @@ function parseOnly(problems, path, raw) {
   return { refs };
 }
 
-// A need is either a job name, or a mapping for the cases where the default
+// A need is either a task name, or a mapping for the cases where the default
 // dimension matching is not what is wanted.
 function parseNeeds(problems, path, raw) {
   if (raw === undefined) return [];
@@ -292,21 +302,21 @@ function parseNeeds(problems, path, raw) {
   list.forEach((item, i) => {
     const itemPath = `${path}[${i}]`;
     if (typeof item === 'string') {
-      out.push({ job: item, match: 'shared' });
+      out.push({ task: item, match: 'shared' });
       return;
     }
     if (!isPlainObject(item)) {
-      problems.add(itemPath, `expected a job name or a mapping, got ${typeName(item)}`);
+      problems.add(itemPath, `expected a task name or a mapping, got ${typeName(item)}`);
       return;
     }
-    checkUnknown(problems, itemPath, item, ['job', 'match']);
-    const job = asString(problems, `${itemPath}.job`, item.job);
+    checkUnknown(problems, itemPath, item, ['task', 'match']);
+    const task = asString(problems, `${itemPath}.task`, item.task);
     const match = item.match === undefined ? 'shared' : asString(problems, `${itemPath}.match`, item.match);
     if (match !== undefined && !['shared', 'all'].includes(match)) {
       problems.add(`${itemPath}.match`, `expected shared or all, got ${JSON.stringify(match)}`);
       return;
     }
-    if (job !== undefined) out.push({ job, match: match ?? 'shared' });
+    if (task !== undefined) out.push({ task, match: match ?? 'shared' });
   });
 
   return out;
@@ -346,7 +356,7 @@ function parseMatrix(problems, path, raw) {
         problems.add(
           `${keyPath}[${i}]`,
           `${JSON.stringify(s)} may only contain letters, digits, underscore, dot and hyphen, ` +
-          'because it becomes part of the job name'
+          'because it becomes part of the task name'
         );
         return;
       }
@@ -383,7 +393,7 @@ function parseServices(problems, path, raw) {
     if (image === undefined) return;
 
     // Default alias is the image name without registry, path or tag, which
-    // is what a job would naturally use as a hostname.
+    // is what a task would naturally use as a hostname.
     const derived = image.split('/').pop().split(':')[0];
     const alias = service.alias === undefined
       ? derived

@@ -6,7 +6,7 @@
 import { newUserId } from './ids.js';
 import { hashPassword, verifyPassword, generatePassword, validatePassword } from './auth/password.js';
 
-export const ROLES = ['admin', 'viewer'];
+export const ROLES = ['admin', 'user'];
 
 // A provider may hand over anything as a display name, so it is reduced to
 // the character set local accounts already use.
@@ -52,7 +52,7 @@ export function createUsers({ db, logger = console }) {
     // administrator a way to lock someone out immediately.
     async upsertExternal({ externalId, username, role }) {
       if (!externalId) throw new Error('an external account needs a stable identifier');
-      const desired = ROLES.includes(role) ? role : 'viewer';
+      const desired = ROLES.includes(role) ? role : 'user';
 
       return db.transaction(async (tx) => {
         const existing = await tx.get(
@@ -106,7 +106,7 @@ export function createUsers({ db, logger = console }) {
       return (await db.get('SELECT COUNT(*) AS c FROM users')).c;
     },
 
-    async create({ username, password, role = 'viewer' }) {
+    async create({ username, password, role = 'user' }) {
       if (typeof username !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.@-]{1,63}$/.test(username)) {
         throw new Error('username must be 2 to 64 characters of letters, digits, underscore, dot, at or hyphen');
       }

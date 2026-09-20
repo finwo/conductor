@@ -1,6 +1,6 @@
-// src/worker/source.js - getting the tree into the job container
+// src/worker/source.js - getting the tree into the task container
 //
-// The conductor serves a tarball of the exact commit a job was created
+// The conductor serves a tarball of the exact commit a task was created
 // for. The worker never sees a repository, holds no credentials for one,
 // and cannot reach any ref other than the one it was given work for.
 //
@@ -16,9 +16,9 @@
 import { Readable } from 'node:stream';
 import { createGunzip } from 'node:zlib';
 
-export async function sourceIntoContainer({ client, runtime, job, container, workdir }) {
-  const url = job.endpoints?.source;
-  if (!url) throw new Error('the job carries no source endpoint');
+export async function sourceIntoContainer({ client, runtime, task, container, workdir }) {
+  const url = task.endpoints?.source;
+  if (!url) throw new Error('the task carries no source endpoint');
 
   const body = await client.source(url);
   const stream = body instanceof Readable ? body : Readable.fromWeb(body);

@@ -20,8 +20,8 @@ import { createAuth } from '../lib/auth/index.js';
 import { createScheduler } from './scheduler.js';
 import { createRetention } from './retention.js';
 
-import workerRoutes from './routes/workers.js';
-import triggerRoutes from './routes/trigger.js';
+import taskRoutes from './routes/tasks.js';
+import jobRoutes from './routes/jobs.js';
 import artifactRoutes from './routes/artifacts.js';
 import uiRoutes from './ui/routes.js';
 import staticRoutes from '../lib/static.js';
@@ -81,10 +81,11 @@ export async function buildServer(services, options = {}) {
     auth: cfg.auth.mode,
   }));
 
-  // The only HTTP surface besides the interface: the trigger edge, the
-  // worker edge, and artifact downloads. Everything else is the UI.
-  await fastify.register(triggerRoutes, { ...services, prefix: '/api/v1' });
-  await fastify.register(workerRoutes, { ...services, prefix: '/api/v1' });
+  // The only HTTP surface besides the interface: creating and reading jobs,
+  // the task edge workers poll, and artifact downloads. Everything else
+  // is the UI.
+  await fastify.register(jobRoutes, { ...services, prefix: '/api/v1' });
+  await fastify.register(taskRoutes, { ...services, prefix: '/api/v1' });
   await fastify.register(artifactRoutes, { ...services, prefix: '/api/v1' });
 
   // Signing in, managing projects and registering workers all happen in the

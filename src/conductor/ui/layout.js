@@ -8,7 +8,7 @@ import { html, raw, esc } from './html.js';
 
 export function layout({ title, user, body, active = '', localLogin = true }) {
   const nav = [
-    { href: '/', label: 'runs', key: 'runs' },
+    { href: '/', label: 'jobs', key: 'jobs' },
     user ? { href: '/projects', label: 'projects', key: 'projects' } : null,
     user ? { href: '/workers', label: 'workers', key: 'workers' } : null,
     // Accounts cannot sign in while the provider owns identity, so the page

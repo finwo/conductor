@@ -16,7 +16,7 @@
 // groups, and there is no standard.
 
 const ADMIN = 'admin';
-const VIEWER = 'viewer';
+const USER_ROLE = 'user';
 const DISCOVERY_TIMEOUT = 10000;
 const TOKEN_TIMEOUT = 10000;
 
@@ -106,7 +106,7 @@ export function createOidc(cfg) {
       issuer,
       subject: claims.sub,
       username: claims.preferred_username ?? claims.email ?? claims.sub,
-      role: roles.includes(adminRole) ? ADMIN : VIEWER,
+      role: roles.includes(adminRole) ? ADMIN : USER_ROLE,
       roles,
     };
   }

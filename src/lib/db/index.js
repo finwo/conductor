@@ -11,7 +11,7 @@
 // Params is an object, and queries use named {name} markers which each driver
 // compiles to its own placeholder syntax. See query.js.
 //
-//   db.get('SELECT * FROM jobs WHERE run_id = {run}', { run: runId })
+//   db.get('SELECT * FROM tasks WHERE job_id = {job}', { job: jobId })
 //
 // Portability rules that apply to every query written against this layer:
 //   - named {name} markers only, never ? or $n directly
