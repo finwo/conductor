@@ -20,6 +20,7 @@ import { createAuth } from '../lib/auth/index.js';
 import { createScheduler } from './scheduler.js';
 import { createRetention } from './retention.js';
 
+import workerRoutes from './routes/workers.js';
 import taskRoutes from './routes/tasks.js';
 import jobRoutes from './routes/jobs.js';
 import artifactRoutes from './routes/artifacts.js';
@@ -82,9 +83,14 @@ export async function buildServer(services, options = {}) {
   }));
 
   // The only HTTP surface besides the interface: creating and reading jobs,
-  // the task edge workers poll, and artifact downloads. Everything else
-  // is the UI.
+  // reading tasks back, the edge workers poll, and artifact downloads.
+  // Everything else is the UI.
+  //
+  // workerRoutes and taskRoutes share the /api/v1/tasks prefix deliberately.
+  // They stay separate plugins because the worker token hook covers its own
+  // plugin entirely, and reading a task back is not behind it.
   await fastify.register(jobRoutes, { ...services, prefix: '/api/v1' });
+  await fastify.register(workerRoutes, { ...services, prefix: '/api/v1' });
   await fastify.register(taskRoutes, { ...services, prefix: '/api/v1' });
   await fastify.register(artifactRoutes, { ...services, prefix: '/api/v1' });
 

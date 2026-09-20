@@ -18,10 +18,10 @@
 // without one accepts unsigned requests, which is convenient on a private
 // network and a bad idea anywhere else, so it is logged.
 
-import crypto from 'node:crypto';
 import { SHA_PATTERN } from '../../lib/git.js';
 import { PipelineError } from '../../lib/pipeline/index.js';
 import { canManageProject } from '../../lib/projects.js';
+import { verifySignature } from '../../lib/signature.js';
 
 const ZERO_SHA = '0'.repeat(40);
 
@@ -174,32 +174,6 @@ export default async function jobRoutes(fastify, { auth, db, projects, scheduler
     const user = await auth.identify(req).catch(() => null);
     return canManageProject(user, project);
   }
-}
-
-function verifySignature(req, secret) {
-  const raw = req.rawBody ?? Buffer.alloc(0);
-
-  // GitHub and Gitea: sha256=<hex> over the body.
-  const hubSignature = req.headers['x-hub-signature-256'];
-  if (typeof hubSignature === 'string' && hubSignature.length > 0) {
-    const expected = `sha256=${crypto.createHmac('sha256', secret).update(raw).digest('hex')}`;
-    return timingSafeEqual(expected, hubSignature);
-  }
-
-  // GitLab: the secret itself, compared rather than signed.
-  const gitlabToken = req.headers['x-gitlab-token'];
-  if (typeof gitlabToken === 'string' && gitlabToken.length > 0) {
-    return timingSafeEqual(secret, gitlabToken);
-  }
-
-  return false;
-}
-
-function timingSafeEqual(a, b) {
-  const left = Buffer.from(String(a), 'utf8');
-  const right = Buffer.from(String(b), 'utf8');
-  if (left.length !== right.length) return false;
-  return crypto.timingSafeEqual(left, right);
 }
 
 // Reduces the supported payload shapes to { sha, base, ref, actor }.
