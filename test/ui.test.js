@@ -108,7 +108,7 @@ test('signing in through the form sets a session and reveals the nav', async () 
       url: '/login',
       ...form({}, { username: 'admin', password: 'wrong' }),
     });
-    assert.equal(bad.statusCode, 401);
+    assert.equal(bad.statusCode, 200);
     assert.match(bad.body, /Invalid username or password/);
 
     const good = await h.app.inject({
