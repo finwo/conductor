@@ -181,6 +181,30 @@ CONTENT=$(curl -fsSL "http://127.0.0.1:${PORT}${ARTIFACT_PATH}")
 printf 'artifact contents: %s\n' "${CONTENT}"
 [ "${CONTENT}" = packaged ] || fail "the artifact did not round trip"
 
+log "reading the task back through the api"
+# Both paths describe a public task to anyone, with no credential at all.
+# The absence of the environment is the point of the endpoint, so it is
+# checked here against the running image rather than trusted from the unit
+# tests: the pipeline above puts CONDUCTOR_PROJECT in the script, so a
+# response carrying it would mean the environment had escaped.
+for URL in "/api/v1/tasks/${TASK}" "/api/v1/projects/demo/tasks/${TASK}"; do
+  BODY=$(curl -fsS "http://127.0.0.1:${PORT}${URL}") || fail "${URL} was not readable"
+
+  printf '%s' "${BODY}" | grep -q '"state":"success"' \
+    || fail "${URL} did not report the task state"
+  printf '%s' "${BODY}" | grep -q '"path":"out/result.txt"' \
+    || fail "${URL} did not list the artifact"
+  printf '%s' "${BODY}" | grep -q '"url":"http' \
+    || fail "${URL} did not offer a download url"
+
+  if printf '%s' "${BODY}" | grep -q 'CONDUCTOR_PROJECT'; then
+    fail "${URL} leaked the task environment"
+  fi
+  if printf '%s' "${BODY}" | grep -q '"script"'; then
+    fail "${URL} leaked the task script"
+  fi
+done
+
 log "checking the interface"
 curl -fsS "http://127.0.0.1:${PORT}/" | grep -q 'conductor' || fail "the interface did not render"
 

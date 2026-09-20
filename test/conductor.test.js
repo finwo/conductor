@@ -318,6 +318,206 @@ test('a job of another project cannot be read through this one', async () => {
   });
 });
 
+// --- reading a task back ---
+
+// The two paths answer identically; only what may reach a private task
+// differs between them.
+function taskUrls(taskId, project = 'demo') {
+  return [`/api/v1/tasks/${taskId}`, `/api/v1/projects/${project}/tasks/${taskId}`];
+}
+
+// package needs build, so nothing downstream is claimable until the first
+// wave has finished.
+async function claimDownstream(h, name) {
+  for (const task of Object.values(await drain(h, { arches: 'x86_64,aarch64' }))) {
+    await finish(h, task.id);
+  }
+  return claimNamed(h, name, { arches: 'x86_64', features: 'sign-key' });
+}
+
+test('a task can be read back on its own, and by its full name', async () => {
+  await withHarness({}, async (h) => {
+    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const task = await claimNamed(h, 'build:arch=x86_64', { arches: 'x86_64' });
+
+    const [bare, scoped] = await Promise.all(
+      taskUrls(task.id).map((url) => h.app.inject({ method: 'GET', url }))
+    );
+    assert.equal(bare.statusCode, 200, bare.body);
+    assert.equal(scoped.statusCode, 200, scoped.body);
+    assert.deepEqual(bare.json(), scoped.json(), 'both paths describe the same task');
+
+    const { task: body } = bare.json();
+    assert.equal(body.id, task.id);
+    assert.equal(body.name, 'build:arch=x86_64');
+    assert.equal(body.base_name, 'build');
+    assert.equal(body.state, 'running');
+    assert.equal(body.arch, 'x86_64');
+    assert.equal(body.image, 'debian:bookworm-slim');
+    assert.equal(body.visibility, 'public');
+    assert.equal(body.sha, h.sha);
+    assert.equal(body.ref, 'refs/heads/main');
+    assert.equal(body.project_id, 'demo');
+    assert.equal(body.job_id, await jobIdOf(h, task.id));
+    assert.equal(body.job_number, 1);
+    assert.equal(body.allow_failure, false, 'stored as 0 or 1, reported as a boolean');
+    assert.deepEqual(body.artifact_paths, ['dist/**'], 'what it was told to collect');
+  });
+});
+
+test('reading a task back carries its dependencies and matrix', async () => {
+  await withHarness({}, async (h) => {
+    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const task = await claimDownstream(h, 'package:arch=x86_64,pkg=musl');
+
+    const res = await h.app.inject({ method: 'GET', url: `/api/v1/tasks/${task.id}` });
+    assert.equal(res.statusCode, 200, res.body);
+
+    const { task: body } = res.json();
+    assert.deepEqual(body.matrix, { pkg: 'musl' });
+    assert.deepEqual(body.needs, ['build:arch=x86_64']);
+    assert.equal(body.workdir, '/work', 'settled when the job was created');
+  });
+});
+
+// The point of the endpoint: a task's environment can hold project
+// variables, and its services carry an environment of their own.
+test('reading a task back never exposes its environment, services or script', async () => {
+  await withHarness({}, async (h) => {
+    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const task = await claimDownstream(h, 'package:arch=x86_64,pkg=musl');
+
+    // The claim payload has them, which is what makes their absence below
+    // meaningful rather than incidental.
+    assert.ok(task.env.MATRIX_PKG, 'the worker is given the environment');
+    assert.ok(Array.isArray(task.script) && task.script.length > 0);
+
+    for (const url of taskUrls(task.id)) {
+      const res = await h.app.inject({ method: 'GET', url });
+      assert.equal(res.statusCode, 200, res.body);
+
+      const payload = res.json();
+      for (const key of ['env', 'services', 'script', 'spec', 'worker_token_id', 'log_key', 'storage_key']) {
+        assert.equal(payload.task[key], undefined, `${url} must not carry ${key}`);
+      }
+      // Belt and braces: a value smuggled in under any other name.
+      assert.ok(!JSON.stringify(payload).includes('MATRIX_PKG'), `${url} leaked an environment name`);
+      assert.ok(!JSON.stringify(payload).includes('./pkg.sh'), `${url} leaked the script`);
+    }
+  });
+});
+
+test('a task lists the artifacts it stored, with a usable download url', async () => {
+  await withHarness({}, async (h) => {
+    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const task = await claimNamed(h, 'build:arch=x86_64', { arches: 'x86_64' });
+
+    await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/tasks/${task.id}/artifacts`,
+      headers: { ...h.auth, 'content-type': 'application/octet-stream', 'x-artifact-path': 'dist/app' },
+      payload: Buffer.from('artifact bytes'),
+    });
+
+    const res = await h.app.inject({ method: 'GET', url: `/api/v1/tasks/${task.id}` });
+    assert.equal(res.statusCode, 200, res.body);
+
+    const { artifacts } = res.json();
+    assert.equal(artifacts.length, 1);
+    assert.equal(artifacts[0].path, 'dist/app');
+    assert.equal(artifacts[0].size, 14);
+    assert.match(artifacts[0].sha256, /^[0-9a-f]{64}$/);
+    assert.ok(artifacts[0].url.startsWith('http://conductor.test/'), artifacts[0].url);
+
+    // The url is the whole point of returning one, so follow it.
+    const download = await h.app.inject({ method: 'GET', url: new URL(artifacts[0].url).pathname });
+    assert.equal(download.statusCode, 200);
+    assert.equal(download.body, 'artifact bytes');
+  });
+});
+
+test('reading a task back needs no worker token', async () => {
+  await withHarness({}, async (h) => {
+    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const task = await claimNamed(h, 'lint', {});
+
+    // The worker protocol shares this prefix and puts a token hook over its
+    // own plugin. If that hook ever reaches these routes, this fails.
+    for (const url of taskUrls(task.id)) {
+      const res = await h.app.inject({ method: 'GET', url });
+      assert.equal(res.statusCode, 200, `${url} should not require a token`);
+    }
+  });
+});
+
+test('a private task is absent without a credential, and needs its project named', async () => {
+  const pipeline = DEFAULT_PIPELINE.replace('version: 1\n', 'version: 1\nvisibility: private\n');
+  await withHarness({ pipeline }, async (h) => {
+    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const task = await claimNamed(h, 'lint', {});
+
+    for (const url of taskUrls(task.id)) {
+      const anon = await h.app.inject({ method: 'GET', url });
+      assert.equal(anon.statusCode, 404, `${url} should be absent anonymously`);
+    }
+
+    const signed = { 'content-type': 'application/json', 'x-hub-signature-256': h.sign('') };
+
+    const scoped = await h.app.inject({
+      method: 'GET',
+      url: `/api/v1/projects/demo/tasks/${task.id}`,
+      headers: signed,
+    });
+    assert.equal(scoped.statusCode, 200, scoped.body);
+    assert.equal(scoped.json().task.visibility, 'private');
+
+    // Without a project in the path there is no secret to check against, so
+    // a signature proves nothing here.
+    const bare = await h.app.inject({ method: 'GET', url: `/api/v1/tasks/${task.id}`, headers: signed });
+    assert.equal(bare.statusCode, 404, 'a signature is meaningless without a project');
+  });
+});
+
+test('a private task is readable by an administrator, by either path', async () => {
+  const pipeline = DEFAULT_PIPELINE.replace('version: 1\n', 'version: 1\nvisibility: private\n');
+  // scrypt is slow, so the harness only creates the admin when asked.
+  await withHarness({ pipeline, bootstrap: true }, async (h) => {
+    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const task = await claimNamed(h, 'lint', {});
+    const { cookie } = await h.login();
+
+    for (const url of taskUrls(task.id)) {
+      const res = await h.app.inject({ method: 'GET', url, headers: { cookie } });
+      assert.equal(res.statusCode, 200, `${url}: ${res.body}`);
+      assert.equal(res.json().task.id, task.id);
+    }
+  });
+});
+
+test('a task of another project cannot be read through this one', async () => {
+  await withHarness({}, async (h) => {
+    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const task = await claimNamed(h, 'lint', {});
+
+    const res = await h.app.inject({
+      method: 'GET',
+      url: `/api/v1/projects/absent/tasks/${task.id}`,
+      headers: { 'content-type': 'application/json', 'x-hub-signature-256': h.sign('') },
+    });
+    assert.equal(res.statusCode, 404);
+  });
+});
+
+test('an unknown task is 404 by either path', async () => {
+  await withHarness({}, async (h) => {
+    for (const url of taskUrls('m2y0000000000000nope')) {
+      const res = await h.app.inject({ method: 'GET', url });
+      assert.equal(res.statusCode, 404, `${url} should be 404`);
+      assert.equal(res.json().error, 'unknown task');
+    }
+  });
+});
+
 test('the worker api rejects missing and invalid tokens', async () => {
   await withHarness({}, async (h) => {
     const none = await h.app.inject({ method: 'POST', url: '/api/v1/tasks/claim' });
@@ -710,7 +910,7 @@ tasks:
     assert.deepEqual(outcome.skipped, []);
 
     const after = await claimNamed(h, 'after', {});
-    assert.ok(after, 'dependent should still job after an allowed failure');
+    assert.ok(after, 'dependent should still run after an allowed failure');
     const last = await finish(h, after.id, { success: true });
     assert.equal(last.job_state, 'success');
     assert.equal((await jobState(h, job)).job.state, 'success');
