@@ -2,7 +2,8 @@
 # hooks/post-receive - notify conductors of pushed commits
 #
 # Install into a bare repository as hooks/post-receive, chmod +x.
-# Reads "<old> <new> <ref>" per pushed ref on stdin.
+# Reads "<old> <new> <ref>" per pushed ref on stdin. Branches and tags are
+# forwarded; a pipeline decides what to build with an only: refs rule.
 #
 # Expects conductor.conf in the parent directory with lines:
 #   <trigger_url> <secret>
@@ -68,25 +69,31 @@ trigger() {
 
 while read -r old new ref; do
   if [ "${new}" = "${ZERO}" ]; then
-    log "skipping ${ref}, branch deleted"
+    log "skipping ${ref}, deleted"
     continue
   fi
 
   case "${ref}" in
-    refs/heads/*) ;;
+    refs/heads/*|refs/tags/*) ;;
     *) log "skipping ${ref}"; continue ;;
   esac
+
+  # An annotated tag names a tag object, and the conductor wants the commit.
+  sha=$(git rev-parse --verify --quiet "${new}^{commit}") || {
+    log "skipping ${ref}, not a commit"
+    continue
+  }
 
   if [ "${old}" = "${ZERO}" ]; then
     base=""
   else
-    base="${old}"
+    base=$(git rev-parse --verify --quiet "${old}^{commit}" || true)
   fi
 
   payload=$(printf '{"sha":"%s","base":"%s","ref":"%s","actor":"%s"}' \
-    "${new}" "${base}" "${ref}" "${USER:-git}")
+    "${sha}" "${base}" "${ref}" "${USER:-git}")
 
-  log "triggering ${ref} at $(echo "${new}" | cut -c1-12)"
+  log "triggering ${ref} at $(echo "${sha}" | cut -c1-12)"
 
   while IFS= read -r line; do
     case "${line}" in
