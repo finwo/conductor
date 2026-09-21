@@ -23,18 +23,12 @@ PORT="${SMOKE_PORT:-18500}"
 PROJECT=conductor-smoke
 SECRET=smoke-trigger-secret
 
-# When running inside a container (e.g. CI task), 127.0.0.1 refers to the
-# container itself, not the Docker host where published ports live. Detect
-# the gateway IP so curl can reach back out.
-if [ -n "${SMOKE_HOST:-}" ]; then
-  : # explicit override
-elif [ -f /proc/1/root/.dockerenv ]; then
-  SMOKE_HOST=$(ip route | awk '/default/{print $3; exit}') || \
-    SMOKE_HOST=$(route -n | awk '$2 ~ /^172\./{print $2; exit}') || \
-    SMOKE_HOST=127.0.0.1
-else
-  SMOKE_HOST=127.0.0.1
+# Published ports live on the docker host, which is the gateway when this
+# runs in a container, as it does in CI.
+if [ -z "${SMOKE_HOST:-}" ] && [ -f /.dockerenv ]; then
+  SMOKE_HOST=$(ip route 2>/dev/null | awk '/^default/{print $3; exit}')
 fi
+SMOKE_HOST="${SMOKE_HOST:-127.0.0.1}"
 
 
 
@@ -102,7 +96,6 @@ services:
       CONDUCTOR_ADMIN_PASSWORD: smoke-admin-password
     volumes:
       - smoke-data:/data
-      - ${WORK}/repo:/repo:ro
   worker:
     image: conductor-worker:smoke
     depends_on: [conductor]
@@ -122,8 +115,6 @@ compose() { SMOKE_TOKEN="${SMOKE_TOKEN:-unused}" docker compose -p "${PROJECT}" 
 log "starting the conductor"
 compose up -d conductor
 
-# All curl requests go through port publishing. The container IP is not
-# reachable because the smoke test runs in its own network namespace.
 BASE_URL="http://${SMOKE_HOST}:${PORT}"
 printf 'using %s\n' "${BASE_URL}"
 
@@ -139,6 +130,17 @@ if [ "${i}" -ge 60 ]; then
 fi
 curl -fsS "${BASE_URL}/health"
 printf '\n'
+
+# Copied rather than bind mounted: the daemon resolves a mount source on the
+# host, where a path made in this container does not exist.
+log "copying the repository into the conductor"
+CONDUCTOR_CID=$(compose ps -q conductor)
+[ -n "${CONDUCTOR_CID}" ] || fail "the conductor container is not running"
+docker cp "${WORK}/repo" "${CONDUCTOR_CID}:/repo"
+# docker cp writes as root; git refuses a repository owned by somebody else.
+docker exec -u 0 "${CONDUCTOR_CID}" chown -R conductor:conductor /repo
+compose exec -T conductor git -C /repo rev-parse HEAD >/dev/null \
+  || fail "the copied repository is not readable inside the conductor"
 
 log "registering the project and a worker"
 compose exec -T conductor node src/admin-cli.js project:add demo /repo --secret "${SECRET}" >/dev/null
@@ -161,21 +163,23 @@ printf '%s\n' "${RESPONSE}"
 JOB=$(printf '%s' "${RESPONSE}" | sed 's/.*"job_id":"\([^"]*\)".*/\1/')
 [ -n "${JOB}" ] || fail "no job was created"
 
-# The job state is the first badge on the job page.
+# The job state is the first badge on the job page. A job still being
+# compiled is not readable yet, so a refusal is just another turn.
 job_state() {
-  curl -fsS "${BASE_URL}/jobs/$1" \
+  curl -fsS "${BASE_URL}/jobs/$1" 2>/dev/null \
     | sed -n 's/.*class="badge \([a-z]*\)".*/\1/p' | head -1
 }
 
-# Verify /jobs is reachable before the main loop; if it's not, dump
-# diagnostic info rather than spinning silently for 90 seconds.
-sleep 1
-HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' "${BASE_URL}/jobs/${JOB}")
-if [ "${HTTP_CODE}" != "200" ]; then
-  printf '/jobs/%s returned %s (expected 200)\n' "${JOB}" "${HTTP_CODE}" >&2
-  curl -s "${BASE_URL}/jobs/" | head -20 >&2
-  compose logs conductor | tail -20 >&2
-fi
+# A pipeline that fails to compile is recorded on the job row and nowhere
+# else, and leaves the job private, which reads here as a 404.
+job_row() {
+  compose exec -T conductor node --input-type=module -e "
+    import { DatabaseSync } from 'node:sqlite';
+    const db = new DatabaseSync(process.env.CONDUCTOR_DATABASE_PATH);
+    const row = db.prepare('SELECT state, visibility, error FROM jobs WHERE id = ?').get('$1');
+    console.log(JSON.stringify(row));
+  " 2>/dev/null || true
+}
 
 log "waiting for the job to finish"
 STATE_NOW=
@@ -185,12 +189,19 @@ while [ "${i}" -lt 90 ]; do
   case "${STATE_NOW}" in
     success|failed|cancelled) break ;;
   esac
+  # An unreadable job page does not become readable by waiting it out.
+  if [ -z "${STATE_NOW}" ] && [ "${i}" -ge 10 ]; then
+    printf 'the job page stayed unreadable\njob row: %s\n' "$(job_row "${JOB}")" >&2
+    compose logs conductor | tail -20 >&2
+    fail "the job never became readable"
+  fi
   i=$((i + 1))
   sleep 1
 done
 
 printf 'job %s finished as %s after %ss\n' "${JOB}" "${STATE_NOW}" "${i}"
 [ "${STATE_NOW}" = success ] || {
+  printf 'job row: %s\n' "$(job_row "${JOB}")"
   compose logs worker | tail -30
   fail "the job ended as ${STATE_NOW}"
 }
@@ -252,10 +263,9 @@ BRANCH=$(curl -fsS -X POST "${BASE_URL}/api/v1/projects/demo/trigger" \
   -d "${BRANCH_BODY}")
 printf '%s\n' "${BRANCH}"
 
-printf '%s' "${BRANCH}" | grep -q '"tasks":2' \
-  || fail "expected 2 tasks on a branch, got: ${BRANCH}"
-
 BRANCH_JOB=$(printf '%s' "${BRANCH}" | sed 's/.*"job_id":"\([^"]*\)".*/\1/')
+[ -n "${BRANCH_JOB}" ] || fail "no branch job was created"
+
 i=0
 while [ "${i}" -lt 90 ]; do
   BRANCH_STATE=$(job_state "${BRANCH_JOB}")
@@ -266,10 +276,18 @@ while [ "${i}" -lt 90 ]; do
   sleep 1
 done
 
-curl -fsS "${BASE_URL}/jobs/${BRANCH_JOB}" | grep -q '>release<' \
+# The trigger only records the job, so the tasks are counted off the
+# finished job rather than the response.
+BRANCH_PAGE=$(curl -fsS "${BASE_URL}/jobs/${BRANCH_JOB}")
+BRANCH_TASKS=$(printf '%s' "${BRANCH_PAGE}" | grep -c 'href="/tasks/')
+[ "${BRANCH_TASKS}" -eq 2 ] \
+  || fail "expected 2 tasks on a branch, got ${BRANCH_TASKS}"
+
+printf '%s' "${BRANCH_PAGE}" | grep -q '>release<' \
   && fail "the release task should not exist on a branch job"
 
-printf 'branch job finished as %s without the release task\n' "${BRANCH_STATE}"
+printf 'branch job finished as %s with %s tasks and no release task\n' \
+  "${BRANCH_STATE}" "${BRANCH_TASKS}"
 [ "${BRANCH_STATE}" = success ] || fail "the branch job ended as ${BRANCH_STATE}"
 
 printf '\nPASSED\n'
