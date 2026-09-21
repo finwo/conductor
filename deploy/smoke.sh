@@ -94,9 +94,10 @@ name: ${PROJECT}
 services:
   conductor:
     image: conductor:smoke
-    ports: ["${PORT}:8080"]
+    ports: ["${PORT}:9080"]
     environment:
-      CONDUCTOR_PUBLIC_URL: http://conductor:8080
+      CONDUCTOR_PORT: "9080"
+      CONDUCTOR_PUBLIC_URL: http://conductor:9080
       CONDUCTOR_SESSION_SECRET: smoke-session-secret
       CONDUCTOR_ADMIN_PASSWORD: smoke-admin-password
     volumes:
@@ -106,7 +107,7 @@ services:
     image: conductor-worker:smoke
     depends_on: [conductor]
     environment:
-      CONDUCTOR_URL: http://conductor:8080
+      CONDUCTOR_URL: http://conductor:9080
       CONDUCTOR_WORKER_NAME: smoke-worker
       CONDUCTOR_WORKER_TOKEN: "\${SMOKE_TOKEN}"
       CONDUCTOR_WORKER_CONCURRENCY: "2"
