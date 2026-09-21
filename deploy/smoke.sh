@@ -122,9 +122,14 @@ compose() { SMOKE_TOKEN="${SMOKE_TOKEN:-unused}" docker compose -p "${PROJECT}" 
 log "starting the conductor"
 compose up -d conductor
 
+# All curl requests go through port publishing. The container IP is not
+# reachable because the smoke test runs in its own network namespace.
+BASE_URL="http://${SMOKE_HOST}:${PORT}"
+printf 'using %s\n' "${BASE_URL}"
+
 i=0
 while [ "${i}" -lt 60 ]; do
-  curl -fsS -m 2 "http://${SMOKE_HOST}:${PORT}/health" >/dev/null 2>&1 && break
+  curl -fsS -m 2 "${BASE_URL}/health" >/dev/null 2>&1 && break
   i=$((i + 1))
   sleep 1
 done
@@ -132,17 +137,8 @@ if [ "${i}" -ge 60 ]; then
   compose logs conductor | tail -40
   fail "the conductor did not become healthy"
 fi
-curl -fsS "http://${SMOKE_HOST}:${PORT}/health"
+curl -fsS "${BASE_URL}/health"
 printf '\n'
-
-# Use the container's internal IP for reliable access. Port publishing from
-# one container to another is unreliable (127.0.0.1 refers to the caller,
-# and gateway IPs vary by host). The container IP is always reachable via
-# the Docker bridge network.
-CONTAINER_IP=$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${PROJECT}-conductor-1")
-[ -n "${CONTAINER_IP}" ] || fail "could not determine conductor container IP"
-BASE_URL="http://${CONTAINER_IP}:9080"
-printf 'using %s\n' "${BASE_URL}"
 
 log "registering the project and a worker"
 compose exec -T conductor node src/admin-cli.js project:add demo /repo --secret "${SECRET}" >/dev/null
@@ -170,6 +166,16 @@ job_state() {
   curl -fsS "${BASE_URL}/jobs/$1" \
     | sed -n 's/.*class="badge \([a-z]*\)".*/\1/p' | head -1
 }
+
+# Verify /jobs is reachable before the main loop; if it's not, dump
+# diagnostic info rather than spinning silently for 90 seconds.
+sleep 1
+HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' "${BASE_URL}/jobs/${JOB}")
+if [ "${HTTP_CODE}" != "200" ]; then
+  printf '/jobs/%s returned %s (expected 200)\n' "${JOB}" "${HTTP_CODE}" >&2
+  curl -s "${BASE_URL}/jobs/" | head -20 >&2
+  compose logs conductor | tail -20 >&2
+fi
 
 log "waiting for the job to finish"
 STATE_NOW=
