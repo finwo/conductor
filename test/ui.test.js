@@ -8,6 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { startHarness } from './helpers/harness.js';
 import { html, esc, raw, toHtml, attrs } from '../src/conductor/ui/html.js';
+import { tasksTable } from '../src/conductor/ui/pages.js';
 
 async function withUi(options, fn) {
   const h = await startHarness({ bootstrap: true, ...options });
@@ -358,6 +359,32 @@ test('a mutation without the htmx header is refused', async () => {
 });
 
 // --- layout details ---
+
+test('the task graph is one table, so columns line up across stages', () => {
+  const job = { id: 'j1', state: 'running' };
+  const tasks = [
+    { id: 't1', name: 'style', state: 'success', arch: 'x86-64', worker_name: 'w1', started_at: 1, finished_at: 2, exit_code: 0, needs: [] },
+    { id: 't2', name: 'test', state: 'success', arch: null, worker_name: 'w2', started_at: 1, finished_at: 2, exit_code: 0, needs: [] },
+    { id: 't3', name: 'images', state: 'queued', arch: null, worker_name: null, started_at: null, finished_at: null, exit_code: null, needs: ['t1', 't2'] },
+    { id: 't4', name: 'publish', state: 'queued', arch: null, worker_name: null, started_at: null, finished_at: null, exit_code: null, needs: ['t3'] },
+  ];
+
+  const out = toHtml(tasksTable(job, tasks));
+
+  // Three stages, and one table holding all of them. A table per stage
+  // sizes its own columns, which is what put the same field in a
+  // different place in every stage.
+  assert.equal((out.match(/<tbody/g) ?? []).length, 3, 'expected one row group per stage');
+  assert.equal((out.match(/<table/g) ?? []).length, 1, 'stages must share a single table');
+  assert.match(out, /stage 1/);
+  assert.match(out, /stage 3/);
+
+  // Every task row carries the same six cells, so a column means the same
+  // thing all the way down.
+  for (const row of out.match(/<tr>\s*<td>.*?<\/tr>/gs) ?? []) {
+    assert.equal((row.match(/<td/g) ?? []).length, 6, `row has the wrong cell count: ${row}`);
+  }
+});
 
 test('the sign in form is centred rather than stranded at the left edge', async () => {
   await withUi({}, async (h) => {

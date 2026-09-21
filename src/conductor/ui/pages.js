@@ -92,21 +92,26 @@ export function tasksTable(job, tasks) {
     stages.get(depth).push(task);
   }
 
+  // One table for the whole graph. A table per stage sizes its own
+  // columns, so the same field landed in a different place in every
+  // stage and the eye had nothing to follow down the page.
   return html`<div id="tasks" ${live ? poll(`/partials/jobs/${job.id}/tasks`, 3) : ''}>
-    ${[...stages.keys()].sort((a, b) => a - b).map((depth) => html`
-      <div class="stage">
-        <h3>stage ${depth + 1}</h3>
-        <table><tbody>
-          ${stages.get(depth).sort((a, b) => a.name.localeCompare(b.name)).map((task) => html`<tr>
-            <td><a href="/tasks/${task.id}">${task.name}</a></td>
-            <td>${badge(task.state)}</td>
-            <td class="muted">${task.arch ?? ''}</td>
-            <td class="muted">${task.worker_name ?? ''}</td>
-            <td class="muted">${duration(task.started_at, task.finished_at)}</td>
-            <td class="muted">${task.exit_code === null ? '' : `exit ${task.exit_code}`}</td>
-          </tr>`)}
-        </tbody></table>
-      </div>`)}
+    <table class="tasks">
+      <thead><tr>
+        <th>task</th><th>state</th><th>arch</th><th>worker</th><th>duration</th><th>exit</th>
+      </tr></thead>
+      ${[...stages.keys()].sort((a, b) => a - b).map((depth) => html`<tbody class="stage">
+        <tr class="stage-label"><th colspan="6">stage ${depth + 1}</th></tr>
+        ${stages.get(depth).sort((a, b) => a.name.localeCompare(b.name)).map((task) => html`<tr>
+          <td><a href="/tasks/${task.id}">${task.name}</a></td>
+          <td>${badge(task.state)}</td>
+          <td class="muted">${task.arch ?? ''}</td>
+          <td class="muted">${task.worker_name ?? ''}</td>
+          <td class="muted num">${duration(task.started_at, task.finished_at)}</td>
+          <td class="muted num">${task.exit_code === null ? '' : `exit ${task.exit_code}`}</td>
+        </tr>`)}
+      </tbody>`)}
+    </table>
   </div>`;
 }
 
