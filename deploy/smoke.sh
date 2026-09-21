@@ -42,8 +42,8 @@ cleanup() {
 trap cleanup EXIT
 
 log "building images"
-docker build -q -f "${ROOT}/deploy/Dockerfile" -t conductor:smoke "${ROOT}" >/dev/null
-docker build -q -f "${ROOT}/deploy/Dockerfile.worker" -t conductor-worker:smoke "${ROOT}" >/dev/null
+docker build -q -f "${ROOT}/deploy/Dockerfile" -t conductor:smoke "${ROOT}"
+docker build -q -f "${ROOT}/deploy/Dockerfile.worker" -t conductor-worker:smoke "${ROOT}"
 
 log "preparing a repository"
 mkdir -p "${WORK}/repo"
@@ -106,7 +106,7 @@ COMPOSE
 compose() { SMOKE_TOKEN="${SMOKE_TOKEN:-unused}" docker compose -p "${PROJECT}" -f "${WORK}/compose.yml" "$@"; }
 
 log "starting the conductor"
-compose up -d conductor >/dev/null 2>&1
+compose up -d conductor
 
 i=0
 while [ "${i}" -lt 60 ]; do
@@ -114,7 +114,10 @@ while [ "${i}" -lt 60 ]; do
   i=$((i + 1))
   sleep 1
 done
-[ "${i}" -lt 60 ] || fail "the conductor did not become healthy"
+if [ "${i}" -ge 60 ]; then
+  compose logs conductor | tail -40
+  fail "the conductor did not become healthy"
+fi
 curl -fsS "http://127.0.0.1:${PORT}/health"
 printf '\n'
 
@@ -125,7 +128,7 @@ SMOKE_TOKEN=$(compose exec -T conductor node src/admin-cli.js token:add smoke-wo
 export SMOKE_TOKEN
 
 log "starting the worker"
-compose up -d worker >/dev/null 2>&1
+compose up -d worker
 
 log "triggering a job"
 BODY=$(printf '{"sha":"%s","ref":"refs/heads/main"}' "${SHA}")
