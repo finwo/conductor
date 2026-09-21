@@ -274,9 +274,16 @@ CONDUCTOR_WORKER_IMAGE=finwo/conductor-worker:1.2.3 \
   docker compose -f deploy/docker-compose.yml up -d
 ```
 
-Workers can be upgraded independently and in any order. The worker API is
-the boundary between them, and a worker that goes away mid-task has that task
-requeued after `scheduler.heartbeat_timeout`.
+Workers are usually upgraded independently and in any order. The worker API
+is the boundary between them, and a worker that goes away mid-task has that
+task requeued after `scheduler.heartbeat_timeout`.
+
+Two releases break that, and need the conductor and every worker restarted
+together: **0.5.0**, which put every API response in an envelope, and
+**0.3.0**, which changed what a worker claims. Across either boundary a
+worker of the older version cannot read what the conductor sends, so it
+claims nothing until it is upgraded. Pull on every host first and restart
+afterwards, so the window is seconds rather than the length of a download.
 
 Publishing
 ----------

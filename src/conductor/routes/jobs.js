@@ -21,10 +21,18 @@
 import { SHA_PATTERN } from '../../lib/git.js';
 import { canManageProject } from '../../lib/projects.js';
 import { verifySignature } from '../../lib/signature.js';
+import { ok } from './envelope.js';
+import {
+  InvalidSha, InvalidSignature, MalformedJson, NoCommitInPayload,
+  ProjectDisabled, ShaRequired, UnknownJob, UnknownProject,
+} from '../../lib/errors.js';
+import { limitOf, offsetOfQuery, pageBlock, paginateOffset } from '../../lib/page.js';
 
 const ZERO_SHA = '0'.repeat(40);
 
-export default async function jobRoutes(fastify, { auth, db, projects, scheduler, logger }) {
+export default async function jobRoutes(fastify, { cfg, auth, db, projects, scheduler, logger }) {
+  const base = cfg.server.public_url.replace(/\/+$/, '');
+
   // HMAC is computed over the exact bytes received, so the raw body has to
   // survive JSON parsing.
   fastify.addContentTypeParser('application/json', { parseAs: 'buffer' }, (req, body, done) => {
@@ -32,31 +40,20 @@ export default async function jobRoutes(fastify, { auth, db, projects, scheduler
     if (body.length === 0) return done(null, {});
     try {
       done(null, JSON.parse(body.toString('utf8')));
-    } catch (e) {
-      e.statusCode = 400;
-      done(e);
+    } catch {
+      done(new MalformedJson());
     }
   });
 
   // Shared by both creation routes: resolve the project, check the secret.
-  // Returns null once it has already answered.
-  async function authorizedProject(req, reply) {
+  async function authorizedProject(req) {
     const project = await projects.get(req.params.project);
-    if (!project) {
-      reply.code(404).send({ error: 'unknown project' });
-      return null;
-    }
-    if (project.enabled !== 1) {
-      reply.code(409).send({ error: 'project is disabled' });
-      return null;
-    }
+    if (!project) throw new UnknownProject();
+    if (project.enabled !== 1) throw new ProjectDisabled();
 
     const secret = projects.triggerSecret(project);
     if (secret) {
-      if (!verifySignature(req, secret)) {
-        reply.code(401).send({ error: 'invalid or missing signature' });
-        return null;
-      }
+      if (!verifySignature(req, secret)) throw new InvalidSignature();
     } else {
       logger.warn?.(`project ${project.id} accepted an unsigned request; set a trigger secret`);
     }
@@ -65,54 +62,49 @@ export default async function jobRoutes(fastify, { auth, db, projects, scheduler
 
   // Records the job as pending and returns immediately. Pipeline compilation
   // runs in the background; errors surface as the job transitioning to 'failed'.
-  async function create(reply, req, project, { ref, base, sha, actor, trigger }) {
+  async function create(reply, project, { ref, base: baseSha, sha, actor, trigger }) {
     const { jobId } = await scheduler.createJob(project, {
       ref,
-      baseSha: base,
+      baseSha,
       headSha: sha,
       trigger,
       actor,
     });
-    return reply.send({ status: 'created', job_id: jobId });
+    return ok(reply, { status: 'created', job_id: jobId });
   }
 
   fastify.post('/projects/:project/trigger', async (req, reply) => {
-    const project = await authorizedProject(req, reply);
-    if (!project) return reply;
+    const project = await authorizedProject(req);
 
     const push = normalizePush(req.body);
-    if (!push) {
-      return reply.code(400).send({
-        error: 'could not read a commit from the payload; expected sha, or a GitHub, Gitea or GitLab push event',
-      });
-    }
+    if (!push) throw new NoCommitInPayload();
+
     // A branch deletion is not a thing to build, and saying so is more
     // useful than refusing it.
     if (push.sha === ZERO_SHA) {
-      return reply.send({ status: 'ignored', reason: 'branch deletion' });
+      return ok(reply, { status: 'ignored', reason: 'branch deletion' });
     }
     if (!SHA_PATTERN.test(push.sha)) {
-      return reply.code(400).send({ error: `not a full commit id: ${JSON.stringify(push.sha)}` });
+      throw new InvalidSha(`Not a full commit id: ${JSON.stringify(push.sha)}`);
     }
 
-    return create(reply, req, project, { ...push, trigger: 'push' });
+    return create(reply, project, { ...push, trigger: 'push' });
   });
 
   // The deliberate form. Same authentication, no payload archaeology: a
   // caller that means to start a build says so, and a missing or malformed
   // commit is an error rather than something to infer.
   fastify.post('/projects/:project/jobs', async (req, reply) => {
-    const project = await authorizedProject(req, reply);
-    if (!project) return reply;
+    const project = await authorizedProject(req);
 
     const body = req.body ?? {};
     const sha = typeof body.sha === 'string' ? body.sha : null;
-    if (!sha) return reply.code(400).send({ error: 'sha is required' });
+    if (!sha) throw new ShaRequired();
     if (!SHA_PATTERN.test(sha)) {
-      return reply.code(400).send({ error: `not a full commit id: ${JSON.stringify(sha)}` });
+      throw new InvalidSha(`Not a full commit id: ${JSON.stringify(sha)}`);
     }
 
-    return create(reply, req, project, {
+    return create(reply, project, {
       sha,
       base: usableSha(body.base),
       ref: typeof body.ref === 'string' ? body.ref : null,
@@ -130,7 +122,7 @@ export default async function jobRoutes(fastify, { auth, db, projects, scheduler
   // which jobs exist.
   fastify.get('/projects/:project/jobs/:job', async (req, reply) => {
     const project = await projects.get(req.params.project);
-    if (!project) return reply.code(404).send({ error: 'unknown job' });
+    if (!project) throw new UnknownJob();
 
     const job = await db.get(
       `SELECT id, project_id, number, ref, head_sha, trigger_type, actor, title,
@@ -139,22 +131,24 @@ export default async function jobRoutes(fastify, { auth, db, projects, scheduler
         WHERE id = {id} AND project_id = {project}`,
       { id: req.params.job, project: project.id }
     );
-    if (!job) return reply.code(404).send({ error: 'unknown job' });
+    if (!job) throw new UnknownJob();
 
     if (job.visibility !== 'public' && !(await mayRead(req, project))) {
-      return reply.code(404).send({ error: 'unknown job' });
+      throw new UnknownJob();
     }
 
-    const tasks = await db.all(
-      `SELECT id, name, state, arch, attempt, exit_code, error,
-              worker_name, created_at, started_at, finished_at
-         FROM tasks
-        WHERE job_id = {job}
-        ORDER BY created_at, name`,
-      { job: job.id }
-    );
+    const window = await paginateOffset(db, {
+      select: `id, name, state, arch, attempt, exit_code, error,
+               worker_name, created_at, started_at, finished_at`,
+      from: 'tasks',
+      where: 'job_id = {job}',
+      order: 'created_at, name',
+      params: { job: job.id },
+      offset: offsetOfQuery(req.query),
+      limit: limitOf(req.query),
+    });
 
-    return reply.send({ job, tasks });
+    return ok(reply, { job, tasks: window.rows }, pageBlock({ ...window, url: base + req.url }));
   });
 
   async function mayRead(req, project) {

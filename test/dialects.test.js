@@ -18,7 +18,7 @@ import path from 'node:path';
 
 import { startDatabase, dialectAvailable } from './helpers/database.js';
 import { openDatabase, runMigrations, dialectFromUrl } from '../src/lib/db/index.js';
-import { paginate } from '../src/lib/page.js';
+import { paginate, paginateOffset, pageBlock } from '../src/lib/page.js';
 import { createStorage } from '../src/lib/storage/index.js';
 import { createLogStore } from '../src/lib/log.js';
 import { createRetention } from '../src/conductor/retention.js';
@@ -116,6 +116,22 @@ for (const dialect of ['postgres', 'mysql']) {
         select: 'id', from: 'jobs', order: 'number', page: 3, perPage: 2,
       });
       assert.deepEqual(lastPage.rows.map((r) => r.id), ['r5'], 'the offset landed wrong');
+
+      // The API pages by offset over the same binding, and its total feeds
+      // the decision to send a next url at all, so it has to be a number
+      // here for the same reason.
+      const window = await paginateOffset(db, {
+        select: 'id', from: 'jobs', order: 'number', offset: 2, limit: 2,
+      });
+      assert.deepEqual(window.rows.map((r) => r.id), ['r3', 'r4']);
+      assert.equal(typeof window.total, 'number', 'COUNT came back as a string');
+      assert.equal(window.total, 5);
+
+      const tail = await paginateOffset(db, {
+        select: 'id', from: 'jobs', order: 'number', offset: 4, limit: 2,
+      });
+      assert.deepEqual(tail.rows.map((r) => r.id), ['r5']);
+      assert.ok(!('next' in pageBlock({ url: 'https://x.test/j', ...tail })), 'that was the last page');
 
       const retention = createRetention({ cfg, db, storage, logs, logger: {} });
 

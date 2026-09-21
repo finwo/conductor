@@ -22,29 +22,38 @@ import { hashingTransform } from '../../lib/stream.js';
 import { sanitizeRelativePath, keys as storageKeys } from '../../lib/storage/index.js';
 import { maskBuffer } from '../../lib/variables.js';
 import { newArtifactId } from '../../lib/ids.js';
+import { ok } from './envelope.js';
+import {
+  ArtifactSizeMismatch, ContentLengthRequired, InvalidArtifactPath, InvalidLogOffset,
+  InvalidWorkerToken, LogChunkTooLarge, LogOffsetConflict, TaskNotHeld, TaskNotRunning,
+  UnknownProject, UnknownTask,
+} from '../../lib/errors.js';
 
 // Log chunks are small and frequent; artifacts are streamed, so this only
 // bounds a single log append.
 const LOG_CHUNK_LIMIT = 1024 * 1024;
+
+const COMPLETE_FAILURES = {
+  'unknown-task': UnknownTask,
+  'not-held': TaskNotHeld,
+  'not-running': TaskNotRunning,
+};
 
 export default async function workerRoutes(fastify, { cfg, db, git, logs, storage, projects, scheduler, workerTokens, variables }) {
   // Raw bodies: log chunks and artifacts arrive as octet streams and must
   // not be parsed.
   fastify.addContentTypeParser('application/octet-stream', (req, payload, done) => done(null, payload));
 
-  async function requireWorker(req, reply) {
+  async function requireWorker(req) {
     const header = req.headers.authorization || '';
     const presented = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
     const token = await workerTokens.verify(presented, { ip: req.ip });
-    if (!token) {
-      reply.code(401).send({ error: 'invalid or missing worker token' });
-      return;
-    }
+    if (!token) throw new InvalidWorkerToken();
     req.worker = token;
   }
 
   // Confirms the task exists and is held by the calling worker.
-  async function heldTask(req, reply) {
+  async function heldTask(req) {
     const task = await db.get(
       `SELECT t.id, t.job_id, t.name, t.state, t.worker_token_id, t.log_size, t.spec,
               j.project_id, j.head_sha
@@ -52,14 +61,8 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
         WHERE t.id = {id}`,
       { id: req.params.task }
     );
-    if (!task) {
-      reply.code(404).send({ error: 'unknown task' });
-      return null;
-    }
-    if (task.worker_token_id !== req.worker.id) {
-      reply.code(403).send({ error: 'task is not held by this worker' });
-      return null;
-    }
+    if (!task) throw new UnknownTask();
+    if (task.worker_token_id !== req.worker.id) throw new TaskNotHeld();
     return task;
   }
 
@@ -86,7 +89,7 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
     const base = cfg.server.public_url.replace(/\/+$/, '');
     const at = (suffix) => `${base}/api/v1/tasks/${task.id}/${suffix}`;
 
-    return reply.send({
+    return ok(reply, {
       task: {
         id: task.id,
         name: task.name,
@@ -128,11 +131,10 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
 
   // The tree at the task's commit, as a gzipped tar.
   fastify.get('/tasks/:task/source.tar.gz', async (req, reply) => {
-    const task = await heldTask(req, reply);
-    if (!task) return reply;
+    const task = await heldTask(req);
 
     const project = await projects.get(task.project_id);
-    if (!project) return reply.code(404).send({ error: 'unknown project' });
+    if (!project) throw new UnknownProject();
 
     // The tree rooted at the archive, with no wrapping directory: a
     // worker extracts it at whatever path the task is to run in, and
@@ -145,22 +147,19 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
   // Append to the live log. X-Log-Offset makes a retry after a dropped
   // connection safe.
   fastify.post('/tasks/:task/log', { bodyLimit: LOG_CHUNK_LIMIT }, async (req, reply) => {
-    const task = await heldTask(req, reply);
-    if (!task) return reply;
+    const task = await heldTask(req);
 
     const chunks = [];
     let total = 0;
     for await (const chunk of req.body) {
       total += chunk.length;
-      if (total > LOG_CHUNK_LIMIT) return reply.code(413).send({ error: 'log chunk too large' });
+      if (total > LOG_CHUNK_LIMIT) throw new LogChunkTooLarge();
       chunks.push(chunk);
     }
 
     const rawOffset = req.headers['x-log-offset'];
     const offset = rawOffset === undefined ? undefined : Number(rawOffset);
-    if (offset !== undefined && !Number.isInteger(offset)) {
-      return reply.code(400).send({ error: 'x-log-offset must be an integer' });
-    }
+    if (offset !== undefined && !Number.isInteger(offset)) throw new InvalidLogOffset();
 
     // The worker masks before sending; this repeats it on ingest so a
     // worker that does not still cannot write a secret to disk. It works
@@ -178,11 +177,11 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
       const result = await logs.append(task.job_id, task.id, payload, offset);
       await db.run('UPDATE tasks SET log_size = {size}, heartbeat_at = {now} WHERE id = {id}',
         { id: task.id, size: result.size, now: Date.now() });
-      return reply.send(result);
+      return ok(reply, result);
     } catch (e) {
+      // Tell the worker where to resume from.
       if (e instanceof LogOffsetError) {
-        // Tell the worker where to resume from.
-        return reply.code(409).send({ error: e.message, expected_offset: e.expected });
+        throw new LogOffsetConflict(e.message, { details: { expected_offset: e.expected } });
       }
       throw e;
     }
@@ -207,16 +206,13 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
   // Upload one artifact. The path is worker supplied, so it is sanitized
   // before it can influence a storage key.
   fastify.post('/tasks/:task/artifacts', async (req, reply) => {
-    const task = await heldTask(req, reply);
-    if (!task) return reply;
+    const task = await heldTask(req);
 
     const relPath = sanitizeRelativePath(req.headers['x-artifact-path']);
-    if (!relPath) return reply.code(400).send({ error: 'x-artifact-path is missing or unusable' });
+    if (!relPath) throw new InvalidArtifactPath();
 
     const declared = Number(req.headers['content-length']);
-    if (!Number.isInteger(declared) || declared < 0) {
-      return reply.code(411).send({ error: 'content-length is required for artifact uploads' });
-    }
+    if (!Number.isInteger(declared) || declared < 0) throw new ContentLengthRequired();
 
     // Hash on the way past, so the digest costs nothing extra even when the
     // backend cannot report one.
@@ -232,9 +228,7 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
     } catch (e) {
       // A body shorter or longer than content-length is the worker's
       // mistake, not a server fault.
-      if (/size mismatch/.test(e.message)) {
-        return reply.code(400).send({ error: e.message });
-      }
+      if (/size mismatch/.test(e.message)) throw new ArtifactSizeMismatch(e.message);
       throw e;
     }
 
@@ -259,21 +253,20 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
       }
     );
 
-    return reply.send({ path: relPath, size: stored.size ?? declared, sha256: digest });
+    return ok(reply, { path: relPath, size: stored.size ?? declared, sha256: digest });
   });
 
   // Keeps the task alive, and is how a worker learns it should stop.
   fastify.post('/tasks/:task/heartbeat', async (req, reply) => {
     const result = await scheduler.heartbeat(req.params.task, req.worker.id);
-    if (!result.known) return reply.code(404).send({ error: 'unknown task for this worker' });
-    return reply.send({ cancelled: result.cancelled, state: result.state });
+    if (!result.known) throw new UnknownTask('No such task for this worker');
+    return ok(reply, { cancelled: result.cancelled, state: result.state });
   });
 
   // Report the outcome. The log is copied to storage here, whatever the
   // result, so a failed task keeps its output.
   fastify.post('/tasks/:task/complete', async (req, reply) => {
-    const task = await heldTask(req, reply);
-    if (!task) return reply;
+    const task = await heldTask(req);
 
     const body = req.body ?? {};
     const success = body.success === true;
@@ -286,7 +279,12 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
       error,
       tokenId: req.worker.id,
     });
-    if (!outcome.ok) return reply.code(409).send({ error: outcome.reason });
+    // All 409: by this point heldTask has already answered for a task that
+    // does not exist or is not ours, so these are races rather than mistakes.
+    if (!outcome.ok) {
+      const Failure = COMPLETE_FAILURES[outcome.cause] ?? TaskNotRunning;
+      throw new Failure(outcome.reason, { code: 409 });
+    }
 
     // A retry keeps writing to the same log, so only archive it once the
     // task has actually stopped.
@@ -298,7 +296,7 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
       }
     }
 
-    return reply.send({
+    return ok(reply, {
       state: outcome.state,
       retry: outcome.retry === true,
       skipped: outcome.skipped ?? [],

@@ -10,6 +10,7 @@
 // cannot reach anything.
 
 import { StorageNotFound } from '../../lib/storage/index.js';
+import { ArtifactNotStored, UnknownArtifact } from '../../lib/errors.js';
 
 export default async function artifactRoutes(fastify, { db, storage, auth = null }) {
   async function currentUser(req) {
@@ -51,7 +52,7 @@ export default async function artifactRoutes(fastify, { db, storage, auth = null
         ...visible.params,
       }
     );
-    if (!artifact) return reply.code(404).send({ error: 'unknown artifact' });
+    if (!artifact) throw new UnknownArtifact();
 
     // Hand the client straight to the object store when that is possible.
     const url = await storage.presign(artifact.storage_key, { expires: 300 });
@@ -64,7 +65,7 @@ export default async function artifactRoutes(fastify, { db, storage, auth = null
       reply.header('content-disposition', `attachment; filename="${encodeURIComponent(basename(artifact.path))}"`);
       return reply.send(object.stream);
     } catch (e) {
-      if (e instanceof StorageNotFound) return reply.code(404).send({ error: 'artifact is no longer stored' });
+      if (e instanceof StorageNotFound) throw new ArtifactNotStored();
       throw e;
     }
   });

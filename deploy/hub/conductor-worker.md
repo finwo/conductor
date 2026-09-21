@@ -11,17 +11,23 @@ Source and issues: https://github.com/finwo/conductor
 | Tag              | What it is                                 |
 | ---------------- | ------------------------------------------ |
 | `latest`         | the most recent release                    |
-| `0.4.0`          | an exact version                           |
-| `0.4`            | the latest patch of that minor series      |
-| `<commit>`       | an exact build from main, twelve hex chars |
+| `0.5.0`          | an exact version                           |
+| `0.5`            | the latest patch of that minor series      |
+| `main`           | the tip of the default branch              |
 
 Built for `linux/amd64`, `linux/arm64` and `linux/riscv64`.
 
-**Upgrade the conductor and its workers together.** In 0.3.0 a job became
-one run of a pipeline and a task became the unit this image runs. Workers
-claim from `/api/v1/tasks/claim`, so a 0.2.x worker will not run anything
-for a 0.3 or newer conductor. Pin both to the same version if they are
-upgraded separately.
+**Upgrade the conductor and its workers together.** Two releases have
+changed what this image has to understand:
+
+- **0.5.0** put every API response in an envelope: `{"ok":true,"data":...}`
+  on success, `{"ok":false,"error":{"name":...}}` on failure. A worker older
+  than 0.5.0 reads the claim response one level too high and will not run
+  anything for a 0.5 or newer conductor.
+- **0.3.0** made a job one run of a pipeline and a task the unit this image
+  runs. A 0.2.x worker cannot claim from a 0.3 or newer conductor.
+
+Pin both to the same version if they are upgraded separately.
 
 ## Quick start
 

@@ -425,13 +425,13 @@ test('artifacts.expire in a pipeline reaches the stored artifact', async () => {
 
   await withHarness({ pipeline }, async (h) => {
     const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
-    await h.waitForJob(res.json().job_id);
+    await h.waitForJob(res.json().data.job_id);
 
     const before = Date.now();
     for (const name of ['build', 'keep']) {
       const res = await h.claim({});
       assert.equal(res.statusCode, 200, `expected to claim ${name}`);
-      const task = res.json().task;
+      const task = res.json().data.task;
 
       const upload = await h.app.inject({
         method: 'POST',

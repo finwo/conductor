@@ -410,12 +410,14 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
              FROM tasks WHERE id = {id}`,
           { id: taskId }
         );
-        if (!task) return { ok: false, reason: 'unknown task' };
+        // cause is the stable half of this: reason is prose and may be
+        // reworded, so nothing downstream should be reading it to branch on.
+        if (!task) return { ok: false, cause: 'unknown-task', reason: 'unknown task' };
         if (tokenId !== null && task.worker_token_id !== tokenId) {
-          return { ok: false, reason: 'task belongs to another worker' };
+          return { ok: false, cause: 'not-held', reason: 'task belongs to another worker' };
         }
         if (task.state !== 'running') {
-          return { ok: false, reason: `task is ${task.state}, not running` };
+          return { ok: false, cause: 'not-running', reason: `task is ${task.state}, not running` };
         }
 
         const now = Date.now();

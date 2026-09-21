@@ -6,17 +6,26 @@
 // append want very different handling.
 
 export class ConductorError extends Error {
-  constructor(message, { status = 0, body = null } = {}) {
+  constructor(message, { status = 0, body = null, cause = null } = {}) {
     super(message);
     this.name = 'ConductorError';
     this.status = status;
     this.body = body;
+    // The conductor's own name for what went wrong, where it sent one.
+    this.cause = cause;
   }
 }
 
 export function createClient(cfg) {
   const base = cfg.conductor_url;
   const auth = { authorization: `Bearer ${cfg.token}` };
+
+  // The envelope is unwrapped here and nowhere else, so the rest of the
+  // worker keeps dealing in plain task, log and outcome objects.
+  async function data(res) {
+    const body = await res.json();
+    return body?.data;
+  }
 
   async function readError(res, action) {
     let body = null;
@@ -28,9 +37,11 @@ export function createClient(cfg) {
     } catch {
       // A non JSON body is still worth reporting as text.
     }
+    const error = body?.error;
     return new ConductorError(`${action} failed: ${res.status} ${res.statusText} ${detail}`.trim(), {
       status: res.status,
       body,
+      cause: error?.name ?? null,
     });
   }
 
@@ -45,7 +56,7 @@ export function createClient(cfg) {
       });
       if (res.status === 204) return null;
       if (!res.ok) throw await readError(res, 'claim');
-      return (await res.json()).task;
+      return (await data(res)).task;
     },
 
     // The tree at the task's commit. Returned as a web stream so it can be
@@ -67,10 +78,10 @@ export function createClient(cfg) {
 
       if (res.status === 409) {
         const body = await res.json().catch(() => ({}));
-        return { conflict: true, expected: body.expected_offset ?? 0 };
+        return { conflict: true, expected: body.error?.details?.expected_offset ?? 0 };
       }
       if (!res.ok) throw await readError(res, 'log append');
-      return await res.json();
+      return await data(res);
     },
 
     async uploadArtifact(url, relPath, body, size) {
@@ -86,7 +97,7 @@ export function createClient(cfg) {
         duplex: 'half',
       });
       if (!res.ok) throw await readError(res, `artifact upload (${relPath})`);
-      return await res.json();
+      return await data(res);
     },
 
     // Reports that the task is alive, and learns whether it should stop.
@@ -98,7 +109,7 @@ export function createClient(cfg) {
       });
       if (res.status === 404) return { cancelled: true, gone: true };
       if (!res.ok) throw await readError(res, 'heartbeat');
-      return await res.json();
+      return await data(res);
     },
 
     async done(url, { success, exitCode, error }) {
@@ -108,7 +119,7 @@ export function createClient(cfg) {
         body: JSON.stringify({ success, exit_code: exitCode ?? null, error: error ?? null }),
       });
       if (!res.ok) throw await readError(res, 'done');
-      return await res.json();
+      return await data(res);
     },
   };
 }

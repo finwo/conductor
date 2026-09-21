@@ -66,7 +66,7 @@ test('attrs omits absent values and renders bare booleans', () => {
 test('an anonymous visitor sees public jobs and an invitation to sign in', async () => {
   await withUi({ visibility: 'public' }, async (h) => {
     const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
-    await h.waitForJob(res.json().job_id);
+    await h.waitForJob(res.json().data.job_id);
 
     const page = await get(h, '/');
     assert.equal(page.statusCode, 200);
@@ -82,7 +82,7 @@ test('an anonymous visitor sees public jobs and an invitation to sign in', async
 test('an anonymous visitor cannot see a private job', async () => {
   await withUi({ visibility: 'private' }, async (h) => {
     const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
-    const job = res.json().job_id;
+    const job = res.json().data.job_id;
     await h.waitForJob(job);
 
     const list = await get(h, '/');
@@ -277,7 +277,7 @@ test('the users page is administrator only and warns about what deletion destroy
 test('a running job polls, and a finished one stops', async () => {
   await withUi({ visibility: 'public' }, async (h) => {
     const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
-    const job = res.json().job_id;
+    const job = res.json().data.job_id;
     await h.waitForJob(job);
 
     const running = await get(h, `/jobs/${job}`);
@@ -294,8 +294,8 @@ test('a running job polls, and a finished one stops', async () => {
 test('a task page streams the log and stops polling once it completes', async () => {
   await withUi({ visibility: 'public' }, async (h) => {
     const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
-    await h.waitForJob(res.json().job_id);
-    const task = (await h.claim({})).json().task;
+    await h.waitForJob(res.json().data.job_id);
+    const task = (await h.claim({})).json().data.task;
 
     await h.app.inject({
       method: 'POST',
@@ -324,8 +324,8 @@ test('a task page streams the log and stops polling once it completes', async ()
 test('log output is escaped, so a task cannot inject markup into the page', async () => {
   await withUi({ visibility: 'public' }, async (h) => {
     const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
-    await h.waitForJob(res.json().job_id);
-    const task = (await h.claim({})).json().task;
+    await h.waitForJob(res.json().data.job_id);
+    const task = (await h.claim({})).json().data.task;
 
     await h.app.inject({
       method: 'POST',

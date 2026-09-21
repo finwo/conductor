@@ -31,6 +31,9 @@
 
 import { canManageProject } from '../../lib/projects.js';
 import { verifySignature } from '../../lib/signature.js';
+import { ok } from './envelope.js';
+import { UnknownTask } from '../../lib/errors.js';
+import { limitOf, offsetOfQuery, pageBlock, paginateOffset } from '../../lib/page.js';
 
 export default async function taskRoutes(fastify, { cfg, db, projects, auth = null }) {
   const base = cfg.server.public_url.replace(/\/+$/, '');
@@ -59,16 +62,20 @@ export default async function taskRoutes(fastify, { cfg, db, projects, auth = nu
 
   // Everything a caller is allowed to see, assembled once so the two routes
   // cannot drift into answering differently.
-  async function represent(reply, row) {
+  async function represent(req, reply, row) {
     const spec = readSpec(row.spec);
 
-    const artifacts = await db.all(
-      `SELECT id, path, size, sha256, created_at, expires_at
-         FROM artifacts WHERE task_id = {task} ORDER BY path`,
-      { task: row.id }
-    );
+    const artifacts = await paginateOffset(db, {
+      select: 'id, path, size, sha256, created_at, expires_at',
+      from: 'artifacts',
+      where: 'task_id = {task}',
+      order: 'path',
+      params: { task: row.id },
+      offset: offsetOfQuery(req.query),
+      limit: limitOf(req.query),
+    });
 
-    return reply.send({
+    return ok(reply, {
       task: {
         id: row.id,
         name: row.name,
@@ -102,7 +109,7 @@ export default async function taskRoutes(fastify, { cfg, db, projects, auth = nu
         sha: row.head_sha,
         visibility: row.visibility,
       },
-      artifacts: artifacts.map((a) => ({
+      artifacts: artifacts.rows.map((a) => ({
         id: a.id,
         path: a.path,
         size: a.size,
@@ -114,7 +121,7 @@ export default async function taskRoutes(fastify, { cfg, db, projects, auth = nu
         url: `${base}/api/v1/projects/${encodeURIComponent(row.project_id)}/jobs/${row.job_id}`
           + `/tasks/${row.id}/artifacts/${a.id}`,
       })),
-    });
+    }, pageBlock({ ...artifacts, url: base + req.url }));
   }
 
   // A task id is unique by itself, so the project need not be named. Without
@@ -122,16 +129,14 @@ export default async function taskRoutes(fastify, { cfg, db, projects, auth = nu
   // or a session that may manage the project.
   fastify.get('/tasks/:task', async (req, reply) => {
     const row = await db.get(`${TASK_QUERY} WHERE t.id = {id}`, { id: req.params.task });
-    if (!row) return reply.code(404).send({ error: 'unknown task' });
+    if (!row) throw new UnknownTask();
 
     if (row.visibility !== 'public') {
       const project = await projects.get(row.project_id);
-      if (!canManageProject(await currentUser(req), project)) {
-        return reply.code(404).send({ error: 'unknown task' });
-      }
+      if (!canManageProject(await currentUser(req), project)) throw new UnknownTask();
     }
 
-    return represent(reply, row);
+    return represent(req, reply, row);
   });
 
   // The same task named in full. The project in the path must be the one the
@@ -139,19 +144,17 @@ export default async function taskRoutes(fastify, { cfg, db, projects, auth = nu
   // happens to be readable.
   fastify.get('/projects/:project/tasks/:task', async (req, reply) => {
     const project = await projects.get(req.params.project);
-    if (!project) return reply.code(404).send({ error: 'unknown task' });
+    if (!project) throw new UnknownTask();
 
     const row = await db.get(
       `${TASK_QUERY} WHERE t.id = {id} AND j.project_id = {project}`,
       { id: req.params.task, project: project.id }
     );
-    if (!row) return reply.code(404).send({ error: 'unknown task' });
+    if (!row) throw new UnknownTask();
 
-    if (row.visibility !== 'public' && !(await mayRead(req, project))) {
-      return reply.code(404).send({ error: 'unknown task' });
-    }
+    if (row.visibility !== 'public' && !(await mayRead(req, project))) throw new UnknownTask();
 
-    return represent(reply, row);
+    return represent(req, reply, row);
   });
 
   async function mayRead(req, project) {

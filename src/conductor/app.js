@@ -20,10 +20,8 @@ import { createAuth } from '../lib/auth/index.js';
 import { createScheduler } from './scheduler.js';
 import { createRetention } from './retention.js';
 
-import workerRoutes from './routes/workers.js';
-import taskRoutes from './routes/tasks.js';
-import jobRoutes from './routes/jobs.js';
-import artifactRoutes from './routes/artifacts.js';
+import apiRoutes from './routes/api.js';
+import { ok } from './routes/envelope.js';
 import uiRoutes from './ui/routes.js';
 import staticRoutes from '../lib/static.js';
 
@@ -74,8 +72,10 @@ export async function buildServer(services, options = {}) {
 
   await fastify.register(cors, { origin: true });
 
-  fastify.get('/health', async () => ({
-    ok: true,
+  // Enveloped like the rest of the API, so one reader handles every
+  // response the conductor gives. The container healthcheck reads the
+  // status line rather than the body, and is unaffected either way.
+  fastify.get('/health', async (req, reply) => ok(reply, {
     service: 'conductor',
     database: services.db.dialect,
     storage: services.storage.driver,
@@ -85,14 +85,7 @@ export async function buildServer(services, options = {}) {
   // The only HTTP surface besides the interface: creating and reading jobs,
   // reading tasks back, the edge workers poll, and artifact downloads.
   // Everything else is the UI.
-  //
-  // workerRoutes and taskRoutes share the /api/v1/tasks prefix deliberately.
-  // They stay separate plugins because the worker token hook covers its own
-  // plugin entirely, and reading a task back is not behind it.
-  await fastify.register(jobRoutes, { ...services, prefix: '/api/v1' });
-  await fastify.register(workerRoutes, { ...services, prefix: '/api/v1' });
-  await fastify.register(taskRoutes, { ...services, prefix: '/api/v1' });
-  await fastify.register(artifactRoutes, { ...services, prefix: '/api/v1' });
+  await fastify.register(apiRoutes, { ...services, prefix: '/api/v1' });
 
   // Signing in, managing projects and registering workers all happen in the
   // interface; there is no separate management API.

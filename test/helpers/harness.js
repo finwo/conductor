@@ -9,6 +9,7 @@ import os from 'node:os';
 import net from 'node:net';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { loadConfig } from '../../src/lib/config.js';
@@ -248,6 +249,21 @@ export async function startHarness(options = {}) {
       await fs.rm(root, { recursive: true, force: true }).catch(() => {});
     },
   };
+}
+
+// Unwraps an API response, asserting the envelope on the way through, so
+// every call site that reads a body also checks the shape it arrived in.
+export function data(res) {
+  const body = res.json();
+  assert.equal(body.ok, true, `expected ok:true, got ${res.statusCode} ${res.body.slice(0, 200)}`);
+  return body.data;
+}
+
+// The failure half. Returns { name, message, details } for asserting on.
+export function apiError(res) {
+  const body = res.json();
+  assert.equal(body.ok, false, `expected ok:false, got ${res.statusCode} ${res.body.slice(0, 200)}`);
+  return body.error;
 }
 
 function silentLogger() {

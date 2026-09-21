@@ -31,9 +31,47 @@ itself is a public read; everything below it is the worker protocol and
 needs a token. They are separate plugins for that reason, so the token
 requirement cannot accidentally spread to the first or lapse on the rest.
 
-Errors are `{"error": "..."}` with a meaningful status. A resource the
-caller may not see returns 404 rather than 403, so absence and denial are
-indistinguishable.
+Responses
+---------
+
+Every response carries `ok`, so success and failure are told apart by one
+key rather than inferred from which others turned up.
+
+```json
+{ "ok": true, "data": { "...": "..." } }
+```
+
+```json
+{ "ok": false, "error": { "name": "UnknownTask", "message": "No such task" } }
+```
+
+`error.name` is the identifier to branch on, and is stable. `error.message`
+is for a person to read and may be reworded. Some errors add `error.details`
+with machine-readable context; a 500 carries `details.request_id`, which is
+the id the fault was logged under.
+
+A resource the caller may not see returns 404 rather than 403, so absence
+and denial are indistinguishable.
+
+Responses holding a collection add `pagination`:
+
+```json
+{
+  "ok": true,
+  "data": { "...": "..." },
+  "pagination": {
+    "next": "https://ci.example.com/api/v1/tasks/<id>?offset=50&limit=50",
+    "offset": 0,
+    "total": 128
+  }
+}
+```
+
+Ask with `?offset=` and `?limit=`. The limit defaults to 50 and is capped at
+200; an offset or limit that cannot be read falls back rather than failing.
+Follow `next` rather than building the URL, and stop when it is absent:
+`next` is omitted on the last page rather than sent as null, as is `details`
+when there is none.
 
 Starting a job
 --------------
@@ -80,20 +118,20 @@ so a job started this way stays distinguishable from one a hook forwarded.
 Both return:
 
 ```json
-{ "status": "created", "job_id": "m2y5rj7ykdm9sfbr54hf", "tasks": 6 }
+{ "ok": true, "data": { "status": "created", "job_id": "m2y5rj7ykdm9sfbr54hf" } }
 ```
 
-| Status | Meaning                                        |
-| ------ | ---------------------------------------------- |
-| 200    | job created, or ignored for a branch deletion  |
-| 400    | no usable commit in the payload                |
-| 401    | signature missing or wrong                     |
-| 404    | no such project                                |
-| 409    | project disabled                               |
-| 422    | the pipeline at that commit is invalid         |
+| Status | `error.name`                           | Meaning                                       |
+| ------ | -------------------------------------- | --------------------------------------------- |
+| 200    | none                                   | job created, or ignored for a branch deletion |
+| 400    | `NoCommitInPayload`, `InvalidSha`, `ShaRequired`, `MalformedJson` | nothing usable to build |
+| 401    | `InvalidSignature`                     | signature missing or wrong                    |
+| 404    | `UnknownProject`                       | no such project                               |
+| 409    | `ProjectDisabled`                      | project disabled                              |
 
-A 422 carries `problems`, an array of `{path, message}`, so a broken
-pipeline says which key is wrong rather than only that something is.
+The job is recorded and the response returns immediately; the pipeline is
+compiled afterwards. A pipeline that will not compile therefore surfaces as
+the job going to `failed` with the reason on it, not as an error here.
 
 Reading a job back
 ------------------
@@ -106,14 +144,20 @@ Returns the job and the state of every task in it.
 
 ```json
 {
-  "job": { "id": "...", "number": 12, "state": "running", "ref": "refs/heads/main",
-           "head_sha": "...", "visibility": "private", "created_at": 1800000000000 },
-  "tasks": [
-    { "id": "...", "name": "build:arch=x86_64", "state": "success", "exit_code": 0,
-      "arch": "x86_64", "attempt": 1, "worker_name": "builder-1" }
-  ]
+  "ok": true,
+  "data": {
+    "job": { "id": "...", "number": 12, "state": "running", "ref": "refs/heads/main",
+             "head_sha": "...", "visibility": "private", "created_at": 1800000000000 },
+    "tasks": [
+      { "id": "...", "name": "build:arch=x86_64", "state": "success", "exit_code": 0,
+        "arch": "x86_64", "attempt": 1, "worker_name": "builder-1" }
+    ]
+  },
+  "pagination": { "offset": 0, "total": 6 }
 }
 ```
+
+`pagination` describes `tasks`.
 
 Three ways to be allowed: the job is public, the caller holds the project's
 trigger secret, or the caller is signed in and may manage the project. One
@@ -145,6 +189,8 @@ empty body.
 
 ```json
 {
+  "ok": true,
+  "data": {
   "task": {
     "id": "m2y5t7deprrj9s6jvv4d", "name": "package:arch=x86_64,pkg=musl",
     "base_name": "package", "state": "success", "arch": "x86_64",
@@ -162,11 +208,13 @@ empty body.
       "created_at": 1800000000000, "expires_at": null,
       "url": "https://ci.example.com/api/v1/projects/demo/jobs/<job>/tasks/<task>/artifacts/<id>" }
   ]
+  },
+  "pagination": { "offset": 0, "total": 1 }
 }
 ```
 
-`artifact_paths` is what the pipeline told the task to collect; `artifacts`
-is what it actually stored. Each carries a ready download `url`, which is a
+`pagination` describes `artifacts`. `artifact_paths` is what the pipeline
+told the task to collect; `artifacts` is what it actually stored. Each carries a ready download `url`, which is a
 convenience rather than the permission: that route checks visibility again
 for itself.
 
@@ -204,6 +252,8 @@ of the surface is discovered rather than assembled:
 
 ```json
 {
+  "ok": true,
+  "data": {
   "task": {
     "id": "m2y5t7deprrj9s6jvv4d",
     "name": "build:arch=x86_64",
@@ -222,6 +272,7 @@ of the surface is discovered rather than assembled:
       "done":      "https://ci.example.com/api/v1/tasks/<id>/complete"
     }
   }
+  }
 }
 ```
 
@@ -231,20 +282,34 @@ strings the worker copies into the container without reading.
 
 Log appends send `Content-Type: application/octet-stream` with
 `X-Log-Offset` set to where the worker believes it is writing. An
-overlapping chunk is trimmed and a gap is refused with 409 and
-`expected_offset`, which makes a retry after a dropped connection safe.
+overlapping chunk is trimmed, and a gap is refused with a 409 naming
+`LogOffsetConflict` and carrying where to resume:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "name": "LogOffsetConflict",
+    "message": "The log chunk does not continue from the end of the log",
+    "details": { "expected_offset": 4096 }
+  }
+}
+```
 
 Artifact uploads send the bytes with `X-Artifact-Path` and a
 `Content-Length`. The path is sanitised, so traversal is stripped rather
 than honoured. Bodies are streamed and may be arbitrarily large; a body
 that does not match its declared length is rejected.
 
+`complete` reports the outcome, and is sent a body rather than given one.
+Requests are not enveloped; only responses are:
+
 ```json
 { "success": true, "exit_code": 0, "error": null }
 ```
 
-`complete` reports the outcome. A failure with attempts remaining requeues
-the task; otherwise everything downstream of it is skipped.
+A failure with attempts remaining requeues the task; otherwise everything
+downstream of it is skipped.
 
 Artifacts
 ---------
