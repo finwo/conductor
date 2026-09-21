@@ -10,6 +10,9 @@
 #
 #   --keep  leave the stack running afterwards for poking at
 #
+# Every run names its own compose project, images and port, so several can
+# run against one docker host at once. SMOKE_PORT pins the port if needed.
+#
 # Needs docker and a few hundred megabytes of disk. Takes about a minute.
 
 set -eu
@@ -19,9 +22,20 @@ KEEP=0
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 WORK=$(mktemp -d)
-PORT="${SMOKE_PORT:-18500}"
-PROJECT=conductor-smoke
 SECRET=smoke-trigger-secret
+
+# Everything that a second run on the same host could collide on carries
+# this: the compose project owns the network, volume and container names,
+# and the image tags would otherwise be overwritten mid-run by a build of
+# a different commit.
+RUN=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
+PROJECT="conductor-smoke-${RUN}"
+IMAGE="conductor:smoke-${RUN}"
+WORKER_IMAGE="conductor-worker:smoke-${RUN}"
+
+# 0 lets docker pick a free port; the real one is read back once the
+# container is up. Picking one here would race with whoever takes it next.
+PORT="${SMOKE_PORT:-0}"
 
 # Published ports live on the docker host, which is the gateway when this
 # runs in a container, as it does in CI.
@@ -44,13 +58,14 @@ cleanup() {
   fi
   printf '\n== cleaning up\n'
   SMOKE_TOKEN=unused docker compose -p "${PROJECT}" -f "${WORK}/compose.yml" down -v >/dev/null 2>&1 || true
+  docker rmi "${IMAGE}" "${WORKER_IMAGE}" >/dev/null 2>&1 || true
   rm -rf "${WORK}"
 }
 trap cleanup EXIT
 
 log "building images"
-docker build -q -f "${ROOT}/deploy/Dockerfile" -t conductor:smoke "${ROOT}"
-docker build -q -f "${ROOT}/deploy/Dockerfile.worker" -t conductor-worker:smoke "${ROOT}"
+docker build -q -f "${ROOT}/deploy/Dockerfile" -t "${IMAGE}" "${ROOT}"
+docker build -q -f "${ROOT}/deploy/Dockerfile.worker" -t "${WORKER_IMAGE}" "${ROOT}"
 
 log "preparing a repository"
 mkdir -p "${WORK}/repo"
@@ -87,7 +102,7 @@ cat > "${WORK}/compose.yml" <<COMPOSE
 name: ${PROJECT}
 services:
   conductor:
-    image: conductor:smoke
+    image: ${IMAGE}
     ports: ["${PORT}:9080"]
     environment:
       CONDUCTOR_PORT: "9080"
@@ -97,7 +112,7 @@ services:
     volumes:
       - smoke-data:/data
   worker:
-    image: conductor-worker:smoke
+    image: ${WORKER_IMAGE}
     depends_on: [conductor]
     environment:
       CONDUCTOR_URL: http://conductor:9080
@@ -115,7 +130,11 @@ compose() { SMOKE_TOKEN="${SMOKE_TOKEN:-unused}" docker compose -p "${PROJECT}" 
 log "starting the conductor"
 compose up -d conductor
 
-BASE_URL="http://${SMOKE_HOST}:${PORT}"
+# Ask docker which port it settled on rather than assuming, since PORT is
+# normally 0.
+PUBLISHED=$(compose port conductor 9080 | sed 's/.*://')
+[ -n "${PUBLISHED}" ] || fail "the conductor published no port"
+BASE_URL="http://${SMOKE_HOST}:${PUBLISHED}"
 printf 'using %s\n' "${BASE_URL}"
 
 i=0
