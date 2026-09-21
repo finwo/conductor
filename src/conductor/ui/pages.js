@@ -6,31 +6,36 @@
 // polling stops by itself rather than needing to be cancelled.
 
 import { html, raw } from './html.js';
-import { badge, notice, oneTimeSecret, shortSha, ago, duration, ACTIVE_JOB_STATES, ACTIVE_TASK_STATES } from './layout.js';
+import {
+  badge, notice, oneTimeSecret, shortSha, ago, duration, pager, pageHref,
+  ACTIVE_JOB_STATES, ACTIVE_TASK_STATES,
+} from './layout.js';
 
 const poll = (url, seconds = 3) => raw(`hx-get="${url}" hx-trigger="every ${seconds}s" hx-swap="outerHTML"`);
 
 // --- jobs ---
 
-export function jobsPage({ jobs, user, anonymous }) {
+export function jobsPage({ jobs, user, anonymous, query = {} }) {
   return html`
     <h2>Jobs</h2>
     ${anonymous ? html`<p class="muted">Showing public jobs. <a href="/login">Sign in</a> to see your own.</p>` : ''}
-    ${jobsTable(jobs)}
+    ${jobsTable(jobs, query)}
   `;
 }
 
-export function jobsTable(jobs) {
-  const live = jobs.some((r) => ACTIVE_JOB_STATES.includes(r.state));
-  return html`<div id="jobs" ${live ? poll('/partials/jobs', 4) : ''}>
+export function jobsTable(jobs, query = {}) {
+  const live = jobs.rows.some((r) => ACTIVE_JOB_STATES.includes(r.state));
+  // The fragment asks for the page that is on screen, filter and all, or a
+  // refresh would silently throw the reader back to the first page.
+  return html`<div id="jobs" ${live ? poll(pageHref('/partials/jobs', query, jobs.page), 4) : ''}>
     <table>
       <thead><tr>
         <th>job</th><th>project</th><th>ref</th><th>commit</th><th>state</th><th>started</th>
       </tr></thead>
       <tbody>
-        ${jobs.length === 0
+        ${jobs.rows.length === 0
     ? html`<tr><td colspan="6" class="muted">No jobs to show.</td></tr>`
-    : jobs.map((job) => html`<tr>
+    : jobs.rows.map((job) => html`<tr>
             <td><a href="/jobs/${job.id}">#${job.number}</a></td>
             <td>${job.project_id}</td>
             <td class="muted">${(job.ref ?? '').replace('refs/heads/', '')}</td>
@@ -40,6 +45,7 @@ export function jobsTable(jobs) {
           </tr>`)}
       </tbody>
     </table>
+    ${pager(jobs, (to) => pageHref('/jobs', query, to))}
   </div>`;
 }
 
@@ -106,7 +112,7 @@ export function tasksTable(job, tasks) {
 
 // --- tasks ---
 
-export function taskPage({ task, artifacts, log }) {
+export function taskPage({ task, artifacts, log, query = {} }) {
   return html`
     <div class="panel">
       <h2>${task.name}</h2>
@@ -125,15 +131,16 @@ export function taskPage({ task, artifacts, log }) {
     <h3>log</h3>
     <div class="logpane">${taskLog(task, log)}</div>
 
-    ${artifacts.length === 0 ? '' : html`
+    ${artifacts.rows.length === 0 ? '' : html`
       <h3>artifacts</h3>
       <table><tbody>
-        ${artifacts.map((a) => html`<tr>
+        ${artifacts.rows.map((a) => html`<tr>
           <td><a href="/api/v1/projects/${task.project_id}/jobs/${task.job_id}/tasks/${task.id}/artifacts/${a.id}">${a.path}</a></td>
           <td class="muted">${a.size} bytes</td>
           <td class="mono muted">${a.sha256.slice(0, 12)}</td>
         </tr>`)}
-      </tbody></table>`}
+      </tbody></table>
+      ${pager(artifacts, (to) => pageHref(`/tasks/${task.id}`, query, to))}`}
   `;
 }
 
@@ -162,7 +169,7 @@ export function loginPage({ error }) {
 
 // --- projects ---
 
-export function projectsPage({ projects, user }) {
+export function projectsPage({ projects, user, query = {} }) {
   return html`
     <h2>Projects</h2>
 
@@ -184,17 +191,18 @@ export function projectsPage({ projects, user }) {
       </form>
     </div>
 
-    ${projectsTable(projects, user)}
+    ${projectsTable(projects, user, query)}
   `;
 }
 
-export function projectsTable(projects, user) {
-  return html`<table id="projects">
+export function projectsTable(projects, user, query = {}) {
+  return html`<div id="projects">
+  <table>
     <thead><tr><th>project</th><th>repository</th><th>visibility</th><th>owner</th><th>jobs</th><th></th></tr></thead>
     <tbody>
-      ${projects.length === 0
+      ${projects.rows.length === 0
     ? html`<tr><td colspan="6" class="muted">No projects yet.</td></tr>`
-    : projects.map((p) => html`<tr>
+    : projects.rows.map((p) => html`<tr>
           <td><a href="/projects/${p.id}">${p.id}</a></td>
           <td class="muted mono">${p.repo_url}</td>
           <td>${badge(p.visibility === 'public' ? 'success' : 'skipped')}<span class="muted"> ${p.visibility}</span></td>
@@ -203,7 +211,9 @@ export function projectsTable(projects, user) {
           <td><a href="/projects/${p.id}">manage</a></td>
         </tr>`)}
     </tbody>
-  </table>`;
+  </table>
+  ${pager(projects, (to) => pageHref('/projects', query, to))}
+  </div>`;
 }
 
 export function projectPage({ project, variables, triggerUrl, secret, user, retention }) {
@@ -355,7 +365,7 @@ export function variablesTable(project, variables) {
 
 // --- workers ---
 
-export function workersPage({ tokens, user, created }) {
+export function workersPage({ tokens, user, created, query = {} }) {
   return html`
     <h2>Workers</h2>
     <p class="muted">
@@ -381,7 +391,7 @@ export function workersPage({ tokens, user, created }) {
       </form>
     </div>
 
-    ${workersTable(tokens, user)}
+    ${workersTable(tokens, user, query)}
 
     <dialog id="disableDialog">
       <p>Disable worker "<span id="disableWorkerName"></span>"?</p>
@@ -420,13 +430,17 @@ export function workersPage({ tokens, user, created }) {
   `;
 }
 
-export function workersTable(tokens, user) {
-  return html`<table id="workers">
+export function workersTable(tokens, user, query = {}) {
+  // The id sits on the wrapper so a swap replaces the pager along with the
+  // rows; on the table alone it would be left behind, describing a page
+  // that is no longer there.
+  return html`<div id="workers">
+  <table>
     <thead><tr><th>name</th><th>scope</th><th>state</th><th>last seen</th><th>address</th><th></th></tr></thead>
     <tbody>
-      ${tokens.length === 0
+      ${tokens.rows.length === 0
     ? html`<tr><td colspan="6" class="muted">No workers registered.</td></tr>`
-    : tokens.map((t) => html`<tr>
+    : tokens.rows.map((t) => html`<tr>
           <td>${t.name}</td>
           <td class="muted">${t.owner_id === null ? 'shared' : (t.owner_id === user.id ? 'yours' : t.owner_id)}</td>
           <td>${t.enabled === 1 ? badge('success') : badge('skipped')}</td>
@@ -440,12 +454,14 @@ export function workersTable(tokens, user) {
           </td>
         </tr>`)}
     </tbody>
-  </table>`;
+  </table>
+  ${pager(tokens, (to) => pageHref('/workers', query, to))}
+  </div>`;
 }
 
 // --- users ---
 
-export function usersPage({ users, localLogin, error }) {
+export function usersPage({ users, localLogin, error, query = {} }) {
   return html`
     <h2>Users</h2>
     ${localLogin ? '' : html`<p class="muted">
@@ -467,7 +483,7 @@ export function usersPage({ users, localLogin, error }) {
       </form>
     </div>
 
-    ${usersTable(users)}
+    ${usersTable(users, query)}
 
     <dialog id="removeUserDialog">
       <p id="removeUserMessage"></p>
@@ -490,13 +506,14 @@ export function usersPage({ users, localLogin, error }) {
   `;
 }
 
-export function usersTable(users) {
-  return html`<table id="users">
+export function usersTable(users, query = {}) {
+  return html`<div id="users">
+  <table>
     <thead><tr>
       <th>username</th><th>role</th><th>state</th><th>owns</th><th>last login</th><th></th>
     </tr></thead>
     <tbody>
-      ${users.map((u) => html`<tr>
+      ${users.rows.map((u) => html`<tr>
         <td>${u.username}</td>
         <td>${u.role}</td>
         <td>${u.disabled === 1 ? badge('skipped') : badge('success')}</td>
@@ -509,7 +526,9 @@ export function usersTable(users) {
         </td>
       </tr>`)}
     </tbody>
-  </table>`;
+  </table>
+  ${pager(users, (to) => pageHref('/users', query, to))}
+  </div>`;
 }
 
 // Removing an account takes everything it owns with it, so the

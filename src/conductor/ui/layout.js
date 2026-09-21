@@ -106,3 +106,32 @@ export function duration(from, to) {
 
 export const ACTIVE_JOB_STATES = ['pending', 'running'];
 export const ACTIVE_TASK_STATES = ['queued', 'running'];
+
+// A link to another page of the same table, keeping whatever else was
+// being asked for, so paging does not quietly drop a filter.
+export function pageHref(base, query = {}, page = 1) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (key === 'page' || typeof value !== 'string' || value === '') continue;
+    params.set(key, value);
+  }
+  if (page > 1) params.set('page', String(page));
+  const search = params.toString();
+  return search ? `${base}?${search}` : base;
+}
+
+// Page links for a table, rendered only when there is more than one page
+// so short tables stay quiet.
+export function pager(window, href) {
+  if (window.pages <= 1) return '';
+
+  const step = (to, label) => (to >= 1 && to <= window.pages
+    ? html`<a href="${href(to)}">${label}</a>`
+    : html`<span class="muted">${label}</span>`);
+
+  return html`<nav class="pager">
+    ${step(window.page - 1, 'previous')}
+    <span class="muted">${window.first} to ${window.last} of ${window.total}</span>
+    ${step(window.page + 1, 'next')}
+  </nav>`;
+}

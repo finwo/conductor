@@ -181,6 +181,11 @@ a.button:hover { text-decoration: none; background: #2b3036; }
 td.row-actions { white-space: nowrap; text-align: right; }
 td.row-actions button.link + button.link { margin-left: .9rem; }
 
+/* Page links sit under their table. The count is centred between the two
+   steps so it does not shift as the labels change. */
+.pager { display: flex; gap: 1rem; align-items: center; margin-top: .75rem; font-size: .8rem; }
+.pager > span { flex: 1; text-align: center; }
+
 dialog {
   border: 1px solid var(--border);
   border-radius: 6px;

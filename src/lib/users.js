@@ -4,6 +4,7 @@
 // and never recoverable; a forgotten password is reset, not read.
 
 import { newUserId } from './ids.js';
+import { paginate } from './page.js';
 import { hashPassword, verifyPassword, generatePassword, validatePassword } from './auth/password.js';
 
 export const ROLES = ['admin', 'user'];
@@ -100,6 +101,17 @@ export function createUsers({ db, logger = console }) {
                 (SELECT COUNT(*) FROM worker_tokens w WHERE w.owner_id = u.id) AS worker_count
            FROM users u ORDER BY u.username`
       );
+    },
+
+    async pageWithHoldings(page) {
+      return paginate(db, {
+        select: `u.id, u.username, u.role, u.disabled, u.external_id, u.created_at, u.last_login_at,
+                 (SELECT COUNT(*) FROM projects p WHERE p.owner_id = u.id) AS project_count,
+                 (SELECT COUNT(*) FROM worker_tokens w WHERE w.owner_id = u.id) AS worker_count`,
+        from: 'users u',
+        order: 'u.username',
+        page,
+      });
     },
 
     async count() {

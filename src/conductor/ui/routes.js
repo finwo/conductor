@@ -18,6 +18,7 @@ import {
 } from './pages.js';
 import { canManageProject, canViewProject, VISIBILITIES } from '../../lib/projects.js';
 import { canManageWorker } from '../../lib/workers.js';
+import { paginate, pageOf, windowOfAll } from '../../lib/page.js';
 import { issueToken, sessionCookie, clearedCookie } from '../../lib/auth/index.js';
 import { createState, verifyState } from '../../lib/auth/state.js';
 import { PipelineError, DEFAULT_WORKDIR } from '../../lib/pipeline/index.js';
@@ -124,43 +125,50 @@ export default async function uiRoutes(fastify, services) {
 
   // --- jobs ---
 
-  async function visibleJobs(user, projectId = null) {
+  async function visibleJobs(user, { projectId = null, page: pageNo = 1 } = {}) {
     const scope = user && user.role === 'admin'
       ? { sql: '1 = 1', params: {} }
       : user
         ? { sql: "(j.visibility = 'public' OR p.owner_id = {viewerId})", params: { viewerId: user.id } }
         : { sql: "j.visibility = 'public'", params: {} };
 
-    return db.all(
-      `SELECT j.id, j.project_id, j.number, j.ref, j.head_sha, j.state, j.visibility,
-              j.title, j.created_at, j.started_at, j.finished_at
-         FROM jobs j JOIN projects p ON p.id = j.project_id
-        WHERE ${scope.sql} ${projectId ? 'AND j.project_id = {project}' : ''}
-        ORDER BY j.created_at DESC LIMIT 50`,
-      { ...scope.params, ...(projectId ? { project: projectId } : {}) }
-    );
+    return paginate(db, {
+      select: `j.id, j.project_id, j.number, j.ref, j.head_sha, j.state, j.visibility,
+               j.title, j.created_at, j.started_at, j.finished_at`,
+      from: 'jobs j JOIN projects p ON p.id = j.project_id',
+      where: `${scope.sql}${projectId ? ' AND j.project_id = {project}' : ''}`,
+      order: 'j.created_at DESC',
+      params: { ...scope.params, ...(projectId ? { project: projectId } : {}) },
+      page: pageNo,
+    });
   }
 
-  fastify.get('/', async (req, reply) => {
+  // The project filter and the page both live in the query string, so the
+  // polling fragment can be asked for exactly what is on screen.
+  function jobsQuery(req) {
+    return {
+      projectId: typeof req.query.project === 'string' ? req.query.project : null,
+      page: pageOf(req.query),
+    };
+  }
+
+  async function jobsView(req, reply) {
     const user = await currentUser(req);
-    const jobs = await visibleJobs(user, typeof req.query.project === 'string' ? req.query.project : null);
+    const jobs = await visibleJobs(user, jobsQuery(req));
     return page(reply, {
       title: 'jobs',
       user,
       active: 'jobs',
-      body: jobsPage({ jobs, user, anonymous: !user }),
+      body: jobsPage({ jobs, user, anonymous: !user, query: req.query }),
     });
-  });
+  }
 
-  fastify.get('/jobs', async (req, reply) => {
-    const user = await currentUser(req);
-    const jobs = await visibleJobs(user, typeof req.query.project === 'string' ? req.query.project : null);
-    return page(reply, { title: 'jobs', user, active: 'jobs', body: jobsPage({ jobs, user, anonymous: !user }) });
-  });
+  fastify.get('/', jobsView);
+  fastify.get('/jobs', jobsView);
 
   fastify.get('/partials/jobs', async (req, reply) => {
     const user = await currentUser(req);
-    return send(reply, jobsTable(await visibleJobs(user)));
+    return send(reply, jobsTable(await visibleJobs(user, jobsQuery(req)), req.query));
   });
 
   // Loads a job the caller may see, along with whether they may act on it.
@@ -264,16 +272,20 @@ export default async function uiRoutes(fastify, services) {
       return page(reply, { title: 'not found', user, body: html`<p class="error">No such task.</p>` });
     }
 
-    const artifacts = await db.all(
-      'SELECT id, path, size, sha256 FROM artifacts WHERE task_id = {task} ORDER BY path',
-      { task: task.id }
-    );
+    const artifacts = await paginate(db, {
+      select: 'id, path, size, sha256',
+      from: 'artifacts',
+      where: 'task_id = {task}',
+      order: 'path',
+      params: { task: task.id },
+      page: pageOf(req.query),
+    });
 
     return page(reply, {
       title: task.name,
       user,
       active: 'jobs',
-      body: taskPage({ task, artifacts, log: await tailOf(task) }),
+      body: taskPage({ task, artifacts, log: await tailOf(task), query: req.query }),
     });
   });
 
@@ -428,8 +440,13 @@ export default async function uiRoutes(fastify, services) {
   fastify.get('/projects', async (req, reply) => {
     const user = await required(req, reply);
     if (!user) return reply;
-    const rows = user.role === 'admin' ? await projects.list() : await projects.listOwnedBy(user.id);
-    return page(reply, { title: 'projects', user, active: 'projects', body: projectsPage({ projects: rows, user }) });
+    const rows = await projects.pageManagedBy(user, pageOf(req.query));
+    return page(reply, {
+      title: 'projects',
+      user,
+      active: 'projects',
+      body: projectsPage({ projects: rows, user, query: req.query }),
+    });
   });
 
   fastify.post('/projects', async (req, reply) => {
@@ -605,7 +622,7 @@ export default async function uiRoutes(fastify, services) {
       title: 'workers',
       user,
       active: 'workers',
-      body: workersPage({ tokens: await workerTokens.listVisible(user), user }),
+      body: workersPage({ tokens: await workerTokens.pageVisible(user, pageOf(req.query)), user, query: req.query }),
     });
   });
 
@@ -626,8 +643,9 @@ export default async function uiRoutes(fastify, services) {
       user,
       active: 'workers',
       body: workersPage({
-        tokens: await workerTokens.listVisible(user),
+        tokens: await workerTokens.pageVisible(user, pageOf(req.query)),
         user,
+        query: req.query,
         created: { name: created.name, token: created.token },
       }),
     });
@@ -642,7 +660,7 @@ export default async function uiRoutes(fastify, services) {
     if (!token || !canManageWorker(user, token)) return fail(reply, 'No such worker.', 404);
 
     await workerTokens.setEnabled(token.id, req.body?.enabled === true || req.body?.enabled === 'true');
-    return send(reply, workersTable(await workerTokens.listVisible(user), user));
+    return send(reply, workersTable(await workerTokens.pageVisible(user, pageOf(req.query)), user, req.query));
   });
 
   fastify.delete('/workers/:id', async (req, reply) => {
@@ -654,7 +672,7 @@ export default async function uiRoutes(fastify, services) {
     if (!token || !canManageWorker(user, token)) return fail(reply, 'No such worker.', 404);
 
     await workerTokens.remove(token.id);
-    return send(reply, workersTable(await workerTokens.listVisible(user), user));
+    return send(reply, workersTable(await workerTokens.pageVisible(user, pageOf(req.query)), user, req.query));
   });
 
   // --- users ---
@@ -679,7 +697,7 @@ export default async function uiRoutes(fastify, services) {
       title: 'users',
       user,
       active: 'users',
-      body: usersPage({ users: await users.listWithHoldings(), localLogin: auth.localLogin }),
+      body: usersPage({ users: await users.pageWithHoldings(pageOf(req.query)), localLogin: auth.localLogin, query: req.query }),
     });
   });
 
@@ -698,7 +716,12 @@ export default async function uiRoutes(fastify, services) {
         title: 'users',
         user: await currentUser(req),
         active: 'users',
-        body: usersPage({ users: await users.listWithHoldings(), localLogin: auth.localLogin, error: e.message }),
+        body: usersPage({
+          users: await users.pageWithHoldings(pageOf(req.query)),
+          localLogin: auth.localLogin,
+          query: req.query,
+          error: e.message,
+        }),
       });
     }
     return refresh(reply);
@@ -716,7 +739,7 @@ export default async function uiRoutes(fastify, services) {
       return fail(reply, 'This is the only administrator.');
     }
     await users.setDisabled(target.id, disabled);
-    return send(reply, usersTable(await users.listWithHoldings()));
+    return send(reply, usersTable(await users.pageWithHoldings(pageOf(req.query)), req.query));
   });
 
   fastify.delete('/users/:id', async (req, reply) => {
@@ -730,7 +753,7 @@ export default async function uiRoutes(fastify, services) {
     }
 
     await users.remove(target.id);
-    return send(reply, usersTable(await users.listWithHoldings()));
+    return send(reply, usersTable(await users.pageWithHoldings(pageOf(req.query)), req.query));
   });
 
   async function lastAdmin(exceptId) {
