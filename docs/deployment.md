@@ -284,12 +284,19 @@ Publishing
 The images are built and pushed by the project's own pipeline, from
 `deploy/publish.sh`. It runs only on `main` and on `v*` tags, enforced by
 an `only:` rule in `.conductor.yml` rather than by a check inside the
-script, so a branch build cannot move `latest` even by accident.
+script. The script itself handles any branch, so publishing a branch is a
+matter of widening that rule.
 
-| Ref                | Tags pushed                          |
-| ------------------ | ------------------------------------ |
-| `refs/heads/main`  | `latest`, `<short sha>`              |
-| `refs/tags/v1.2.3` | `1.2.3`, `1.2`, `latest`             |
+| Ref                 | Tags pushed        |
+| ------------------- | ------------------ |
+| `refs/heads/main`   | `main`, `latest`   |
+| `refs/heads/topic`  | `topic`            |
+| `refs/tags/v1.2.3`  | `1.2.3`, `1.2`     |
+
+A branch publishes its own name, with any aliases listed for it in
+`branch_aliases`. Only `main` has one, `latest`, and nothing else moves
+it, so `latest` is always whatever main is. Branch names are rewritten to
+suit a docker tag, so `feature/x` publishes as `feature-x`.
 
 A tag that is not a plain version, `v1.2.3-rc1` for instance, is refused
 rather than guessed at.

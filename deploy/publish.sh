@@ -6,11 +6,12 @@
 #
 # What gets pushed, from CONDUCTOR_REF:
 #
-#   refs/heads/main    finwo/conductor:latest        and :<short sha>
-#   refs/tags/v1.2.0   finwo/conductor:1.2.0, :1.2   and :latest
+#   refs/heads/main    finwo/conductor:main   and :latest
+#   refs/heads/topic   finwo/conductor:topic
+#   refs/tags/v1.2.0   finwo/conductor:1.2.0  and :1.2
 #
-# A tag publishes :latest as well, so :latest follows releases once there
-# are any, and follows main until then.
+# A branch publishes its own name. main carries :latest on top of that,
+# and nothing else ever moves it, so :latest is always what main is.
 #
 # Needs REGISTRY_USERNAME and REGISTRY_TOKEN as project variables. They are
 # masked in the log by the conductor, but this still keeps them off the
@@ -37,6 +38,24 @@ SHORT=$(printf '%s' "${CONDUCTOR_SHA}" | cut -c1-12)
 log() { printf '\n== %s\n' "$*"; }
 fail() { printf '\nFAILED: %s\n' "$*" >&2; exit 1; }
 
+# A docker tag is [A-Za-z0-9_][A-Za-z0-9._-]*, so a branch such as
+# feature/x cannot be used as it stands.
+docker_tag() {
+    tag=$(printf '%s' "$1" | tr -c 'A-Za-z0-9_.-' '-' | cut -c1-128)
+    case "${tag}" in
+        [!A-Za-z0-9_]*) tag="x${tag}" ;;
+    esac
+    printf '%s\n' "${tag}"
+}
+
+# What a branch publishes on top of its own name. Give another branch an
+# alias, a pre-release series for instance, by adding a line here.
+branch_aliases() {
+    case "$1" in
+        main) printf 'latest\n' ;;
+    esac
+}
+
 # Turns a ref into the list of tags it should publish.
 #
 # A version tag also publishes the major.minor series, so v1.2.1 moves
@@ -45,8 +64,10 @@ fail() { printf '\nFAILED: %s\n' "$*" >&2; exit 1; }
 tags_for_ref() {
     ref=$1
     case "${ref}" in
-        refs/heads/main)
-            printf 'latest\n%s\n' "${SHORT}"
+        refs/heads/*)
+            branch=${ref#refs/heads/}
+            docker_tag "${branch}"
+            branch_aliases "${branch}"
             ;;
         refs/tags/v*)
             version=${ref#refs/tags/v}
@@ -59,7 +80,6 @@ tags_for_ref() {
             # v1.2.3 -> 1.2, but v1.2 stays as it is.
             series=$(printf '%s' "${version}" | cut -d. -f1-2)
             [ "${series}" = "${version}" ] || printf '%s\n' "${series}"
-            printf 'latest\n'
             ;;
         *)
             fail "ref ${ref} does not publish anything; the only: rule in .conductor.yml should have prevented this"
