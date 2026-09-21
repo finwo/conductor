@@ -10,7 +10,7 @@ version: 1
 visibility: public
 
 defaults:
-  image: node:24-bookworm-slim
+  image: node:24-alpine
   timeout: 15m
 
 tasks:
@@ -18,12 +18,14 @@ tasks:
   # no CRLF, no trailing whitespace.
   style:
     script:
+      - apk add --no-cache git
       - npm install --no-audit --no-fund
       - node --test test/ascii.test.js
 
   # Everything that runs without a docker socket.
   test:
     script:
+      - apk add --no-cache git
       - npm install --no-audit --no-fund
       - npm test
     env:
@@ -34,6 +36,7 @@ tasks:
   integration:
     requires: [docker]
     script:
+      - apk add --no-cache git
       - npm install --no-audit --no-fund
       - npm test
 
