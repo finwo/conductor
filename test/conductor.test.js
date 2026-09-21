@@ -94,17 +94,19 @@ test('a signed trigger creates a job and expands the pipeline', async () => {
 
     const body = res.json();
     assert.equal(body.status, 'created');
-    // lint + 2 build + 2 package + publish
-    assert.equal(body.tasks, 6);
+
+    const job = await h.waitForJob(body.job_id);
+    assert.equal(job.state, 'running');
+    assert.equal(job.actor, 'alice');
+    assert.equal(job.title, 'initial commit');
+    assert.equal(job.number, 1);
 
     const detail = await jobState(h, body.job_id);
-    assert.equal(detail.job.state, 'running');
-    assert.equal(detail.job.actor, 'alice');
-    assert.equal(detail.job.title, 'initial commit');
-    assert.equal(detail.job.number, 1);
+    // lint + 2 build + 2 package + publish
+    assert.equal(detail.tasks.length, 6);
 
     // Task ids are opaque, so the edge is checked by resolving the name
-    // rather than by reconstructing an id the conductor no longer derives.
+    // rather than reconstructing an id the conductor no longer derives.
     const tasks = tasksByName(detail);
     assert.deepEqual(
       tasks['package:arch=x86_64,pkg=musl'].needs,
@@ -138,7 +140,8 @@ test('github and gitlab push payloads are understood', async () => {
       pusher: { name: 'octocat' },
     });
     assert.equal(github.statusCode, 200);
-    assert.equal(github.json().status, 'created');
+    const githubJob = await h.waitForJob(github.json().job_id);
+    assert.equal(githubJob.state, 'running');
 
     const gitlab = await h.trigger({
       checkout_sha: h.sha,
@@ -146,6 +149,8 @@ test('github and gitlab push payloads are understood', async () => {
       user_username: 'gl-user',
     });
     assert.equal(gitlab.statusCode, 200);
+    const gitlabJob = await h.waitForJob(gitlab.json().job_id);
+    assert.equal(gitlabJob.state, 'running');
   });
 });
 
@@ -160,38 +165,39 @@ test('a branch deletion is ignored rather than failing', async () => {
 test('a broken pipeline is reported as a client error with detail', async () => {
   await withHarness({ pipeline: 'version: 1\ntasks:\n  a:\n    script: [x]\n' }, async (h) => {
     const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
-    assert.equal(res.statusCode, 422);
-    const body = res.json();
-    assert.equal(body.error, 'invalid pipeline');
-    assert.ok(body.problems.some((p) => p.path === 'tasks.a.image'));
+    assert.equal(res.statusCode, 200);
+    const job = await h.waitForJob(res.json().job_id);
+    assert.equal(job.state, 'failed');
+    assert.ok(job.error?.includes('tasks.a.image'));
   });
 });
 
 test('a missing pipeline file is reported clearly', async () => {
   await withHarness({ pipeline: null }, async (h) => {
     const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
-    assert.equal(res.statusCode, 422);
-    assert.match(res.json().detail, /\.conductor\.yml not found/);
+    assert.equal(res.statusCode, 200);
+    const job = await h.waitForJob(res.json().job_id);
+    assert.equal(job.state, 'failed');
+    assert.match(job.error ?? '', /\.conductor\.yml not found/);
   });
 });
 
 test('a pipeline may be spelled .conductor.yaml instead of .conductor.yml', async () => {
-  // The project was never told about the other spelling; it is only the
-  // default, so both conventional names are acceptable.
   await withHarness({ repoConfigPath: '.conductor.yaml' }, async (h) => {
     const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
-    assert.equal(res.statusCode, 200, res.body);
-    assert.equal(res.json().tasks, 6);
+    assert.equal(res.statusCode, 200);
+    const job = await h.waitForJob(res.json().job_id);
+    assert.equal(job.state, 'running');
   });
 });
 
 test('a project pointed at a specific file gets no fallback', async () => {
-  // An explicit path means that file. Guessing at a neighbour would make a
-  // typo silently build the wrong pipeline.
   await withHarness({ configPath: 'ci/build.yml', repoConfigPath: '.conductor.yml' }, async (h) => {
     const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
-    assert.equal(res.statusCode, 422);
-    assert.match(res.json().detail, /ci\/build\.yml not found/);
+    assert.equal(res.statusCode, 200);
+    const job = await h.waitForJob(res.json().job_id);
+    assert.equal(job.state, 'failed');
+    assert.match(job.error ?? '', /ci\/build\.yml not found/);
   });
 });
 
@@ -199,8 +205,10 @@ test('a repository carrying both spellings is refused rather than guessed at', a
   await withHarness({}, async (h) => {
     const sha = await h.commit({ '.conductor.yaml': DEFAULT_PIPELINE }, 'add the other spelling');
     const res = await h.trigger({ sha, ref: 'refs/heads/main' });
-    assert.equal(res.statusCode, 422);
-    assert.match(res.json().detail, /both exist/);
+    assert.equal(res.statusCode, 200);
+    const job = await h.waitForJob(res.json().job_id);
+    assert.equal(job.state, 'failed');
+    assert.match(job.error ?? '', /both exist/);
   });
 });
 
@@ -209,26 +217,25 @@ test('a pipeline still using the jobs key is told what it was renamed to', async
   await withHarness({}, async (h) => {
     const sha = await h.commit({ '.conductor.yml': old }, 'pre-rename pipeline');
     const res = await h.trigger({ sha, ref: 'refs/heads/main' });
-    assert.equal(res.statusCode, 422);
-    assert.match(res.json().detail, /was renamed to tasks/);
+    assert.equal(res.statusCode, 200);
+    const job = await h.waitForJob(res.json().job_id);
+    assert.equal(job.state, 'failed');
+    assert.match(job.error ?? '', /was renamed to tasks/);
   });
 });
 
 test('a job can be created directly, without a push payload to imitate', async () => {
   await withHarness({}, async (h) => {
     const res = await h.createJob({ sha: h.sha, ref: 'refs/heads/main', actor: 'alice' });
-    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(res.statusCode, 200);
 
     const body = res.json();
     assert.equal(body.status, 'created');
-    assert.equal(body.tasks, 6);
 
-    const detail = await jobState(h, body.job_id);
-    assert.equal(detail.job.state, 'running');
-    assert.equal(detail.job.actor, 'alice');
-    // Recorded as its own kind of trigger, so a job started deliberately is
-    // distinguishable from one a hook forwarded.
-    assert.equal(detail.job.trigger_type, 'api');
+    const job = await h.waitForJob(body.job_id);
+    assert.equal(job.state, 'running');
+    assert.equal(job.actor, 'alice');
+    assert.equal(job.trigger_type, 'api');
   });
 });
 
@@ -257,6 +264,7 @@ test('creating a job insists on a real commit rather than inferring one', async 
 test('a job can be read back, with the state of every task', async () => {
   await withHarness({}, async (h) => {
     const jobId = (await h.createJob({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
+    await h.waitForJob(jobId);
 
     const signature = h.sign('');
     const signed = await h.app.inject({
@@ -278,6 +286,7 @@ test('a job can be read back, with the state of every task', async () => {
 test('a public job is readable without any credential at all', async () => {
   await withHarness({}, async (h) => {
     const jobId = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
+    await h.waitForJob(jobId);
 
     const res = await h.app.inject({ method: 'GET', url: `/api/v1/projects/demo/jobs/${jobId}` });
     assert.equal(res.statusCode, 200, res.body);
@@ -289,9 +298,8 @@ test('a private job needs the trigger secret, and is otherwise absent', async ()
   const pipeline = DEFAULT_PIPELINE.replace('version: 1\n', 'version: 1\nvisibility: private\n');
   await withHarness({ pipeline }, async (h) => {
     const jobId = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
+    await h.waitForJob(jobId);
 
-    // A 404 rather than a 403, so this cannot be used to find out which
-    // jobs exist.
     const anon = await h.app.inject({ method: 'GET', url: `/api/v1/projects/demo/jobs/${jobId}` });
     assert.equal(anon.statusCode, 404);
 
@@ -308,6 +316,7 @@ test('a private job needs the trigger secret, and is otherwise absent', async ()
 test('a job of another project cannot be read through this one', async () => {
   await withHarness({}, async (h) => {
     const jobId = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
+    await h.waitForJob(jobId);
     const signature = h.sign('');
     const res = await h.app.inject({
       method: 'GET',
@@ -337,7 +346,8 @@ async function claimDownstream(h, name) {
 
 test('a task can be read back on its own, and by its full name', async () => {
   await withHarness({}, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(res.json().job_id);
     const task = await claimNamed(h, 'build:arch=x86_64', { arches: 'x86_64' });
 
     const [bare, scoped] = await Promise.all(
@@ -367,7 +377,8 @@ test('a task can be read back on its own, and by its full name', async () => {
 
 test('reading a task back carries its dependencies and matrix', async () => {
   await withHarness({}, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const tr = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(tr.json().job_id);
     const task = await claimDownstream(h, 'package:arch=x86_64,pkg=musl');
 
     const res = await h.app.inject({ method: 'GET', url: `/api/v1/tasks/${task.id}` });
@@ -384,7 +395,8 @@ test('reading a task back carries its dependencies and matrix', async () => {
 // variables, and its services carry an environment of their own.
 test('reading a task back never exposes its environment, services or script', async () => {
   await withHarness({}, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(res.json().job_id);
     const task = await claimDownstream(h, 'package:arch=x86_64,pkg=musl');
 
     // The claim payload has them, which is what makes their absence below
@@ -409,7 +421,8 @@ test('reading a task back never exposes its environment, services or script', as
 
 test('a task lists the artifacts it stored, with a usable download url', async () => {
   await withHarness({}, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const tr = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(tr.json().job_id);
     const task = await claimNamed(h, 'build:arch=x86_64', { arches: 'x86_64' });
 
     await h.app.inject({
@@ -438,7 +451,8 @@ test('a task lists the artifacts it stored, with a usable download url', async (
 
 test('reading a task back needs no worker token', async () => {
   await withHarness({}, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(res.json().job_id);
     const task = await claimNamed(h, 'lint', {});
 
     // The worker protocol shares this prefix and puts a token hook over its
@@ -453,7 +467,8 @@ test('reading a task back needs no worker token', async () => {
 test('a private task is absent without a credential, and needs its project named', async () => {
   const pipeline = DEFAULT_PIPELINE.replace('version: 1\n', 'version: 1\nvisibility: private\n');
   await withHarness({ pipeline }, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(res.json().job_id);
     const task = await claimNamed(h, 'lint', {});
 
     for (const url of taskUrls(task.id)) {
@@ -482,7 +497,8 @@ test('a private task is readable by an administrator, by either path', async () 
   const pipeline = DEFAULT_PIPELINE.replace('version: 1\n', 'version: 1\nvisibility: private\n');
   // scrypt is slow, so the harness only creates the admin when asked.
   await withHarness({ pipeline, bootstrap: true }, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(res.json().job_id);
     const task = await claimNamed(h, 'lint', {});
     const { cookie } = await h.login();
 
@@ -496,15 +512,16 @@ test('a private task is readable by an administrator, by either path', async () 
 
 test('a task of another project cannot be read through this one', async () => {
   await withHarness({}, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(res.json().job_id);
     const task = await claimNamed(h, 'lint', {});
 
-    const res = await h.app.inject({
+    const res2 = await h.app.inject({
       method: 'GET',
       url: `/api/v1/projects/absent/tasks/${task.id}`,
       headers: { 'content-type': 'application/json', 'x-hub-signature-256': h.sign('') },
     });
-    assert.equal(res.statusCode, 404);
+    assert.equal(res2.statusCode, 404);
   });
 });
 
@@ -532,7 +549,8 @@ test('the worker api rejects missing and invalid tokens', async () => {
 
 test('independent tasks dispatch concurrently', async () => {
   await withHarness({}, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(res.json().job_id);
 
     // The prototype could only ever hand out one task at a time.
     const [a, b, c] = await Promise.all([
@@ -549,7 +567,8 @@ test('independent tasks dispatch concurrently', async () => {
 
 test('a task is only offered to a worker that satisfies its requires', async () => {
   await withHarness({}, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(res.json().job_id);
 
     // Clear the three root tasks so only package and publish remain.
     const roots = await drain(h, { arches: 'x86_64,aarch64' });
@@ -568,7 +587,8 @@ test('a task is only offered to a worker that satisfies its requires', async () 
 
 test('a worker is not offered work for an architecture it cannot build', async () => {
   await withHarness({}, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(res.json().job_id);
 
     const claimed = [];
     for (let i = 0; i < 3; i += 1) {
@@ -585,7 +605,8 @@ test('a worker is not offered work for an architecture it cannot build', async (
 
 test('a claimed task carries everything the worker needs', async () => {
   await withHarness({}, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(res.json().job_id);
     const task = await claimNamed(h, 'build:arch=x86_64', { arches: 'x86_64' });
 
     assert.equal(task.image, 'debian:bookworm-slim');
@@ -613,7 +634,8 @@ test('a claimed task carries everything the worker needs', async () => {
 
 test('a task that requires a feature reports it to the worker', async () => {
   await withHarness({}, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(res.json().job_id);
     const roots = await drain(h, { arches: 'x86_64,aarch64' });
     for (const task of Object.values(roots)) await finish(h, task.id, { success: true });
 
@@ -626,6 +648,7 @@ test('a task that requires a feature reports it to the worker', async () => {
 test('the standard conductor variables are present in the task environment', async () => {
   await withHarness({}, async (h) => {
     const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
+    await h.waitForJob(job);
     const task = await claimNamed(h, 'lint', {});
 
     // The worker is not told any of this, but the script is: these reach
@@ -644,25 +667,27 @@ test('the standard conductor variables are present in the task environment', asy
 
 test('the source tarball is served from the mirror', async () => {
   await withHarness({}, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(res.json().job_id);
     const task = await claimNamed(h, 'lint', {});
 
-    const res = await h.app.inject({
+    const res2 = await h.app.inject({
       method: 'GET',
       url: `/api/v1/tasks/${task.id}/source.tar.gz`,
       headers: h.auth,
     });
-    assert.equal(res.statusCode, 200);
-    assert.equal(res.headers['content-type'], 'application/gzip');
+    assert.equal(res2.statusCode, 200);
+    assert.equal(res2.headers['content-type'], 'application/gzip');
     // gzip magic number
-    assert.equal(res.rawPayload[0], 0x1f);
-    assert.equal(res.rawPayload[1], 0x8b);
+    assert.equal(res2.rawPayload[0], 0x1f);
+    assert.equal(res2.rawPayload[1], 0x8b);
   });
 });
 
 test('a worker cannot touch a task it does not hold', async () => {
   await withHarness({}, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const tr = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(tr.json().job_id);
     const task = await claimNamed(h, 'lint', {});
 
     const other = await h.services.workerTokens.create('intruder');
@@ -678,7 +703,8 @@ test('a worker cannot touch a task it does not hold', async () => {
 
 test('log appends are resumable and deduplicated by offset', async () => {
   await withHarness({}, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(res.json().job_id);
     const task = await claimNamed(h, 'lint', {});
     const url = `/api/v1/tasks/${task.id}/log`;
     const headers = { ...h.auth, 'content-type': 'application/octet-stream' };
@@ -712,7 +738,8 @@ test('log appends are resumable and deduplicated by offset', async () => {
 
 test('an oversized log chunk is refused', async () => {
   await withHarness({}, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const tr = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(tr.json().job_id);
     const task = await claimNamed(h, 'lint', {});
 
     // Artifacts are streamed and may be large, but a single log append is
@@ -731,7 +758,8 @@ test('an oversized log chunk is refused', async () => {
 
 test('a finished log moves to storage and is still readable', async () => {
   await withHarness({}, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(res.json().job_id);
     const task = await claimNamed(h, 'lint', {});
 
     await h.app.inject({
@@ -753,7 +781,8 @@ test('a finished log moves to storage and is still readable', async () => {
 
 test('artifacts are stored, hashed, and stripped of traversal', async () => {
   await withHarness({}, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(res.json().job_id);
     const task = await claimNamed(h, 'build:arch=x86_64', { arches: 'x86_64' });
 
     const upload = await h.app.inject({
@@ -789,10 +818,11 @@ test('artifacts are stored, hashed, and stripped of traversal', async () => {
 
 test('an artifact shorter than its content-length is rejected', async () => {
   await withHarness({}, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(res.json().job_id);
     const task = await claimNamed(h, 'lint', {});
 
-    const res = await h.app.inject({
+    const res2 = await h.app.inject({
       method: 'POST',
       url: `/api/v1/tasks/${task.id}/artifacts`,
       headers: {
@@ -803,13 +833,14 @@ test('an artifact shorter than its content-length is rejected', async () => {
       },
       payload: Buffer.from('tiny'),
     });
-    assert.equal(res.statusCode, 400);
+    assert.equal(res2.statusCode, 400);
   });
 });
 
 test('success releases dependents, matched on shared dimensions', async () => {
   await withHarness({}, async (h) => {
     const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
+    await h.waitForJob(job);
 
     const roots = await drain(h, { arches: 'x86_64,aarch64', features: 'sign-key' });
     await finish(h, roots['build:arch=x86_64'].id, { success: true });
@@ -828,6 +859,7 @@ test('success releases dependents, matched on shared dimensions', async () => {
 test('failure skips transitive dependents, not just direct ones', async () => {
   await withHarness({}, async (h) => {
     const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
+    await h.waitForJob(job);
 
     const build = await claimNamed(h, 'build:arch=x86_64', { arches: 'x86_64' });
     const outcome = await finish(h, build.id, { success: false, exitCode: 2, error: 'compile failed' });
@@ -847,6 +879,7 @@ test('failure skips transitive dependents, not just direct ones', async () => {
 test('a job settles as failed once every task is terminal', async () => {
   await withHarness({}, async (h) => {
     const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
+    await h.waitForJob(job);
 
     const roots = await drain(h, { arches: 'x86_64,aarch64', features: 'sign-key' });
 
@@ -878,6 +911,7 @@ tasks:
 `;
   await withHarness({ pipeline }, async (h) => {
     const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
+    await h.waitForJob(job);
 
     const a = await claimNamed(h, 'a', {});
     await finish(h, a.id, { success: true });
@@ -904,6 +938,7 @@ tasks:
 `;
   await withHarness({ pipeline }, async (h) => {
     const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
+    await h.waitForJob(job);
 
     const flaky = await claimNamed(h, 'flaky', {});
     const outcome = await finish(h, flaky.id, { success: false, exitCode: 1 });
@@ -928,6 +963,7 @@ tasks:
 `;
   await withHarness({ pipeline }, async (h) => {
     const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
+    await h.waitForJob(job);
 
     const first = await claimNamed(h, 'retried', {});
     const outcome = await finish(h, first.id, { success: false, exitCode: 1 });
@@ -945,6 +981,7 @@ tasks:
 test('heartbeats keep a task alive and report cancellation', async () => {
   await withHarness({}, async (h) => {
     const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
+    await h.waitForJob(job);
     const task = await claimNamed(h, 'lint', {});
 
     const beat = await h.app.inject({
@@ -971,6 +1008,7 @@ test('heartbeats keep a task alive and report cancellation', async () => {
 test('the reaper fails a task whose worker stopped reporting', async () => {
   await withHarness({}, async (h) => {
     const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
+    await h.waitForJob(job);
     const task = await claimNamed(h, 'lint', {});
     assert.equal(tasksByName(await jobState(h, job)).lint.state, 'running');
 
@@ -996,8 +1034,10 @@ test('the reaper fails a task whose worker stopped reporting', async () => {
 test('a second push produces an independent, numbered job', async () => {
   await withHarness({}, async (h) => {
     const first = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json();
+    await h.waitForJob(first.job_id);
     const sha2 = await h.commit({ 'README.md': 'changed\n' }, 'second commit');
     const second = (await h.trigger({ sha: sha2, ref: 'refs/heads/main' })).json();
+    await h.waitForJob(second.job_id);
 
     assert.notEqual(first.job_id, second.job_id);
     const detail = await jobState(h, second.job_id);
@@ -1054,14 +1094,17 @@ test('a trigger for an unknown project is a 404', async () => {
 test('a commit that is not in the repository is refused', async () => {
   await withHarness({}, async (h) => {
     const res = await h.trigger({ sha: 'b'.repeat(40), ref: 'refs/heads/main' });
-    assert.equal(res.statusCode, 500);
-    assert.match(res.json().detail, /not present in the mirror/);
+    assert.equal(res.statusCode, 200);
+    const job = await h.waitForJob(res.json().job_id);
+    assert.equal(job.state, 'failed');
+    assert.match(job.error ?? '', /not present in the mirror/);
   });
 });
 
 test('a task is told to fetch an archive, and never the repository itself', async () => {
   await withHarness({}, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(res.json().job_id);
     const task = await claimNamed(h, 'lint', {});
 
     assert.match(task.endpoints.source, /\/source\.tar\.gz$/);
@@ -1079,7 +1122,8 @@ test('the source archive is the bare tree, with no wrapping directory', async ()
   // destination, and docker creates that directory as it extracts. A
   // wrapping directory in the archive would land one level too deep.
   await withHarness({}, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(res.json().job_id);
     const task = await claimNamed(h, 'lint', {});
 
     const archive = await h.app.inject({
@@ -1120,7 +1164,8 @@ test('the working directory is resolved from the pipeline, then the project', as
   ].join('\n');
 
   await withHarness({ pipeline }, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(res.json().job_id);
     const task = await claimNamed(h, 'build', {});
     assert.equal(task.workdir, '/usr/src/app', 'the repository has the final say');
   });
@@ -1131,14 +1176,16 @@ test('the working directory is resolved from the pipeline, then the project', as
       'UPDATE projects SET workdir = {dir} WHERE id = {id}',
       { dir: '/srv/build', id: h.project.id }
     );
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(res.json().job_id);
     const task = await claimNamed(h, 'lint', {});
     assert.equal(task.workdir, '/srv/build');
   });
 
   // With neither, there is a default.
   await withHarness({}, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(res.json().job_id);
     const task = await claimNamed(h, 'lint', {});
     assert.equal(task.workdir, '/work');
   });
@@ -1159,8 +1206,10 @@ test('an unusable working directory is refused rather than sanitised', async () 
 
     await withHarness({ pipeline }, async (h) => {
       const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
-      assert.equal(res.statusCode, 422, `expected ${JSON.stringify(workdir)} to be refused`);
-      assert.ok(res.json().problems.some((p) => p.path === 'workdir'));
+      assert.equal(res.statusCode, 200);
+      const job = await h.waitForJob(res.json().job_id);
+      assert.equal(job.state, 'failed', `expected ${JSON.stringify(workdir)} to be refused`);
+      assert.ok((job.error ?? '').includes('workdir'), `error should mention workdir: ${job.error}`);
     });
   }
 });

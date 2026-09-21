@@ -128,11 +128,11 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
     return state;
   }
 
-  return {
-    // Reads the pipeline at the pushed commit and records the job. The
-    // repository is the source of truth, so nothing the trigger claims about
-    // the contents is trusted.
-    async createJob(project, { ref, baseSha, headSha, trigger = 'push', actor = null }) {
+  // Background compilation: git sync, pipeline read/compile, task creation.
+  // Updates the job from 'pending' to either 'running' (with tasks) or
+  // 'failed' (with an error). This is what lets a push hook return immediately.
+  async function compileAndDispatch(project, jobId, { ref, baseSha, headSha }) {
+    try {
       await git.sync(project, { force: true });
 
       if (!(await git.hasCommit(project, headSha))) {
@@ -151,58 +151,33 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
         source: found.path,
         defaultTimeout: cfg.scheduler.default_task_timeout,
         defaultAttempts: 1,
-        // Decides which tasks this push runs at all, so a publish step
-        // restricted to main is absent from a branch's job rather than
-        // recorded against it.
         ref: ref ?? '',
       });
 
       const info = await git.commitInfo(project, headSha).catch(() => ({ subject: null }));
-      const jobId = newJobId();
       const now = Date.now();
-
-      // The repository may declare its own visibility; otherwise the
-      // project's setting stands. Stored per job, because the answer can
-      // legitimately change from one commit to the next.
       const visibility = pipeline.visibility ?? project.visibility ?? 'private';
-
-      // Same shape of answer for where the tree is unpacked inside a task
-      // container: the repository knows what its build expects, the
-      // project can set a house default, and failing both there is one.
       const workdir = pipeline.workdir ?? project.workdir ?? DEFAULT_WORKDIR;
 
       await db.transaction(async (tx) => {
-        const number = await projects.nextJobNumber(tx, project.id);
         const empty = pipeline.tasks.length === 0;
 
         await tx.run(
-          `INSERT INTO jobs
-             (id, project_id, number, ref, base_sha, head_sha, trigger_type, actor,
-              title, state, pipeline, visibility, created_at, started_at, finished_at)
-           VALUES
-             ({id}, {project}, {number}, {ref}, {base}, {head}, {trigger}, {actor},
-              {title}, {state}, {pipeline}, {visibility}, {now}, {now}, {finished})`,
+          `UPDATE jobs
+              SET title = {title}, state = {state}, pipeline = {pipeline},
+                  visibility = {visibility}, started_at = {started}, finished_at = {finished}
+            WHERE id = {id}`,
           {
-            visibility,
             id: jobId,
-            project: project.id,
-            number,
-            ref: ref ?? null,
-            base: baseSha ?? null,
-            head: headSha,
-            trigger,
-            actor,
             title: info.subject ?? null,
             state: empty ? 'success' : 'running',
             pipeline: JSON.stringify({ version: pipeline.version, tasks: pipeline.tasks }),
-            now,
+            visibility,
+            started: now,
             finished: empty ? now : null,
           }
         );
 
-        // Task ids are minted here rather than derived from the name, so
-        // the dependency edges below are the only thing that maps a name
-        // onto an id.
         const idByName = new Map(pipeline.tasks.map((t) => [t.name, newTaskId()]));
 
         for (const task of pipeline.tasks) {
@@ -229,9 +204,6 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
                 matrix: task.matrix,
                 needs: task.needs,
                 depth: task.depth,
-                // Recorded per task rather than looked up when a worker
-                // polls, so a job stays reproducible after the project
-                // or the pipeline changes.
                 workdir,
               }),
               allow: task.allow_failure ? 1 : 0,
@@ -252,8 +224,59 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
         }
       });
 
-      logger.info?.(`job ${jobId} created for ${project.id} with ${pipeline.tasks.length} task(s)`);
-      return { jobId, taskCount: pipeline.tasks.length };
+      logger.info?.(`job ${jobId} ready with ${pipeline.tasks.length} task(s)`);
+    } catch (e) {
+      await db.run(
+        `UPDATE jobs SET state = 'failed', error = {error}, finished_at = {now} WHERE id = {id}`,
+        { id: jobId, error: String(e.message ?? e).slice(0, 1024), now: Date.now() }
+      );
+    }
+  }
+
+  return {
+    // Records a job as 'pending' and returns immediately. Git sync and pipeline
+    // compilation happen in the background via compileAndDispatch, which updates
+    // the job to 'running' (with tasks) or 'failed' once done. This ensures a
+    // push hook never blocks on fetching or parsing.
+    async createJob(project, { ref, baseSha, headSha, trigger = 'push', actor = null }) {
+      const jobId = newJobId();
+      const now = Date.now();
+
+      await db.transaction(async (tx) => {
+        const number = await projects.nextJobNumber(tx, project.id);
+
+        await tx.run(
+          `INSERT INTO jobs
+             (id, project_id, number, ref, base_sha, head_sha, trigger_type, actor,
+              title, state, pipeline, visibility, created_at, started_at, finished_at)
+           VALUES
+             ({id}, {project}, {number}, {ref}, {base}, {head}, {trigger}, {actor},
+              {title}, {state}, {pipeline}, {visibility}, {now}, {started}, {finished})`,
+          {
+            id: jobId,
+            project: project.id,
+            number,
+            ref: ref ?? null,
+            base: baseSha ?? null,
+            head: headSha,
+            trigger,
+            actor,
+            title: null,
+            state: 'pending',
+            pipeline: null,
+            visibility: project.visibility ?? 'private',
+            now,
+            started: null,
+            finished: null,
+          }
+        );
+      });
+
+      logger.info?.(`job ${jobId} recorded for ${project.id}`);
+
+      compileAndDispatch(project, jobId, { ref, baseSha, headSha });
+
+      return { jobId };
     },
 
     // Hands one task to a worker. The worker advertises what it can run;

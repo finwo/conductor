@@ -64,22 +64,25 @@ test('attrs omits absent values and renders bare booleans', () => {
 
 test('an anonymous visitor sees public jobs and an invitation to sign in', async () => {
   await withUi({ visibility: 'public' }, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(res.json().job_id);
 
-    const res = await get(h, '/');
-    assert.equal(res.statusCode, 200);
-    assert.match(res.headers['content-type'], /text\/html/);
-    assert.match(res.body, /Sign in/);
-    assert.match(res.body, /#1<\/a>/);
+    const page = await get(h, '/');
+    assert.equal(page.statusCode, 200);
+    assert.match(page.headers['content-type'], /text\/html/);
+    assert.match(page.body, /Sign in/);
+    assert.match(page.body, /#1<\/a>/);
     // No management links without a session.
-    assert.ok(!res.body.includes('href="/projects"'));
-    assert.ok(!res.body.includes('href="/users"'));
+    assert.ok(!page.body.includes('href="/projects"'));
+    assert.ok(!page.body.includes('href="/users"'));
   });
 });
 
 test('an anonymous visitor cannot see a private job', async () => {
   await withUi({ visibility: 'private' }, async (h) => {
-    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const job = res.json().job_id;
+    await h.waitForJob(job);
 
     const list = await get(h, '/');
     assert.ok(!list.body.includes('#1</a>'));
@@ -272,7 +275,9 @@ test('the users page is administrator only and warns about what deletion destroy
 
 test('a running job polls, and a finished one stops', async () => {
   await withUi({ visibility: 'public' }, async (h) => {
-    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().job_id;
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const job = res.json().job_id;
+    await h.waitForJob(job);
 
     const running = await get(h, `/jobs/${job}`);
     assert.match(running.body, /hx-get="\/partials\/jobs\/[^"]+\/tasks"/);
@@ -287,7 +292,8 @@ test('a running job polls, and a finished one stops', async () => {
 
 test('a task page streams the log and stops polling once it completes', async () => {
   await withUi({ visibility: 'public' }, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(res.json().job_id);
     const task = (await h.claim({})).json().task;
 
     await h.app.inject({
@@ -316,7 +322,8 @@ test('a task page streams the log and stops polling once it completes', async ()
 
 test('log output is escaped, so a task cannot inject markup into the page', async () => {
   await withUi({ visibility: 'public' }, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(res.json().job_id);
     const task = (await h.claim({})).json().task;
 
     await h.app.inject({

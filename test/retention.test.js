@@ -424,7 +424,8 @@ test('artifacts.expire in a pipeline reaches the stored artifact', async () => {
   ].join('\n');
 
   await withHarness({ pipeline }, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(res.json().job_id);
 
     const before = Date.now();
     for (const name of ['build', 'keep']) {

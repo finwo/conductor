@@ -199,9 +199,21 @@ export async function startHarness(options = {}) {
       return app.inject({
         method: 'POST',
         url: '/api/v1/projects/demo/jobs',
-        headers: { 'content-type': 'application/json', 'x-hub-signature-256': signature },
+        headers: { ...this.auth, 'content-type': 'application/json', 'x-hub-signature-256': signature },
         payload: body,
       });
+    },
+
+    // Waits for a job to leave the pending state (compilation complete).
+    // Reads directly from the database so visibility rules don't block us.
+    async waitForJob(jobId, { timeout = 10000 } = {}) {
+      const start = Date.now();
+      while (Date.now() - start < timeout) {
+        const job = await services.db.get('SELECT * FROM jobs WHERE id = {id}', { id: jobId });
+        if (job && job.state !== 'pending') return job;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      throw new Error(`job ${jobId} did not leave pending state within ${timeout}ms`);
     },
 
     async claim(body = {}) {

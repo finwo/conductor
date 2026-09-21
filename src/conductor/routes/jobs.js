@@ -19,7 +19,6 @@
 // network and a bad idea anywhere else, so it is logged.
 
 import { SHA_PATTERN } from '../../lib/git.js';
-import { PipelineError } from '../../lib/pipeline/index.js';
 import { canManageProject } from '../../lib/projects.js';
 import { verifySignature } from '../../lib/signature.js';
 
@@ -64,26 +63,17 @@ export default async function jobRoutes(fastify, { auth, db, projects, scheduler
     return project;
   }
 
-  // Compiles the pipeline and records the job, or answers with the reason
-  // it could not.
+  // Records the job as pending and returns immediately. Pipeline compilation
+  // runs in the background; errors surface as the job transitioning to 'failed'.
   async function create(reply, req, project, { ref, base, sha, actor, trigger }) {
-    try {
-      const { jobId, taskCount } = await scheduler.createJob(project, {
-        ref,
-        baseSha: base,
-        headSha: sha,
-        trigger,
-        actor,
-      });
-      return reply.send({ status: 'created', job_id: jobId, tasks: taskCount });
-    } catch (e) {
-      if (e instanceof PipelineError) {
-        // A broken pipeline is the caller's problem, not a server fault.
-        return reply.code(422).send({ error: 'invalid pipeline', detail: e.message, problems: e.errors });
-      }
-      req.log.error({ err: e }, `could not create a job for ${project.id}`);
-      return reply.code(500).send({ error: 'could not create job', detail: String(e.message ?? e) });
-    }
+    const { jobId } = await scheduler.createJob(project, {
+      ref,
+      baseSha: base,
+      headSha: sha,
+      trigger,
+      actor,
+    });
+    return reply.send({ status: 'created', job_id: jobId });
   }
 
   fastify.post('/projects/:project/trigger', async (req, reply) => {
