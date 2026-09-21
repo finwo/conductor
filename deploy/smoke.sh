@@ -135,6 +135,15 @@ fi
 curl -fsS "http://${SMOKE_HOST}:${PORT}/health"
 printf '\n'
 
+# Use the container's internal IP for reliable access. Port publishing from
+# one container to another is unreliable (127.0.0.1 refers to the caller,
+# and gateway IPs vary by host). The container IP is always reachable via
+# the Docker bridge network.
+CONTAINER_IP=$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${PROJECT}-conductor-1")
+[ -n "${CONTAINER_IP}" ] || fail "could not determine conductor container IP"
+BASE_URL="http://${CONTAINER_IP}:9080"
+printf 'using %s\n' "${BASE_URL}"
+
 log "registering the project and a worker"
 compose exec -T conductor node src/admin-cli.js project:add demo /repo --secret "${SECRET}" >/dev/null
 SMOKE_TOKEN=$(compose exec -T conductor node src/admin-cli.js token:add smoke-worker | awk '/token:/{print $2}')
@@ -147,7 +156,7 @@ compose up -d worker
 log "triggering a job"
 BODY=$(printf '{"sha":"%s","ref":"refs/heads/main"}' "${SHA}")
 SIG=$(printf '%s' "${BODY}" | openssl dgst -sha256 -hmac "${SECRET}" | sed 's/^.*[= ]//')
-RESPONSE=$(curl -fsS -X POST "http://${SMOKE_HOST}:${PORT}/api/v1/projects/demo/trigger" \
+RESPONSE=$(curl -fsS -X POST "${BASE_URL}/api/v1/projects/demo/trigger" \
   -H 'Content-Type: application/json' \
   -H "X-Hub-Signature-256: sha256=${SIG}" \
   -d "${BODY}")
@@ -158,7 +167,7 @@ JOB=$(printf '%s' "${RESPONSE}" | sed 's/.*"job_id":"\([^"]*\)".*/\1/')
 
 # The job state is the first badge on the job page.
 job_state() {
-  curl -fsS "http://${SMOKE_HOST}:${PORT}/jobs/$1" \
+  curl -fsS "${BASE_URL}/jobs/$1" \
     | sed -n 's/.*class="badge \([a-z]*\)".*/\1/p' | head -1
 }
 
@@ -183,18 +192,18 @@ printf 'job %s finished as %s after %ss\n' "${JOB}" "${STATE_NOW}" "${i}"
 log "checking the log and the artifact"
 # Task ids carry no structure, so the build task is found by following the
 # link from the job page rather than by assembling an id.
-TASK=$(curl -fsS "http://${SMOKE_HOST}:${PORT}/jobs/${JOB}" \
+TASK=$(curl -fsS "${BASE_URL}/jobs/${JOB}" \
   | sed -n 's#.*href="/tasks/\([^"]*\)">build<.*#\1#p' | head -1)
 [ -n "${TASK}" ] || fail "no build task was linked from the job page"
 
-PAGE=$(curl -fsS "http://${SMOKE_HOST}:${PORT}/tasks/${TASK}")
+PAGE=$(curl -fsS "${BASE_URL}/tasks/${TASK}")
 printf '%s\n' "${PAGE}" | grep -q 'run 1 of demo' || fail "the task environment did not reach the script"
 
 ARTIFACT_PATH=$(printf '%s' "${PAGE}" \
   | sed -n 's#.*href="\(/api/v1/[^"]*/artifacts/[^"]*\)".*#\1#p' | head -1)
 [ -n "${ARTIFACT_PATH}" ] || fail "no artifact was recorded"
 
-CONTENT=$(curl -fsSL "http://${SMOKE_HOST}:${PORT}${ARTIFACT_PATH}")
+CONTENT=$(curl -fsSL "${BASE_URL}${ARTIFACT_PATH}")
 printf 'artifact contents: %s\n' "${CONTENT}"
 [ "${CONTENT}" = packaged ] || fail "the artifact did not round trip"
 
@@ -205,7 +214,7 @@ log "reading the task back through the api"
 # tests: the pipeline above puts CONDUCTOR_PROJECT in the script, so a
 # response carrying it would mean the environment had escaped.
 for URL in "/api/v1/tasks/${TASK}" "/api/v1/projects/demo/tasks/${TASK}"; do
-  BODY=$(curl -fsS "http://${SMOKE_HOST}:${PORT}${URL}") || fail "${URL} was not readable"
+  BODY=$(curl -fsS "${BASE_URL}${URL}") || fail "${URL} was not readable"
 
   printf '%s' "${BODY}" | grep -q '"state":"success"' \
     || fail "${URL} did not report the task state"
@@ -223,7 +232,7 @@ for URL in "/api/v1/tasks/${TASK}" "/api/v1/projects/demo/tasks/${TASK}"; do
 done
 
 log "checking the interface"
-curl -fsS "http://${SMOKE_HOST}:${PORT}/" | grep -q 'conductor' || fail "the interface did not render"
+curl -fsS "${BASE_URL}/" | grep -q 'conductor' || fail "the interface did not render"
 
 # The release task is restricted to main. A push to anything else must not
 # produce it at all, rather than produce it and skip it, since a skipped
@@ -231,7 +240,7 @@ curl -fsS "http://${SMOKE_HOST}:${PORT}/" | grep -q 'conductor' || fail "the int
 log "checking that a branch push leaves the restricted task out"
 BRANCH_BODY=$(printf '{"sha":"%s","ref":"refs/heads/feature"}' "${SHA}")
 BRANCH_SIG=$(printf '%s' "${BRANCH_BODY}" | openssl dgst -sha256 -hmac "${SECRET}" | sed 's/^.*[= ]//')
-BRANCH=$(curl -fsS -X POST "http://${SMOKE_HOST}:${PORT}/api/v1/projects/demo/trigger" \
+BRANCH=$(curl -fsS -X POST "${BASE_URL}/api/v1/projects/demo/trigger" \
   -H 'Content-Type: application/json' \
   -H "X-Hub-Signature-256: sha256=${BRANCH_SIG}" \
   -d "${BRANCH_BODY}")
@@ -251,7 +260,7 @@ while [ "${i}" -lt 90 ]; do
   sleep 1
 done
 
-curl -fsS "http://${SMOKE_HOST}:${PORT}/jobs/${BRANCH_JOB}" | grep -q '>release<' \
+curl -fsS "${BASE_URL}/jobs/${BRANCH_JOB}" | grep -q '>release<' \
   && fail "the release task should not exist on a branch job"
 
 printf 'branch job finished as %s without the release task\n' "${BRANCH_STATE}"
