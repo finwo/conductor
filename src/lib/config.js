@@ -91,6 +91,8 @@ const DEFAULTS = {
     // Logs go purely by age, and are the reason this exists at all: they
     // are written for every job, read for almost none, and never stop.
     log_keep_days: 14,
+    // A machine that stops claiming for this long is forgotten.
+    worker_agent_keep_hours: 24,
     // How often to sweep. Deleting is not urgent, and a sweep walks every
     // project, so this is deliberately not the scheduler's interval.
     sweep_interval: 3600,
@@ -113,6 +115,7 @@ const ENV_MAP = [
   ['CONDUCTOR_RETENTION_ARTIFACT_JOBS', 'retention.artifact_keep_jobs', toInt],
   ['CONDUCTOR_RETENTION_ARTIFACT_DAYS', 'retention.artifact_keep_days', toInt],
   ['CONDUCTOR_RETENTION_LOG_DAYS',      'retention.log_keep_days',      toInt],
+  ['CONDUCTOR_RETENTION_WORKER_AGENT_HOURS', 'retention.worker_agent_keep_hours', toInt],
   ['CONDUCTOR_RETENTION_SWEEP_INTERVAL','retention.sweep_interval',     toInt],
   ['CONDUCTOR_HOST',                 'server.host',                 String],
   ['CONDUCTOR_PORT',                 'server.port',                 toInt],
@@ -265,7 +268,7 @@ function validate(cfg) {
 
   // Retention deletes things, so a nonsensical value here is worth
   // refusing at startup rather than discovering from missing artifacts.
-  for (const key of ['artifact_keep_jobs', 'artifact_keep_days', 'log_keep_days']) {
+  for (const key of ['artifact_keep_jobs', 'artifact_keep_days', 'log_keep_days', 'worker_agent_keep_hours']) {
     const value = cfg.retention[key];
     if (!Number.isInteger(value) || value < 0) {
       errors.push(`retention.${key} must be a whole number of zero or more, got ${JSON.stringify(value)}`);

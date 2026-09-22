@@ -23,7 +23,8 @@
 // row points at something that is gone, which is a broken download. The
 // cheaper failure is the one to choose.
 
-const DAY = 24 * 60 * 60 * 1000;
+const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
 
 // A project's own setting, the server default when it has none. Zero is a
 // real answer meaning keep forever, so only null and undefined fall
@@ -171,12 +172,23 @@ export function createRetention({ cfg, db, storage, logs, logger = {} }) {
     return { deleted, bytes };
   }
 
+  // A machine that has stopped claiming. Zero keeps them forever.
+  async function sweepWorkerAgents(now) {
+    const hours = defaults.worker_agent_keep_hours;
+    if (!hours) return 0;
+    const res = await db.run(
+      'DELETE FROM worker_agents WHERE last_seen_at < {cutoff}',
+      { cutoff: now - hours * HOUR }
+    );
+    return res.changes ?? 0;
+  }
+
   return {
     // One pass over everything. Returns what it did, which the tests read
     // and the log line summarises.
     async sweep({ now = Date.now(), batch = defaults.batch } = {}) {
       const total = {
-        artifacts: 0, artifactBytes: 0, logs: 0, logBytes: 0,
+        artifacts: 0, artifactBytes: 0, logs: 0, logBytes: 0, agents: 0,
       };
 
       const expired = await sweepExpiredArtifacts(now, batch);
@@ -199,9 +211,12 @@ export function createRetention({ cfg, db, storage, logs, logger = {} }) {
         total.logBytes += l.bytes;
       }
 
-      if (total.artifacts > 0 || total.logs > 0) {
+      total.agents = await sweepWorkerAgents(now);
+
+      if (total.artifacts > 0 || total.logs > 0 || total.agents > 0) {
         logger.info?.(
-          `retention: removed ${total.artifacts} artifact(s) and ${total.logs} log(s), ` +
+          `retention: removed ${total.artifacts} artifact(s), ${total.logs} log(s) and ` +
+          `${total.agents} worker record(s), ` +
           `freeing ${Math.round((total.artifactBytes + total.logBytes) / 1024)} KiB`
         );
       }

@@ -85,6 +85,8 @@ tbody tr:hover { background: #1b1f23; }
 .badge.skipped { background: var(--skipped); }
 .badge.cancelled { background: var(--cancelled); }
 .badge.pending, .badge.queued { background: var(--queued); }
+.badge.online  { background: var(--success); }
+.badge.offline { background: var(--skipped); }
 
 .panel {
   background: var(--panel);

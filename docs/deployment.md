@@ -224,6 +224,10 @@ Logs go by age alone. Sweeping a log deletes the bytes and leaves the task,
 so a job stays explainable after its output is gone, and the interface can
 tell an expired log apart from one that was never written.
 
+The same sweep forgets machines that have stopped claiming, after
+`retention.worker_agent_keep_hours` (default 24, `0` keeps them for ever).
+A machine that comes back reappears on its next claim.
+
 ### What a first sweep will do
 
 Upgrading applies these defaults to everything already stored. On an

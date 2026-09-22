@@ -13,7 +13,7 @@ import { toHtml, html } from './html.js';
 import { layout } from './layout.js';
 import {
   jobsPage, jobsTable, jobPage, tasksTable, taskPage, taskLog, loginPage,
-  projectsPage, projectPage, variablesTable, workersPage, workersTable,
+  projectsPage, projectPage, variablesTable, workersPage, workersTable, workerPage,
   usersPage, usersTable,
 } from './pages.js';
 import { canManageProject, canViewProject, VISIBILITIES } from '../../lib/projects.js';
@@ -623,6 +623,40 @@ export default async function uiRoutes(fastify, services) {
       user,
       active: 'workers',
       body: workersPage({ tokens: await workerTokens.pageVisible(user, pageOf(req.query)), user, query: req.query }),
+    });
+  });
+
+  fastify.get('/workers/:id', async (req, reply) => {
+    const user = await required(req, reply);
+    if (!user) return reply;
+
+    const token = await workerTokens.get(req.params.id);
+    if (!token || !canManageWorker(user, token)) {
+      reply.code(404);
+      return page(reply, { title: 'not found', user, active: 'workers', body: html`<p class="error">No such worker.</p>` });
+    }
+
+    const tasks = await paginate(db, {
+      select: 'id, name, state, arch, worker_name, exit_code, claimed_at, started_at, finished_at',
+      from: 'tasks',
+      where: 'worker_token_id = {worker}',
+      order: 'claimed_at DESC',
+      params: { worker: token.id },
+      page: pageOf(req.query),
+    });
+
+    return page(reply, {
+      title: token.name,
+      user,
+      active: 'workers',
+      body: workerPage({
+        token,
+        agents: await workerTokens.agentsFor(token.id),
+        tasks,
+        user,
+        staleAfter: cfg.scheduler.heartbeat_timeout * 1000,
+        query: req.query,
+      }),
     });
   });
 

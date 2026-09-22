@@ -61,7 +61,7 @@ node src/worker/agent.js --config worker.json
 | Key              | Default              | Description                                     |
 | ---------------- | -------------------- | ----------------------------------------------- |
 | `conductor_url`  | `http://127.0.0.1:8080` | Base URL of the conductor.                   |
-| `name`           | hostname             | Shown against tasks this worker ran.             |
+| `name`           | hostname             | Identifies this machine to the conductor.        |
 | `token`          | none                 | The worker token, inline.                       |
 | `token_file`     | none                 | Path to a file holding the token. Preferred.    |
 | `arches`         | `[]`                 | Architectures offered. Empty means no `arch` tasks, only tasks that declare none. |
@@ -76,9 +76,14 @@ is deliberate: that is a property of the build and is decided by the
 pipeline or the project, not by the machine that happens to run it.
 
 Every key can also be set from the environment: `CONDUCTOR_URL`,
-`CONDUCTOR_WORKER_TOKEN`, `CONDUCTOR_WORKER_TOKEN_FILE`,
-`CONDUCTOR_WORKER_ARCHES`, `CONDUCTOR_WORKER_CONCURRENCY`,
-`CONDUCTOR_WORKER_DOCKER`, and so on. The environment wins over the file.
+`CONDUCTOR_WORKER_NAME`, `CONDUCTOR_WORKER_TOKEN`,
+`CONDUCTOR_WORKER_TOKEN_FILE`, `CONDUCTOR_WORKER_ARCHES`,
+`CONDUCTOR_WORKER_CONCURRENCY`, `CONDUCTOR_WORKER_DOCKER`, and so on. The
+environment wins over the file.
+
+In a container the default hostname is the container id, which changes on
+every restart. Set `CONDUCTOR_WORKER_NAME` so a machine keeps one name:
+under Nomad, `CONDUCTOR_WORKER_NAME = "${attr.unique.hostname}"`.
 
 Features
 --------
@@ -87,6 +92,10 @@ A feature is a name this worker advertises, together with whatever local
 resources a task asking for it should receive. The conductor only ever learns
 the name. It will not send a task to a worker that does not advertise every
 feature the task's `requires` lists.
+
+The names a machine advertises are recorded against its worker token and
+shown on that worker's page, so you can see what each machine offers without
+logging into it. A machine that stops claiming is forgotten after a day.
 
 ```json
 "features": {

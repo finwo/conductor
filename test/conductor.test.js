@@ -541,6 +541,40 @@ test('an unknown task is 404 by either path', async () => {
   });
 });
 
+test('a claim records what the machine advertises, even when there is no work', async () => {
+  await withHarness({}, async (h) => {
+    const idle = await h.claim({ name: 'builder-01', arches: ['x86_64'], features: ['unos-sign-keys'] });
+    assert.equal(idle.statusCode, 204, 'nothing is queued yet');
+
+    const agents = await h.services.workerTokens.agentsFor(h.worker.id);
+    assert.equal(agents.length, 1);
+    assert.equal(agents[0].name, 'builder-01');
+    assert.deepEqual(agents[0].features, ['unos-sign-keys']);
+    assert.deepEqual(agents[0].arches, ['x86_64']);
+  });
+});
+
+test('a machine that changes its features updates its row rather than adding one', async () => {
+  await withHarness({}, async (h) => {
+    await h.claim({ name: 'builder-01', features: ['dind'] });
+    await h.claim({ name: 'builder-01', features: ['dind', 'unos-sign-keys'] });
+
+    const agents = await h.services.workerTokens.agentsFor(h.worker.id);
+    assert.equal(agents.length, 1, 'one machine is one row');
+    assert.deepEqual(agents[0].features, ['dind', 'unos-sign-keys']);
+  });
+});
+
+test('machines sharing a token are recorded separately', async () => {
+  await withHarness({}, async (h) => {
+    await h.claim({ name: 'builder-01', features: ['unos-sign-keys'] });
+    await h.claim({ name: 'builder-02', features: [] });
+
+    const agents = await h.services.workerTokens.agentsFor(h.worker.id);
+    assert.deepEqual(agents.map((a) => a.name).sort(), ['builder-01', 'builder-02']);
+  });
+});
+
 test('the worker api rejects missing and invalid tokens', async () => {
   await withHarness({}, async (h) => {
     const none = await h.app.inject({ method: 'POST', url: '/api/v1/tasks/claim' });

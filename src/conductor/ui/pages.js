@@ -446,7 +446,7 @@ export function workersTable(tokens, user, query = {}) {
       ${tokens.rows.length === 0
     ? html`<tr><td colspan="6" class="muted">No workers registered.</td></tr>`
     : tokens.rows.map((t) => html`<tr>
-          <td>${t.name}</td>
+          <td><a href="/workers/${t.id}">${t.name}</a></td>
           <td class="muted">${t.owner_id === null ? 'shared' : (t.owner_id === user.id ? 'yours' : t.owner_id)}</td>
           <td>${t.enabled === 1 ? badge('success') : badge('skipped')}</td>
           <td class="muted">${t.last_seen_at ? ago(t.last_seen_at) : 'never'}</td>
@@ -461,6 +461,79 @@ export function workersTable(tokens, user, query = {}) {
     </tbody>
   </table>
   ${pager(tokens, (to) => pageHref('/workers', query, to))}
+  </div>`;
+}
+
+// A token is a credential, not a machine, so the page lists both.
+export function workerPage({ token, agents, tasks, user, staleAfter, query = {} }) {
+  const scope = token.owner_id === null
+    ? 'shared'
+    : (token.owner_id === user.id ? 'yours' : token.owner_id);
+
+  return html`
+    <div class="panel">
+      <h2>${token.name}</h2>
+      <div class="row">
+        ${field('state', token.enabled === 1 ? badge('success') : badge('skipped'))}
+        ${field('scope', scope)}
+        ${field('machines', `${agents.length}`)}
+        ${field('last seen', token.last_seen_at ? ago(token.last_seen_at) : 'never')}
+        ${field('address', html`<span class="mono">${token.last_ip ?? '-'}</span>`)}
+        ${field('registered', ago(token.created_at))}
+      </div>
+    </div>
+
+    <h3>machines</h3>
+    ${workerAgentsTable(agents, staleAfter)}
+
+    <h3>recent tasks</h3>
+    ${workerTasksTable(token, tasks, query)}
+  `;
+}
+
+function workerAgentsTable(agents, staleAfter) {
+  const now = Date.now();
+  return html`<table>
+    <thead><tr>
+      <th>machine</th><th>state</th><th>features</th><th>arches</th><th>last claim</th><th>address</th>
+    </tr></thead>
+    <tbody>
+      ${agents.length === 0
+    ? html`<tr><td colspan="6" class="muted">No machine has claimed with this token yet.</td></tr>`
+    : agents.map((a) => html`<tr>
+          <td>${a.name}</td>
+          <td>${now - a.last_seen_at > staleAfter ? badge('offline') : badge('online')}</td>
+          <td class="muted">${a.features.length === 0 ? 'none' : a.features.join(', ')}</td>
+          <td class="muted">${a.arches.length === 0 ? 'any' : a.arches.join(', ')}</td>
+          <td class="muted">${ago(a.last_seen_at)}</td>
+          <td class="muted mono">${a.last_ip ?? ''}</td>
+        </tr>`)}
+    </tbody>
+  </table>`;
+}
+
+// Final attempts only: a requeue clears the worker off the task.
+function workerTasksTable(token, tasks, query) {
+  return html`<div id="worker-tasks">
+  <table class="tasks">
+    <thead><tr>
+      <th>task</th><th>state</th><th>machine</th><th>arch</th><th>claimed</th><th>duration</th><th>exit</th>
+    </tr></thead>
+    <tbody>
+      ${tasks.rows.length === 0
+    ? html`<tr><td colspan="7" class="muted">This worker has not run anything yet.</td></tr>`
+    : tasks.rows.map((t) => html`<tr>
+          <td><a href="/tasks/${t.id}">${t.name}</a></td>
+          <td>${badge(t.state)}</td>
+          <td class="muted">${t.worker_name ?? ''}</td>
+          <td class="muted">${t.arch ?? ''}</td>
+          <td class="muted">${t.claimed_at ? ago(t.claimed_at) : ''}</td>
+          <td class="muted num">${duration(t.started_at, t.finished_at)}</td>
+          <td class="muted num">${t.exit_code ?? ''}</td>
+        </tr>`)}
+    </tbody>
+  </table>
+  ${pager(tasks, (to) => pageHref(`/workers/${token.id}`, query, to))}
   </div>`;
 }
 

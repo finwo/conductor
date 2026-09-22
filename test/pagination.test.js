@@ -52,6 +52,28 @@ async function seedJobs(h, count, { visibility = 'public' } = {}) {
   h.seeded = base + count;
 }
 
+// Tasks attributed to the harness worker, for the worker page's history.
+async function seedWorkerTasks(h, count) {
+  await seedJobs(h, 1);
+  const job = `seed${String((h.seeded ?? 1) - 1).padStart(4, '0')}`;
+  const now = Date.now();
+  for (let i = 0; i < count; i += 1) {
+    await h.services.db.run(
+      `INSERT INTO tasks (id, job_id, name, base_name, image, requires, spec, state,
+                          timeout, worker_token_id, worker_name, claimed_at, created_at)
+       VALUES ({id}, {job}, {name}, 'build', 'alpine', '[]', '{}', 'success',
+               3600, {worker}, 'builder-01', {claimed}, {claimed})`,
+      {
+        id: `wtask${String(i).padStart(4, '0')}`,
+        job,
+        name: `build-${i}`,
+        worker: h.worker.id,
+        claimed: now - i * 1000,
+      }
+    );
+  }
+}
+
 // --- the helpers ---
 
 test('a page number is read from the query, and nonsense reads as the first', () => {
@@ -242,6 +264,21 @@ test('the count behind the pager respects who is asking', async () => {
     const { cookie } = await h.login();
     const admin = await get(h, '/jobs', { cookie });
     assert.match(admin.body, /href="\/jobs\?page=2"/);
+  });
+});
+
+test('a worker page pages its task history', async () => {
+  await withUi({}, async (h) => {
+    const { cookie } = await h.login();
+    await seedWorkerTasks(h, PER_PAGE + 3);
+
+    const first = await get(h, `/workers/${h.worker.id}`, { cookie });
+    assert.equal(first.statusCode, 200);
+    assert.equal((first.body.match(/href="\/tasks\/wtask/g) ?? []).length, PER_PAGE);
+    assert.match(first.body, new RegExp(`href="/workers/${h.worker.id}\\?page=2"`));
+
+    const second = await get(h, `/workers/${h.worker.id}?page=2`, { cookie });
+    assert.equal((second.body.match(/href="\/tasks\/wtask/g) ?? []).length, 3);
   });
 });
 

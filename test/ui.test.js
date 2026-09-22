@@ -234,6 +234,65 @@ test('registering a worker shows the token once and lists it', async () => {
   });
 });
 
+test('the worker page lists what each machine advertises', async () => {
+  await withUi({}, async (h) => {
+    const session = await signIn(h);
+    await h.claim({ name: 'builder-01', arches: ['x86_64'], features: ['unos-sign-keys', 'dind'] });
+
+    const page = await get(h, `/workers/${h.worker.id}`, session);
+    assert.equal(page.statusCode, 200);
+    assert.match(page.body, /builder-01/);
+    assert.match(page.body, /unos-sign-keys, dind/);
+    assert.match(page.body, /x86_64/);
+  });
+});
+
+test('machines sharing a token are listed separately', async () => {
+  await withUi({}, async (h) => {
+    const session = await signIn(h);
+    await h.claim({ name: 'builder-01', features: ['unos-sign-keys'] });
+    await h.claim({ name: 'builder-02', features: [] });
+
+    const page = await get(h, `/workers/${h.worker.id}`, session);
+    assert.match(page.body, /builder-01/);
+    assert.match(page.body, /builder-02/);
+    assert.match(page.body, /machines/);
+  });
+});
+
+test('the workers list links to the worker page', async () => {
+  await withUi({}, async (h) => {
+    const session = await signIn(h);
+    const list = await get(h, '/workers', session);
+    assert.match(list.body, new RegExp(`href="/workers/${h.worker.id}"`));
+  });
+});
+
+test('a worker page is not served to someone who cannot manage it', async () => {
+  await withUi({}, async (h) => {
+    const admin = await signIn(h);
+    await h.app.inject({
+      method: 'POST', url: '/users', ...form(admin, { username: 'erin', password: 'erin-password', role: 'user' }),
+    });
+    const erin = await signIn(h, 'erin', 'erin-password');
+
+    const page = await get(h, `/workers/${h.worker.id}`, erin);
+    assert.equal(page.statusCode, 404);
+    assert.match(page.body, /No such worker/);
+  });
+});
+
+test('a feature name is escaped rather than rendered', async () => {
+  await withUi({}, async (h) => {
+    const session = await signIn(h);
+    await h.claim({ name: 'builder-01', features: ['<img src=x onerror=alert(1)>'] });
+
+    const page = await get(h, `/workers/${h.worker.id}`, session);
+    assert.ok(!page.body.includes('<img src=x'), 'a feature name must not reach the page as markup');
+    assert.match(page.body, /&lt;img src=x/);
+  });
+});
+
 test('an ordinary user cannot create shared capacity from the form', async () => {
   await withUi({}, async (h) => {
     const admin = await signIn(h);

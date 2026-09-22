@@ -10,8 +10,8 @@ Source and issues: https://github.com/finwo/conductor
 | Tag              | What it is                                 |
 | ---------------- | ------------------------------------------ |
 | `latest`         | the most recent release                    |
-| `0.5.0`          | an exact version                           |
-| `0.5`            | the latest patch of that minor series      |
+| `0.6.0`          | an exact version                           |
+| `0.6`            | the latest patch of that minor series      |
 | `main`           | the tip of the default branch              |
 
 Built for `linux/amd64`, `linux/arm64` and `linux/riscv64`.

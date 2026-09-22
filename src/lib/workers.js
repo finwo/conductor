@@ -8,9 +8,21 @@
 // from that user's projects. A token with no owner is shared and can run
 // anything, which is how an administrator provides general capacity. That
 // distinction is enforced in the scheduler, not here.
+//
+// A token is not a machine: several hosts may share one, so what each
+// advertises is kept per reported name in worker_agents.
 
-import { newToken, hashToken, newWorkerTokenId } from './ids.js';
+import { newToken, hashToken, newWorkerTokenId, newWorkerAgentId } from './ids.js';
 import { paginate, windowOf } from './page.js';
+
+function parseList(value) {
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
 
 export function createWorkerTokens({ db }) {
   return {
@@ -50,6 +62,50 @@ export function createWorkerTokens({ db }) {
         { id: row.id, now: Date.now(), ip }
       );
       return { id: row.id, name: row.name, owner_id: row.owner_id };
+    },
+
+    // Upsert syntax is not portable, so read and write share a transaction.
+    async recordAgent({ tokenId, name, arches = [], features = [], ip = null }) {
+      const label = typeof name === 'string' ? name.trim().slice(0, 255) : '';
+      if (!tokenId || !label) return;
+
+      const now = Date.now();
+      const values = { arches: JSON.stringify(arches), features: JSON.stringify(features) };
+
+      await db.transaction(async (tx) => {
+        const row = await tx.get(
+          'SELECT id FROM worker_agents WHERE token_id = {token} AND name = {name}',
+          { token: tokenId, name: label }
+        );
+        if (row) {
+          await tx.run(
+            `UPDATE worker_agents
+                SET arches = {arches}, features = {features}, last_seen_at = {now}, last_ip = {ip}
+              WHERE id = {id}`,
+            { id: row.id, ...values, now, ip }
+          );
+          return;
+        }
+        await tx.run(
+          `INSERT INTO worker_agents
+             (id, token_id, name, arches, features, first_seen_at, last_seen_at, last_ip)
+           VALUES ({id}, {token}, {name}, {arches}, {features}, {now}, {now}, {ip})`,
+          { id: newWorkerAgentId(), token: tokenId, name: label, ...values, now, ip }
+        );
+      });
+    },
+
+    async agentsFor(tokenId) {
+      const rows = await db.all(
+        `SELECT id, name, arches, features, first_seen_at, last_seen_at, last_ip
+           FROM worker_agents WHERE token_id = {token} ORDER BY last_seen_at DESC`,
+        { token: tokenId }
+      );
+      return rows.map((row) => ({
+        ...row,
+        arches: parseList(row.arches),
+        features: parseList(row.features),
+      }));
     },
 
     async list() {

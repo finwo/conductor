@@ -36,6 +36,7 @@ export const newProjectId = () => randomId(16);
 export const newArtifactId = () => randomId(24);
 export const newUserId = () => randomId(16);
 export const newWorkerTokenId = () => randomId(16);
+export const newWorkerAgentId = () => randomId(16);
 
 // Task ids carry no structure at all. A worker holding one cannot tell which
 // job or project it belongs to, which is the point: a worker is given a

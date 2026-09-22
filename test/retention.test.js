@@ -9,7 +9,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { startHarness } from './helpers/harness.js';
 
-const DAY = 24 * 60 * 60 * 1000;
+const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
 const NOW = 1_800_000_000_000;
 
 async function withHarness(options, fn) {
@@ -520,5 +521,37 @@ test('the api reports and accepts project retention', { skip: 'the JSON API was 
     });
     assert.equal(rejected.statusCode, 400);
     assert.match(rejected.json().error, /zero or more/);
+  });
+});
+
+test('a machine that has stopped claiming is forgotten', async () => {
+  await withHarness({ retention: { worker_agent_keep_hours: 24 } }, async (h) => {
+    const { workerTokens, db } = h.services;
+
+    await workerTokens.recordAgent({ tokenId: h.worker.id, name: 'gone', features: ['dind'] });
+    await workerTokens.recordAgent({ tokenId: h.worker.id, name: 'here', features: ['unos-sign-keys'] });
+    // recordAgent stamps the real clock, and NOW is not the real clock.
+    await db.run("UPDATE worker_agents SET last_seen_at = {then} WHERE name = 'gone'", { then: NOW - 25 * HOUR });
+    await db.run("UPDATE worker_agents SET last_seen_at = {then} WHERE name = 'here'", { then: NOW - 1 * HOUR });
+
+    const result = await h.services.retention.sweep({ now: NOW });
+
+    assert.equal(result.agents, 1);
+    const left = await workerTokens.agentsFor(h.worker.id);
+    assert.deepEqual(left.map((a) => a.name), ['here']);
+  });
+});
+
+test('zero keeps machines for ever', async () => {
+  await withHarness({ retention: { worker_agent_keep_hours: 0 } }, async (h) => {
+    const { workerTokens, db } = h.services;
+
+    await workerTokens.recordAgent({ tokenId: h.worker.id, name: 'ancient', features: [] });
+    await db.run('UPDATE worker_agents SET last_seen_at = {then}', { then: NOW - 365 * DAY });
+
+    const result = await h.services.retention.sweep({ now: NOW });
+
+    assert.equal(result.agents, 0);
+    assert.equal((await workerTokens.agentsFor(h.worker.id)).length, 1);
   });
 });

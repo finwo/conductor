@@ -22,6 +22,7 @@ import { paginate, paginateOffset, pageBlock } from '../src/lib/page.js';
 import { createStorage } from '../src/lib/storage/index.js';
 import { createLogStore } from '../src/lib/log.js';
 import { createRetention } from '../src/conductor/retention.js';
+import { createWorkerTokens } from '../src/lib/workers.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = 1_800_000_000_000;
@@ -85,6 +86,7 @@ for (const dialect of ['postgres', 'mysql']) {
         artifact_keep_jobs: 2,
         artifact_keep_days: 7,
         log_keep_days: 7,
+        worker_agent_keep_hours: 24,
         sweep_interval: 3600,
         batch: 2,
       },
@@ -133,9 +135,37 @@ for (const dialect of ['postgres', 'mysql']) {
       assert.deepEqual(tail.rows.map((r) => r.id), ['r5']);
       assert.ok(!('next' in pageBlock({ url: 'https://x.test/j', ...tail })), 'that was the last page');
 
+      // The unique index is what makes a repeat claim update, not duplicate.
+      const workerTokens = createWorkerTokens({ db });
+      const token = await workerTokens.create('dialect-worker');
+
+      await workerTokens.recordAgent({ tokenId: token.id, name: 'builder-01', arches: ['x86_64'], features: ['dind'] });
+      await workerTokens.recordAgent({ tokenId: token.id, name: 'builder-01', arches: ['x86_64'], features: ['dind', 'sign'] });
+      await workerTokens.recordAgent({ tokenId: token.id, name: 'builder-02', arches: [], features: [] });
+
+      const agents = await workerTokens.agentsFor(token.id);
+      assert.deepEqual(agents.map((a) => a.name).sort(), ['builder-01', 'builder-02']);
+      assert.deepEqual(
+        agents.find((a) => a.name === 'builder-01').features,
+        ['dind', 'sign'],
+        'the repeat claim should have updated in place'
+      );
+
+      await db.run(
+        "UPDATE worker_agents SET last_seen_at = {then} WHERE name = 'builder-02'",
+        { then: NOW - 2 * DAY }
+      );
+      await db.run(
+        "UPDATE worker_agents SET last_seen_at = {then} WHERE name = 'builder-01'",
+        { then: NOW - 1000 }
+      );
+
       const retention = createRetention({ cfg, db, storage, logs, logger: {} });
 
       const first = await retention.sweep({ now: NOW });
+
+      assert.equal(first.agents, 1, 'only the machine that stopped claiming should go');
+      assert.deepEqual((await workerTokens.agentsFor(token.id)).map((a) => a.name), ['builder-01']);
 
       // Job 1 by its own deadline, jobs 2 and 3 by policy. Jobs 4 and 5
       // are the last two, so they are kept whatever their age.

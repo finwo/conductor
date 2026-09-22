@@ -76,6 +76,11 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
     const features = splitList(body.features);
     const name = typeof body.name === 'string' ? body.name.slice(0, 255) : req.worker.name;
 
+    // Recorded even when idle, and never allowed to fail a claim.
+    await workerTokens
+      .recordAgent({ tokenId: req.worker.id, name, arches, features, ip: req.ip })
+      .catch((e) => req.log.warn(`could not record worker agent: ${e.message}`));
+
     const task = await scheduler.claim({
       arches,
       features,
