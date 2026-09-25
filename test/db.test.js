@@ -187,3 +187,46 @@ test('a failed transaction rolls back, and a failed savepoint keeps the outer wo
     await cleanup();
   }
 });
+
+test('an existing database gains the dependency kind, defaulting to needs', async () => {
+  // The edges recorded before there were two kinds all meant needs, and a
+  // database upgraded in place has to keep meaning that.
+  const { db, dir, cleanup } = await tempDb();
+  try {
+    const real = path.join(process.cwd(), 'migrations', 'sqlite');
+    const staged = path.join(dir, 'migrations');
+    await fs.mkdir(staged);
+
+    const all = (await fs.readdir(real)).filter((f) => f.endsWith('.sql')).sort();
+    const kindMigration = all.find((f) => f.includes('task_dep_kind'));
+    assert.ok(kindMigration, 'expected a migration adding the edge kind');
+
+    for (const file of all.filter((f) => f !== kindMigration)) {
+      await fs.copyFile(path.join(real, file), path.join(staged, file));
+    }
+    await runMigrations(db, { dir: staged, logger: quiet });
+
+    const now = Date.now();
+    await db.run(
+      `INSERT INTO projects (id, name, repo_url, created_at, updated_at)
+       VALUES ('p1', 'p', 'git://x', {now}, {now})`, { now });
+    await db.run(
+      `INSERT INTO jobs (id, project_id, number, head_sha, created_at)
+       VALUES ('j1', 'p1', 1, 'abc', {now})`, { now });
+    for (const id of ['t1', 't2']) {
+      await db.run(
+        `INSERT INTO tasks (id, job_id, name, base_name, image, requires, spec, timeout, created_at)
+         VALUES ({id}, 'j1', {id}, {id}, 'alpine', '[]', '{}', 60, {now})`, { id, now });
+    }
+    await db.run("INSERT INTO task_deps (task_id, depends_on_id) VALUES ('t2', 't1')");
+
+    await fs.copyFile(path.join(real, kindMigration), path.join(staged, kindMigration));
+    const upgrade = await runMigrations(db, { dir: staged, logger: quiet });
+    assert.deepEqual(upgrade.applied, [kindMigration]);
+
+    const edge = await db.get('SELECT kind FROM task_deps WHERE task_id = {t}', { t: 't2' });
+    assert.equal(edge.kind, 'needs');
+  } finally {
+    await cleanup();
+  }
+});

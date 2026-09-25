@@ -67,7 +67,7 @@ export function parseWorkdir(problems, path, raw) {
 }
 
 const JOB_KEYS = [
-  'image', 'script', 'needs', 'arch', 'matrix', 'requires', 'services',
+  'image', 'script', 'needs', 'after', 'arch', 'matrix', 'requires', 'services',
   'env', 'artifacts', 'allow_failure', 'timeout', 'max_attempts',
   'only',
 ];
@@ -238,7 +238,8 @@ function parseTask(problems, path, raw, defaults) {
   return {
     image,
     script,
-    needs: parseNeeds(problems, `${path}.needs`, raw.needs),
+    needs: parseDeps(problems, `${path}.needs`, raw.needs),
+    after: parseDeps(problems, `${path}.after`, raw.after),
     arch,
     matrix,
     requires: raw.requires === undefined ? defaults.requires : asStringList(problems, `${path}.requires`, raw.requires, { max: 64 }),
@@ -292,9 +293,10 @@ function parseOnly(problems, path, raw) {
   return { refs };
 }
 
-// A need is either a task name, or a mapping for the cases where the default
-// dimension matching is not what is wanted.
-function parseNeeds(problems, path, raw) {
+// A dependency is either a task name, or a mapping for the cases where the
+// default dimension matching is not what is wanted. `needs` and `after` take
+// the same forms and differ only in what the scheduler makes of the edge.
+function parseDeps(problems, path, raw) {
   if (raw === undefined) return [];
   const list = Array.isArray(raw) ? raw : [raw];
   const out = [];

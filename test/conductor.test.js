@@ -33,13 +33,13 @@ async function jobState(h, jobId) {
     'SELECT * FROM tasks WHERE job_id = {job} ORDER BY name', { job: jobId }
   );
   const deps = await h.services.db.all(
-    `SELECT d.task_id, d.depends_on_id FROM task_deps d
+    `SELECT d.task_id, d.depends_on_id, d.kind FROM task_deps d
        JOIN tasks t ON t.id = d.task_id WHERE t.job_id = {job}`,
     { job: jobId }
   );
-  const needs = new Map(tasks.map((t) => [t.id, []]));
-  for (const d of deps) needs.get(d.task_id)?.push(d.depends_on_id);
-  return { job, tasks: tasks.map((t) => ({ ...t, needs: needs.get(t.id) ?? [] })) };
+  const edges = new Map(tasks.map((t) => [t.id, { needs: [], after: [] }]));
+  for (const d of deps) edges.get(d.task_id)?.[d.kind === 'after' ? 'after' : 'needs'].push(d.depends_on_id);
+  return { job, tasks: tasks.map((t) => ({ ...t, ...(edges.get(t.id) ?? { needs: [], after: [] }) })) };
 }
 
 // The job a task belongs to. A worker is never told this, so a test that
@@ -1272,5 +1272,110 @@ test('worker tokens are stored only as hashes', async () => {
       assert.match(row.token_hash, /^[0-9a-f]{64}$/);
       assert.notEqual(row.token_hash, h.worker.token);
     }
+  });
+});
+
+test('after runs its dependent whether the dependency passed or failed', async () => {
+  const pipeline = `
+version: 1
+defaults:
+  image: alpine
+tasks:
+  build:
+    script: ['true']
+  test:
+    script: ['false']
+    needs: [build]
+  notify:
+    script: ['true']
+    after: [test]
+`;
+  await withHarness({ pipeline }, async (h) => {
+    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().data.job_id;
+    await h.waitForJob(job);
+
+    const build = await claimNamed(h, 'build', {});
+    await finish(h, build.id, { success: true });
+
+    // Draining yields test alone: notify waits for it to finish, exactly as
+    // needs would. after asks for less, not for nothing.
+    const released = await drain(h, {});
+    assert.ok(released.test, 'test should be released by build');
+    assert.ok(!released.notify, 'notify should wait while test runs');
+
+    const outcome = await finish(h, released.test.id, { success: false, exitCode: 1 });
+    // The failure has nothing downstream of it to skip.
+    assert.deepEqual(outcome.skipped, []);
+
+    const notify = await claimNamed(h, 'notify', {});
+    assert.ok(notify, 'notify should run after a failed dependency');
+    const last = await finish(h, notify.id, { success: true });
+
+    // The failure still fails the job. after decides what runs, not what counts.
+    assert.equal(last.job_state, 'failed');
+    const tasks = tasksByName(await jobState(h, job));
+    assert.equal(tasks.notify.state, 'success');
+    assert.equal(tasks.test.state, 'failed');
+  });
+});
+
+test('after runs its dependent even when the dependency was skipped', async () => {
+  const pipeline = `
+version: 1
+defaults:
+  image: alpine
+tasks:
+  build:
+    script: ['false']
+  test:
+    script: ['true']
+    needs: [build]
+  cleanup:
+    script: ['true']
+    after: [test]
+`;
+  await withHarness({ pipeline }, async (h) => {
+    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().data.job_id;
+    await h.waitForJob(job);
+
+    const build = await claimNamed(h, 'build', {});
+    const outcome = await finish(h, build.id, { success: false, exitCode: 1 });
+    // test is skipped with its dependency, cleanup is not.
+    assert.deepEqual(outcome.skipped, [(await jobState(h, job)).tasks.find((t) => t.name === 'test').id]);
+
+    const cleanup = await claimNamed(h, 'cleanup', {});
+    assert.ok(cleanup, 'cleanup should run once test settled as skipped');
+    await finish(h, cleanup.id, { success: true });
+
+    const tasks = tasksByName(await jobState(h, job));
+    assert.equal(tasks.test.state, 'skipped');
+    assert.equal(tasks.cleanup.state, 'success');
+  });
+});
+
+test('after edges are stored as their own kind', async () => {
+  const pipeline = `
+version: 1
+defaults:
+  image: alpine
+tasks:
+  a:
+    script: ['true']
+  b:
+    script: ['true']
+    needs: [a]
+  c:
+    script: ['true']
+    after: [a]
+`;
+  await withHarness({ pipeline }, async (h) => {
+    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().data.job_id;
+    await h.waitForJob(job);
+
+    const tasks = tasksByName(await jobState(h, job));
+    assert.deepEqual(tasks.b.needs, [tasks.a.id]);
+    assert.deepEqual(tasks.b.after, []);
+    assert.deepEqual(tasks.c.needs, []);
+    assert.deepEqual(tasks.c.after, [tasks.a.id]);
   });
 });

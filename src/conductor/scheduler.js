@@ -35,8 +35,10 @@ export const CONVENTIONAL_CONFIG_PATHS = ['.conductor.yml', '.conductor.yaml'];
 
 export function createScheduler({ cfg, db, git, logs, storage, projects, variables = null, logger = console }) {
   // A task is eligible when it is queued, its job is live, and no dependency
-  // is outstanding. A failed dependency marked allow_failure still counts as
-  // satisfied, which is the whole point of the flag.
+  // is outstanding. What outstanding means depends on the edge. A needs
+  // dependency has to have succeeded, and a failed one marked allow_failure
+  // counts as satisfied, which is the whole point of the flag. An after
+  // dependency only has to have stopped running.
   const ELIGIBLE = `
     SELECT t.id, t.job_id, t.name, t.arch, t.image, t.requires, t.spec,
            t.timeout, t.attempt, t.max_attempts,
@@ -51,8 +53,17 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
                FROM task_deps d
                JOIN tasks dt ON dt.id = d.depends_on_id
               WHERE d.task_id = t.id
+                AND d.kind = 'needs'
                 AND dt.state <> 'success'
                 AND NOT (dt.state = 'failed' AND dt.allow_failure = 1)
+           )
+       AND NOT EXISTS (
+             SELECT 1
+               FROM task_deps d
+               JOIN tasks dt ON dt.id = d.depends_on_id
+              WHERE d.task_id = t.id
+                AND d.kind = 'after'
+                AND dt.state IN ('queued', 'running')
            )
   `;
 
@@ -62,15 +73,15 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
       { job: jobId }
     );
     const deps = await tx.all(
-      `SELECT d.task_id, d.depends_on_id
+      `SELECT d.task_id, d.depends_on_id, d.kind
          FROM task_deps d
          JOIN tasks t ON t.id = d.task_id
         WHERE t.job_id = {job}`,
       { job: jobId }
     );
-    const needs = new Map(tasks.map((t) => [t.id, []]));
-    for (const d of deps) needs.get(d.task_id)?.push(d.depends_on_id);
-    return tasks.map((t) => ({ ...t, needs: needs.get(t.id) ?? [] }));
+    const edges = new Map(tasks.map((t) => [t.id, { needs: [], after: [] }]));
+    for (const d of deps) edges.get(d.task_id)?.[d.kind === 'after' ? 'after' : 'needs'].push(d.depends_on_id);
+    return tasks.map((t) => ({ ...t, ...(edges.get(t.id) ?? { needs: [], after: [] }) }));
   }
 
   // Reads the pipeline file at a commit.
@@ -203,6 +214,7 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
                 artifacts: task.artifacts,
                 matrix: task.matrix,
                 needs: task.needs,
+                after: task.after,
                 depth: task.depth,
                 workdir,
               }),
@@ -215,11 +227,13 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
         }
 
         for (const task of pipeline.tasks) {
-          for (const need of task.needs) {
-            await tx.run(
-              'INSERT INTO task_deps (task_id, depends_on_id) VALUES ({task}, {dep})',
-              { task: idByName.get(task.name), dep: idByName.get(need) }
-            );
+          for (const [kind, deps] of [['needs', task.needs], ['after', task.after ?? []]]) {
+            for (const dep of deps) {
+              await tx.run(
+                'INSERT INTO task_deps (task_id, depends_on_id, kind) VALUES ({task}, {dep}, {kind})',
+                { task: idByName.get(task.name), dep: idByName.get(dep), kind }
+              );
+            }
           }
         }
       });
@@ -527,6 +541,9 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
 
   async function skipDependents(tx, jobId, fromTaskIds, now) {
     const graph = await loadGraph(tx, jobId);
+    // Needs edges only. A task waiting on this one with `after` asked to run
+    // whatever the outcome was, so the failure stops here rather than
+    // carrying it off with everything else downstream.
     const reachable = transitiveDependents(
       graph.map((t) => ({ name: t.id, needs: t.needs })),
       fromTaskIds

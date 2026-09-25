@@ -194,13 +194,13 @@ export default async function uiRoutes(fastify, services) {
       { job: jobId }
     );
     const deps = await db.all(
-      `SELECT d.task_id, d.depends_on_id FROM task_deps d
+      `SELECT d.task_id, d.depends_on_id, d.kind FROM task_deps d
          JOIN tasks t ON t.id = d.task_id WHERE t.job_id = {job}`,
       { job: jobId }
     );
-    const needs = new Map(tasks.map((t) => [t.id, []]));
-    for (const d of deps) needs.get(d.task_id)?.push(d.depends_on_id);
-    return tasks.map((j) => ({ ...j, needs: needs.get(j.id) ?? [] }));
+    const edges = new Map(tasks.map((t) => [t.id, { needs: [], after: [] }]));
+    for (const d of deps) edges.get(d.task_id)?.[d.kind === 'after' ? 'after' : 'needs'].push(d.depends_on_id);
+    return tasks.map((j) => ({ ...j, ...(edges.get(j.id) ?? { needs: [], after: [] }) }));
   }
 
   fastify.get('/jobs/:id', async (req, reply) => {

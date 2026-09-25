@@ -440,3 +440,111 @@ tasks:
   assert.equal(tasks.publish.depth, 2);
   assert.deepEqual(tasks['package:arch=aarch64,pkg=musl'].requires, ['sign-key']);
 });
+
+// --- after ---
+
+test('after resolves to task names in its own list, separate from needs', () => {
+  const p = compilePipeline(`
+version: 1
+defaults:
+  image: x
+tasks:
+  build:
+    script: [y]
+  test:
+    script: [y]
+    needs: [build]
+  notify:
+    script: [y]
+    after: [test]
+`);
+  const tasks = byName(p);
+  assert.deepEqual(tasks.notify.needs, []);
+  assert.deepEqual(tasks.notify.after, ['test']);
+  // It still sits downstream, so the graph reads in running order.
+  assert.equal(tasks.notify.depth, 2);
+});
+
+test('after matches shared dimensions exactly as needs does', () => {
+  const p = compilePipeline(`
+version: 1
+defaults:
+  image: x
+tasks:
+  build:
+    script: [y]
+    arch: [x86_64, aarch64]
+  cleanup:
+    script: [y]
+    arch: [x86_64, aarch64]
+    after: [build]
+  report:
+    script: [y]
+    after: [build]
+`);
+  const tasks = byName(p);
+  assert.deepEqual(tasks['cleanup:arch=x86_64'].after, ['build:arch=x86_64']);
+  assert.deepEqual(tasks['cleanup:arch=aarch64'].after, ['build:arch=aarch64']);
+  // No shared dimension, so it waits for every instance.
+  assert.deepEqual(tasks.report.after, ['build:arch=aarch64', 'build:arch=x86_64']);
+});
+
+test('after accepts the mapping form too', () => {
+  const p = compilePipeline(`
+version: 1
+defaults:
+  image: x
+tasks:
+  build:
+    script: [y]
+    arch: [x86_64, aarch64]
+  cleanup:
+    script: [y]
+    arch: [x86_64, aarch64]
+    after:
+      - task: build
+        match: all
+`);
+  assert.deepEqual(
+    byName(p)['cleanup:arch=x86_64'].after,
+    ['build:arch=aarch64', 'build:arch=x86_64']
+  );
+});
+
+test('a dependency named both ways keeps only the stricter one', () => {
+  // needs already implies after, so recording both would be a contradiction
+  // waiting to be read the wrong way round.
+  const p = compilePipeline(`
+version: 1
+defaults:
+  image: x
+tasks:
+  build:
+    script: [y]
+  deploy:
+    script: [y]
+    needs: [build]
+    after: [build]
+`);
+  const deploy = byName(p).deploy;
+  assert.deepEqual(deploy.needs, ['build']);
+  assert.deepEqual(deploy.after, []);
+});
+
+test('after is validated like needs', () => {
+  assert.throws(
+    () => compilePipeline('version: 1\ntasks:\n  a:\n    image: x\n    script: [y]\n    after: [a]\n'),
+    /cannot depend on itself/
+  );
+  assert.throws(
+    () => compilePipeline('version: 1\ntasks:\n  a:\n    image: x\n    script: [y]\n    after: [ghost]\n'),
+    /tasks\.a\.after[\s\S]*unknown task "ghost"/
+  );
+  assert.throws(
+    () => compilePipeline(`
+version: 1
+tasks:
+  a: { image: x, script: [s], after: [b] }
+  b: { image: x, script: [s], after: [a] }
+`), /dependency cycle/);
+});

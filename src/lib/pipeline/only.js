@@ -7,10 +7,14 @@
 // right reading when a dependency collapsed, and the wrong one for a
 // publish step that was never meant to run on this branch.
 //
-// Anything depending on an excluded task is excluded with it. The
+// Anything that needs an excluded task is excluded with it. The
 // alternative, quietly dropping the dependency, would let a task run
 // without something it declared it needed, which is a worse surprise than
 // the task not running.
+//
+// An `after` edge is the other way round. It asks for ordering, not for
+// output, and a task that was never going to run has nothing to order
+// against, so the edge is dropped and the dependent stays in the run.
 
 import { transitiveDependents } from './dag.js';
 
@@ -47,5 +51,11 @@ export function selectForRef(tasks, ref) {
 
   for (const name of transitiveDependents(tasks, [...excluded])) excluded.add(name);
 
-  return tasks.filter((task) => !excluded.has(task.name));
+  // Surviving after edges pointing into the excluded set are pruned rather
+  // than left dangling, since everything downstream resolves them by name.
+  return tasks
+    .filter((task) => !excluded.has(task.name))
+    .map((task) => (task.after?.some((name) => excluded.has(name))
+      ? { ...task, after: task.after.filter((name) => !excluded.has(name)) }
+      : task));
 }

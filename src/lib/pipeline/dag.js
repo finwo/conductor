@@ -6,6 +6,20 @@
 // still be dispatched with its dependency missing. Both problems come from
 // throwing the graph away, so the graph is kept here and used directly.
 
+// An edge is one of two kinds. `needs` waits for the dependency to succeed,
+// `after` only waits for it to finish. Ordering and cycle detection care
+// about both, since either kind makes one task wait for another. Failure
+// propagation cares about `needs` alone, which is the whole point of `after`.
+export const ALL_EDGES = ['needs', 'after'];
+
+// Terminal states, which is what an `after` edge waits for.
+const FINISHED = ['success', 'failed', 'skipped', 'cancelled'];
+
+function depsOf(task, edges) {
+  if (edges.length === 1) return task[edges[0]] ?? [];
+  return edges.flatMap((kind) => task[kind] ?? []);
+}
+
 export class CycleError extends Error {
   constructor(cycle) {
     super(`pipeline contains a dependency cycle: ${cycle.join(' -> ')}`);
@@ -16,7 +30,7 @@ export class CycleError extends Error {
 
 // Returns the tasks in an order where every dependency precedes its
 // dependents. Throws CycleError naming the cycle when none exists.
-export function topologicalOrder(tasks) {
+export function topologicalOrder(tasks, { edges = ALL_EDGES } = {}) {
   const byName = new Map(tasks.map((j) => [j.name, j]));
   const state = new Map();
   const order = [];
@@ -32,7 +46,7 @@ export function topologicalOrder(tasks) {
 
     state.set(name, 'active');
     stack.push(name);
-    for (const dep of byName.get(name).needs) {
+    for (const dep of depsOf(byName.get(name), edges)) {
       if (byName.has(dep)) visit(dep);
     }
     stack.pop();
@@ -47,11 +61,11 @@ export function topologicalOrder(tasks) {
 
 // Depth of each task, where a task with no dependencies is 0. Used only for
 // display; scheduling reads the edges, never the depth.
-export function depths(tasks) {
+export function depths(tasks, { edges = ALL_EDGES } = {}) {
   const byName = new Map(tasks.map((j) => [j.name, j]));
   const out = new Map();
-  for (const task of topologicalOrder(tasks)) {
-    const deps = task.needs.filter((d) => byName.has(d));
+  for (const task of topologicalOrder(tasks, { edges })) {
+    const deps = depsOf(task, edges).filter((d) => byName.has(d));
     out.set(task.name, deps.length === 0 ? 0 : Math.max(...deps.map((d) => out.get(d))) + 1);
   }
   return out;
@@ -60,10 +74,13 @@ export function depths(tasks) {
 // Every task reachable by following dependents from the given names. This is
 // what a failure must skip: direct dependents alone leave transitive ones
 // runnable against a dependency that never produced anything.
-export function transitiveDependents(tasks, startNames) {
+//
+// Needs edges only, by default. A task declaring `after` asked to run
+// whatever became of its predecessor, so a failure must not carry it off.
+export function transitiveDependents(tasks, startNames, { edges = ['needs'] } = {}) {
   const dependents = new Map(tasks.map((j) => [j.name, []]));
   for (const task of tasks) {
-    for (const dep of task.needs) {
+    for (const dep of depsOf(task, edges)) {
       if (dependents.has(dep)) dependents.get(dep).push(task.name);
     }
   }
@@ -83,9 +100,10 @@ export function transitiveDependents(tasks, startNames) {
 
 // Tasks whose dependencies have all reached a satisfying state. Passed the
 // current state of every task by name.
-export function runnable(tasks, stateByName, { satisfied = ['success'] } = {}) {
+export function runnable(tasks, stateByName, { satisfied = ['success'], finished = FINISHED } = {}) {
   return tasks.filter((task) => {
     if (stateByName.get(task.name) !== 'queued') return false;
-    return task.needs.every((dep) => satisfied.includes(stateByName.get(dep)));
+    if (!(task.needs ?? []).every((dep) => satisfied.includes(stateByName.get(dep)))) return false;
+    return (task.after ?? []).every((dep) => finished.includes(stateByName.get(dep)));
   });
 }

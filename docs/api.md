@@ -197,7 +197,7 @@ empty body.
     "image": "debian:bookworm-slim", "attempt": 1, "max_attempts": 1,
     "allow_failure": false, "exit_code": 0, "error": null,
     "worker_name": "builder-1", "timeout": 3600, "workdir": "/work",
-    "needs": ["build:arch=x86_64"], "matrix": { "pkg": "musl" },
+    "needs": ["build:arch=x86_64"], "after": [], "matrix": { "pkg": "musl" },
     "artifact_paths": ["dist/**"], "log_size": 4096,
     "created_at": 1800000000000, "started_at": null, "finished_at": null,
     "project_id": "demo", "job_id": "m2y5rj7ykdm9sfbr54hf", "job_number": 12,
@@ -309,7 +309,9 @@ Requests are not enveloped; only responses are:
 ```
 
 A failure with attempts remaining requeues the task; otherwise everything
-downstream of it is skipped.
+that `needs` it, directly or transitively, is skipped. Tasks that only name
+it under `after` are released instead, since they asked to follow it rather
+than to be fed by it.
 
 Artifacts
 ---------

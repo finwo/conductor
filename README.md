@@ -176,12 +176,21 @@ tasks:
     needs: [package, test]
     script:
       - ./publish.sh
+
+  report:
+    after: [publish]
+    script:
+      - ./report.sh
 ```
 
 `arch` and `matrix` fan a task out into one task per combination. A dependency
 that shares a dimension is matched on it, so the aarch64 package waits for
 the aarch64 build rather than for every build, while `publish`, which has no
 architecture of its own, waits for all of them.
+
+`needs` waits for a task to succeed. `after` waits only for it to finish, so
+`report` runs whether the run went well or badly, which is usually when a
+report is worth having.
 
 `requires` names features a worker must offer. A worker holding a signing key
 advertises `sign-key`, and only tasks asking for it are sent there. The key

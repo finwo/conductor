@@ -66,6 +66,7 @@ Tasks
 | `image`         | string            | none, required | yes         |
 | `script`        | list of strings   | none, required | no          |
 | `needs`         | list              | `[]`           | no          |
+| `after`         | list              | `[]`           | no          |
 | `arch`          | string or list    | none           | yes         |
 | `matrix`        | mapping           | none           | no          |
 | `requires`      | list of strings   | `[]`           | yes         |
@@ -219,6 +220,43 @@ silently dropped dependency.
 A dependency that fails normally causes its dependents, and everything
 reachable from them, to be skipped. A dependency with `allow_failure: true`
 satisfies its dependents whether it passes or not.
+
+### Running after something, whatever became of it
+
+`after` waits for a task to finish without requiring it to have succeeded:
+
+```yaml
+test:
+  script: ['./test.sh']
+
+report:
+  after: [test]
+  script: ['./report.sh']
+```
+
+`report` runs once `test` has stopped, whether it passed, failed, or was
+itself skipped because something it needed failed. This is what to reach for
+with teardown, notification and result collection, which are worth running
+precisely when the run went badly.
+
+`after` takes the same three forms as `needs` and matches shared dimensions
+the same way, because the matching decides which instance is meant and not
+what waiting on it implies. Naming one task under both keys is the same as
+naming it under `needs` alone.
+
+Two things `after` deliberately does not change:
+
+  It does not rescue the run. A failed task still fails the job, whether or
+  not something ran after it. Use `allow_failure` on the task itself to say
+  that its failure does not count.
+
+  It does not supply anything. Artifacts from a task that failed may be
+  absent or half written, so a task that reads them wants `needs`.
+
+Where `only` keeps a task out of a run, its `after` dependents still run:
+there is nothing left to wait for, so the edge is dropped rather than the
+dependent. This is the opposite of `needs`, which takes its dependents out
+of the run with it.
 
 Worker features
 ---------------

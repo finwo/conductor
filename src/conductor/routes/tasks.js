@@ -94,6 +94,7 @@ export default async function taskRoutes(fastify, { cfg, db, projects, auth = nu
         // rather than what the pipeline says today.
         workdir: spec.workdir,
         needs: spec.needs,
+        after: spec.after,
         matrix: spec.matrix,
         // What the task was told to collect, which is not the same as what
         // it managed to store. The list below is what exists.
@@ -178,13 +179,14 @@ function readSpec(raw) {
     spec = null;
   }
   if (!spec || typeof spec !== 'object') {
-    return { workdir: null, needs: [], matrix: {}, artifactPaths: [] };
+    return { workdir: null, needs: [], after: [], matrix: {}, artifactPaths: [] };
   }
 
   const paths = spec.artifacts?.paths;
   return {
     workdir: typeof spec.workdir === 'string' ? spec.workdir : null,
     needs: Array.isArray(spec.needs) ? spec.needs : [],
+    after: Array.isArray(spec.after) ? spec.after : [],
     matrix: spec.matrix && typeof spec.matrix === 'object' ? spec.matrix : {},
     artifactPaths: Array.isArray(paths) ? paths : [],
   };

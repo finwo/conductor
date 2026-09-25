@@ -158,3 +158,52 @@ tasks:
     },
   );
 });
+
+test('a task that only comes after an excluded one still runs', () => {
+  const text = `
+version: 1
+defaults:
+  image: alpine:3
+tasks:
+  build:
+    script: ['make']
+  publish:
+    needs: [build]
+    only:
+      refs: [refs/heads/main]
+    script: ['make publish']
+  notify:
+    after: [publish]
+    script: ['make notify']
+`;
+  // notify asked to run after publish, not to be fed by it. On a branch
+  // where publish never happens there is nothing to wait for, so the edge
+  // goes and notify stays.
+  assert.deepEqual(names(text, 'refs/heads/feature'), ['build', 'notify']);
+  assert.deepEqual(names(text, 'refs/heads/main'), ['build', 'notify', 'publish']);
+});
+
+test('an after edge into an excluded task is pruned, not left dangling', () => {
+  // The scheduler resolves these names to task ids, so one pointing at a
+  // task that is not in the job would be written as a broken edge.
+  const { tasks } = compilePipeline(`
+version: 1
+defaults:
+  image: alpine:3
+tasks:
+  build:
+    script: ['make']
+  publish:
+    only:
+      refs: [refs/heads/main]
+    script: ['make publish']
+  notify:
+    after: [build, publish]
+    script: ['make notify']
+`, { ref: 'refs/heads/feature' });
+
+  const present = new Set(tasks.map((t) => t.name));
+  const notify = tasks.find((t) => t.name === 'notify');
+  assert.deepEqual(notify.after, ['build']);
+  for (const dep of notify.after) assert.ok(present.has(dep), `${dep} should be in the job`);
+});

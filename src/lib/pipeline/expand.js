@@ -1,7 +1,7 @@
 // src/lib/pipeline/expand.js - matrix and architecture expansion
 //
 // Turns each task template into one concrete task per combination of its
-// dimensions, then resolves needs between the concrete tasks.
+// dimensions, then resolves needs and after between the concrete tasks.
 //
 // Dimension matching is the part worth understanding. When a task declares
 // needs on a template that shares a dimension with it, the dependency is
@@ -147,6 +147,7 @@ export function expandPipeline(pipeline, options = {}) {
         // restricted task stays restricted across all of its expansions.
         only: task.only ?? null,
         needs: [],
+        after: [],
       });
     }
 
@@ -156,63 +157,75 @@ export function expandPipeline(pipeline, options = {}) {
 
   const byName = new Map(instances.map((i) => [i.name, i]));
 
-  // Pass two: resolve needs now that every concrete task exists.
+  // Pass two: resolve dependencies now that every concrete task exists.
   for (const [baseName, entry] of byBase) {
     for (const instance of entry.instances) {
-      const resolved = new Set();
+      instance.needs = resolveDeps(problems, { byBase, byName, baseName, entry, instance, field: 'needs' });
+      instance.after = resolveDeps(problems, { byBase, byName, baseName, entry, instance, field: 'after' });
 
-      for (const need of entry.task.needs) {
-        const path = `tasks.${baseName}.needs`;
-
-        // An exact concrete task name wins, which is the escape hatch for
-        // depending on one specific combination.
-        if (byName.has(need.task)) {
-          if (need.task === instance.name) {
-            problems.add(path, `task ${JSON.stringify(baseName)} cannot depend on itself`);
-          } else {
-            resolved.add(need.task);
-          }
-          continue;
-        }
-
-        const target = byBase.get(need.task);
-        if (!target) {
-          const known = [...byBase.keys()].filter((n) => n !== baseName);
-          problems.add(
-            path,
-            `refers to unknown task ${JSON.stringify(need.task)}` +
-            (known.length > 0 ? `; defined tasks are ${known.join(', ')}` : '')
-          );
-          continue;
-        }
-        if (need.task === baseName) {
-          problems.add(path, `task ${JSON.stringify(baseName)} cannot depend on itself`);
-          continue;
-        }
-
-        let candidates = target.instances;
-        if (need.match === 'shared') {
-          const shared = target.dimensionNames.filter((d) => Object.hasOwn(instance.dims, d));
-          if (shared.length > 0) {
-            candidates = candidates.filter((c) => shared.every((d) => c.dims[d] === instance.dims[d]));
-            if (candidates.length === 0) {
-              problems.add(
-                path,
-                `no instance of ${JSON.stringify(need.task)} matches ${instance.name} on ` +
-                `${shared.join(', ')}; add the missing value, or use { task: ${need.task}, match: all }`
-              );
-              continue;
-            }
-          }
-        }
-
-        for (const candidate of candidates) resolved.add(candidate.name);
-      }
-
-      instance.needs = [...resolved].sort();
+      // Naming the same dependency both ways is held to the stricter
+      // reading, since needs already implies after.
+      const needs = new Set(instance.needs);
+      instance.after = instance.after.filter((name) => !needs.has(name));
     }
   }
 
   problems.throwIfAny(pipeline.source);
   return instances;
+}
+
+// One task's declared dependencies, turned into concrete task names. `needs`
+// and `after` resolve identically: dimension matching is about which
+// instance is meant, not about what waiting on it implies.
+function resolveDeps(problems, { byBase, byName, baseName, entry, instance, field }) {
+  const resolved = new Set();
+  const path = `tasks.${baseName}.${field}`;
+
+  for (const need of entry.task[field]) {
+    // An exact concrete task name wins, which is the escape hatch for
+    // depending on one specific combination.
+    if (byName.has(need.task)) {
+      if (need.task === instance.name) {
+        problems.add(path, `task ${JSON.stringify(baseName)} cannot depend on itself`);
+      } else {
+        resolved.add(need.task);
+      }
+      continue;
+    }
+
+    const target = byBase.get(need.task);
+    if (!target) {
+      const known = [...byBase.keys()].filter((n) => n !== baseName);
+      problems.add(
+        path,
+        `refers to unknown task ${JSON.stringify(need.task)}` +
+        (known.length > 0 ? `; defined tasks are ${known.join(', ')}` : '')
+      );
+      continue;
+    }
+    if (need.task === baseName) {
+      problems.add(path, `task ${JSON.stringify(baseName)} cannot depend on itself`);
+      continue;
+    }
+
+    let candidates = target.instances;
+    if (need.match === 'shared') {
+      const shared = target.dimensionNames.filter((d) => Object.hasOwn(instance.dims, d));
+      if (shared.length > 0) {
+        candidates = candidates.filter((c) => shared.every((d) => c.dims[d] === instance.dims[d]));
+        if (candidates.length === 0) {
+          problems.add(
+            path,
+            `no instance of ${JSON.stringify(need.task)} matches ${instance.name} on ` +
+            `${shared.join(', ')}; add the missing value, or use { task: ${need.task}, match: all }`
+          );
+          continue;
+        }
+      }
+    }
+
+    for (const candidate of candidates) resolved.add(candidate.name);
+  }
+
+  return [...resolved].sort();
 }

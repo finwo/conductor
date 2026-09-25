@@ -76,12 +76,14 @@ export function jobPage({ job, tasks, canManage }) {
 export function tasksTable(job, tasks) {
   const live = ACTIVE_JOB_STATES.includes(job.state);
 
-  // Grouped by graph depth, which is how the pipeline reads.
+  // Grouped by graph depth, which is how the pipeline reads. Both kinds of
+  // edge count: an after task runs later even though it waits for less, and
+  // showing it alongside what it waits for would read as running beside it.
   const byId = new Map(tasks.map((j) => [j.id, j]));
   const depthOf = (task, seen = new Set()) => {
     if (seen.has(task.id)) return 0;
     seen.add(task.id);
-    const deps = (task.needs ?? []).map((id) => byId.get(id)).filter(Boolean);
+    const deps = [...(task.needs ?? []), ...(task.after ?? [])].map((id) => byId.get(id)).filter(Boolean);
     return deps.length === 0 ? 0 : Math.max(...deps.map((d) => depthOf(d, seen) + 1));
   };
 

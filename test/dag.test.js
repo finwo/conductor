@@ -108,3 +108,58 @@ test('graph helpers tolerate dependencies outside the set', () => {
   assert.deepEqual(topologicalOrder(partial).map((j) => j.name), ['only']);
   assert.equal(depths(partial).get('only'), 0);
 });
+
+// --- after ---
+
+// notify waits for report to finish, but not for it to have worked.
+const AFTER_GRAPH = [
+  { name: 'build', needs: [], after: [] },
+  { name: 'report', needs: ['build'], after: [] },
+  { name: 'notify', needs: [], after: ['report'] },
+];
+
+function afterStates(overrides = {}) {
+  const map = new Map(AFTER_GRAPH.map((j) => [j.name, 'queued']));
+  for (const [k, v] of Object.entries(overrides)) map.set(k, v);
+  return map;
+}
+
+test('after orders a task without putting it downstream of a failure', () => {
+  const order = topologicalOrder(AFTER_GRAPH).map((j) => j.name);
+  assert.ok(order.indexOf('report') < order.indexOf('notify'));
+
+  // The whole point: a build failure carries report off with it, and leaves
+  // notify to run.
+  const skipped = transitiveDependents(AFTER_GRAPH, ['build']);
+  assert.deepEqual([...skipped], ['report']);
+});
+
+test('a cycle through after is still a cycle', () => {
+  // after waits just as needs does, so a loop of them deadlocks the same way.
+  const cyclic = [
+    { name: 'x', needs: [], after: ['y'] },
+    { name: 'y', needs: ['x'], after: [] },
+  ];
+  assert.throws(() => topologicalOrder(cyclic), CycleError);
+});
+
+test('an after dependency releases its dependent whatever it finished as', () => {
+  for (const state of ['success', 'failed', 'skipped', 'cancelled']) {
+    const ready = runnable(AFTER_GRAPH, afterStates({ build: 'success', report: state }));
+    assert.ok(ready.some((j) => j.name === 'notify'), `should run after a ${state} dependency`);
+  }
+});
+
+test('an unfinished after dependency still holds its dependent back', () => {
+  for (const state of ['queued', 'running']) {
+    const ready = runnable(AFTER_GRAPH, afterStates({ report: state }));
+    assert.equal(ready.some((j) => j.name === 'notify'), false, `should wait on a ${state} dependency`);
+  }
+});
+
+test('depth counts after edges, since the task still runs later', () => {
+  const d = depths(AFTER_GRAPH);
+  assert.equal(d.get('build'), 0);
+  assert.equal(d.get('report'), 1);
+  assert.equal(d.get('notify'), 2);
+});
