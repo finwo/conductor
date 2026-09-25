@@ -35,12 +35,12 @@ const MIN_SECRET_LENGTH = 4;
 export function createLogStream(client, url, { masked = [], flushMs = FLUSH_MS, logger = console } = {}) {
   // Longest first, so an overlapping shorter secret cannot partially
   // reveal a longer one.
-  const secrets = [...new Set(masked.filter((s) => typeof s === 'string' && s.length >= MIN_SECRET_LENGTH))]
+  let secrets = [...new Set(masked.filter((s) => typeof s === 'string' && s.length >= MIN_SECRET_LENGTH))]
     .sort((a, b) => b.length - a.length);
-  const masking = secrets.length > 0;
-  const holdBack = masking ? Math.max(...secrets.map((s) => s.length)) - 1 : 0;
+  let masking = secrets.length > 0;
+  let holdBack = masking ? Math.max(...secrets.map((s) => s.length)) - 1 : 0;
 
-  const decoder = masking ? new StringDecoder('utf8') : null;
+  let decoder = masking ? new StringDecoder('utf8') : null;
   let text = '';
   let bytes = Buffer.alloc(0);
   let outbox = Buffer.alloc(0);
@@ -143,6 +143,24 @@ export function createLogStream(client, url, { masked = [], flushMs = FLUSH_MS, 
     // timeout, a cancellation or a setup failure.
     note(line) {
       this.write(`${line}\n`);
+    },
+
+    // Forward looking: what has already shipped cannot be recalled. False
+    // means too short to redact usefully.
+    addSecret(value) {
+      if (typeof value !== 'string' || value.length < MIN_SECRET_LENGTH) return false;
+      if (secrets.includes(value)) return true;
+
+      secrets = [...secrets, value].sort((a, b) => b.length - a.length);
+      holdBack = Math.max(...secrets.map((s) => s.length)) - 1;
+
+      if (!masking) {
+        masking = true;
+        decoder = new StringDecoder('utf8');
+        text = decoder.write(bytes);
+        bytes = Buffer.alloc(0);
+      }
+      return true;
     },
 
     async close() {

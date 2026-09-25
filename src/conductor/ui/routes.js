@@ -22,11 +22,12 @@ import { paginate, pageOf, windowOfAll } from '../../lib/page.js';
 import { issueToken, sessionCookie, clearedCookie } from '../../lib/auth/index.js';
 import { createState, verifyState } from '../../lib/auth/state.js';
 import { PipelineError, DEFAULT_WORKDIR } from '../../lib/pipeline/index.js';
+import { outputAad } from '../../lib/outputs.js';
 
 const LOG_TAIL_BYTES = 256 * 1024;
 
 export default async function uiRoutes(fastify, services) {
-  const { cfg, db, auth, users, projects, workerTokens, variables, logs, scheduler } = services;
+  const { cfg, db, auth, users, projects, workerTokens, variables, secrets, logs, scheduler } = services;
   const secure = cfg.server.public_url.startsWith('https://');
   const oidcRedirectUri = `${cfg.server.public_url.replace(/\/+$/, '')}/oidc/callback`;
 
@@ -187,9 +188,26 @@ export default async function uiRoutes(fastify, services) {
     return { user, job, project, canManage: canManageProject(user, project) };
   }
 
+  // Masked values are never unsealed here: the page shows that one exists.
+  async function outputsOf(taskId) {
+    const rows = await db.all(
+      'SELECT task_id, name, value, masked FROM task_outputs WHERE task_id = {task} ORDER BY name',
+      { task: taskId }
+    );
+    return rows.map((row) => {
+      const masked = row.masked === 1;
+      if (masked) return { name: row.name, masked, value: null };
+      try {
+        return { name: row.name, masked, value: secrets.open(row.value, outputAad(row.task_id, row.name)) };
+      } catch {
+        return { name: row.name, masked, value: null };
+      }
+    });
+  }
+
   async function tasksOf(jobId) {
     const tasks = await db.all(
-      `SELECT id, name, arch, state, worker_name, exit_code, started_at, finished_at
+      `SELECT id, name, arch, state, worker_name, started_at, finished_at
          FROM tasks WHERE job_id = {job} ORDER BY name`,
       { job: jobId }
     );
@@ -285,7 +303,13 @@ export default async function uiRoutes(fastify, services) {
       title: task.name,
       user,
       active: 'jobs',
-      body: taskPage({ task, artifacts, log: await tailOf(task), query: req.query }),
+      body: taskPage({
+        task,
+        artifacts,
+        outputs: await outputsOf(task.id),
+        log: await tailOf(task),
+        query: req.query,
+      }),
     });
   });
 
@@ -637,7 +661,7 @@ export default async function uiRoutes(fastify, services) {
     }
 
     const tasks = await paginate(db, {
-      select: 'id, name, state, arch, worker_name, exit_code, claimed_at, started_at, finished_at',
+      select: 'id, name, state, arch, worker_name, claimed_at, started_at, finished_at',
       from: 'tasks',
       where: 'worker_token_id = {worker}',
       order: 'claimed_at DESC',

@@ -18,6 +18,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { containerName } from './docker.js';
+import { createDirectives, createScanner } from './directives.js';
 import { createLogStream } from './logstream.js';
 import { sourceIntoContainer } from './source.js';
 
@@ -89,6 +90,15 @@ export async function runTask({ cfg, client, runtime, task, logger = console }) 
 
   const log = createLogStream(client, task.endpoints.log, { masked: task.masked ?? [], logger });
 
+  const directives = createDirectives({
+    onMask: (value, name) => {
+      if (!log.addSecret(value)) {
+        log.note(`[conductor] output ${name} is too short to mask reliably`);
+      }
+    },
+    onProblem: (message) => log.note(`[conductor] ${message}`),
+  });
+
   const services = [];
   let networkCreated = false;
   let containerCreated = false;
@@ -98,6 +108,7 @@ export async function runTask({ cfg, client, runtime, task, logger = console }) 
   let timedOut = false;
   let exitCode = null;
   let failure = null;
+  let flushScanners = null;
 
   try {
     scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'conductor-task-'));
@@ -156,8 +167,13 @@ export async function runTask({ cfg, client, runtime, task, logger = console }) 
 
     const { child } = runtime.startCreated(taskContainer);
 
-    child.stdout.on('data', (chunk) => log.write(chunk));
-    child.stderr.on('data', (chunk) => log.write(chunk));
+    // One per stream; the two interleave.
+    const scanners = [createScanner(directives), createScanner(directives)];
+    child.stdout.on('data', (chunk) => log.write(scanners[0].push(chunk)));
+    child.stderr.on('data', (chunk) => log.write(scanners[1].push(chunk)));
+    flushScanners = () => {
+      for (const scanner of scanners) log.write(scanner.end());
+    };
 
     // Report in, and find out whether the run was cancelled underneath us.
     const beatEvery = Math.max(5, Number(task.heartbeat_interval) || 30) * 1000;
@@ -195,7 +211,15 @@ export async function runTask({ cfg, client, runtime, task, logger = console }) 
     if (timeoutTimer) clearTimeout(timeoutTimer);
   }
 
-  const success = failure === null && exitCode === 0 && !cancelled && !timedOut;
+  if (flushScanners) flushScanners();
+
+  // A directive only overrides what the exit code implied. Being killed is
+  // not something a script gets to talk its way out of.
+  const hard = failure !== null || cancelled || timedOut;
+  const state = hard
+    ? 'failed'
+    : (directives.state ?? (exitCode === 0 ? 'success' : 'failed'));
+  const success = state === 'success';
 
   // Artifacts are collected before teardown, and even after a failure
   // when the pipeline asked for that. They come out of the stopped
@@ -222,11 +246,14 @@ export async function runTask({ cfg, client, runtime, task, logger = console }) 
       ? 'task timed out'
       : cancelled
         ? 'task cancelled'
-        : exitCode === 0
+        : state !== 'failed'
           ? null
-          : `task exited ${exitCode}`;
+          : exitCode === 0
+            ? 'task set its state to failed'
+            : `task exited ${exitCode}`;
 
   if (error) log.note(`[conductor] ${error}`);
+  else if (state === 'skipped') log.note('[conductor] skipped');
   else log.note('[conductor] done');
 
   await log.close();
@@ -235,12 +262,14 @@ export async function runTask({ cfg, client, runtime, task, logger = console }) 
   await cleanup();
 
   try {
-    await client.done(task.endpoints.done, { success, exitCode, error });
+    await client.done(task.endpoints.done, {
+      success, state, exitCode, error, outputs: directives.outputs,
+    });
   } catch (e) {
     logger.error?.(`could not report completion of ${task.name}: ${e.message}`);
   }
 
-  return { success, exitCode, error, cancelled, timedOut };
+  return { success, state, exitCode, error, cancelled, timedOut, outputs: directives.outputs };
 
   // Copies what the artifact patterns could possibly match out of the
   // stopped container, into a directory the globbing can then walk.

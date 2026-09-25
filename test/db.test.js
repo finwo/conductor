@@ -230,3 +230,48 @@ test('an existing database gains the dependency kind, defaulting to needs', asyn
     await cleanup();
   }
 });
+
+test('an existing database gains task outputs, and drops them with the task', async () => {
+  const { db, dir, cleanup } = await tempDb();
+  try {
+    const real = path.join(process.cwd(), 'migrations', 'sqlite');
+    const staged = path.join(dir, 'migrations');
+    await fs.mkdir(staged);
+
+    const all = (await fs.readdir(real)).filter((f) => f.endsWith('.sql')).sort();
+    const outputsMigration = all.find((f) => f.includes('task_outputs'));
+    assert.ok(outputsMigration, 'expected a migration adding task outputs');
+
+    for (const file of all.filter((f) => f !== outputsMigration)) {
+      await fs.copyFile(path.join(real, file), path.join(staged, file));
+    }
+    await runMigrations(db, { dir: staged, logger: quiet });
+
+    const now = Date.now();
+    await db.run(
+      `INSERT INTO projects (id, name, repo_url, created_at, updated_at)
+       VALUES ('p1', 'p', 'git://x', {now}, {now})`, { now });
+    await db.run(
+      `INSERT INTO jobs (id, project_id, number, head_sha, created_at)
+       VALUES ('j1', 'p1', 1, 'abc', {now})`, { now });
+    await db.run(
+      `INSERT INTO tasks (id, job_id, name, base_name, image, requires, spec, timeout, created_at)
+       VALUES ('t1', 'j1', 't1', 't1', 'alpine', '[]', '{}', 60, {now})`, { now });
+
+    await fs.copyFile(path.join(real, outputsMigration), path.join(staged, outputsMigration));
+    const upgrade = await runMigrations(db, { dir: staged, logger: quiet });
+    assert.deepEqual(upgrade.applied, [outputsMigration]);
+
+    await db.run(
+      `INSERT INTO task_outputs (task_id, name, value, masked, created_at)
+       VALUES ('t1', 'tag', 'sealed', 1, {now})`, { now });
+    const stored = await db.get('SELECT masked FROM task_outputs WHERE task_id = {t}', { t: 't1' });
+    assert.equal(stored.masked, 1, 'masked by default, as a variable is');
+
+    await db.run("DELETE FROM tasks WHERE id = 't1'");
+    const left = await db.all('SELECT name FROM task_outputs');
+    assert.deepEqual(left, [], 'outputs go with the task they came from');
+  } finally {
+    await cleanup();
+  }
+});

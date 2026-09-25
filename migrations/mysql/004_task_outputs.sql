@@ -1,0 +1,15 @@
+-- 004_task_outputs.sql - values a task produced while it ran
+--
+-- Written by ::set-output, read by ${{ tasks.<name>.outputs.<key> }} when a
+-- later task is dispatched. Sealed like project variables whether masked or
+-- not; masked only decides whether the value may be shown again.
+
+CREATE TABLE task_outputs (
+  task_id     VARCHAR(64)  NOT NULL,
+  name        VARCHAR(191) NOT NULL,
+  value       TEXT         NOT NULL,
+  masked      TINYINT      NOT NULL DEFAULT 1,
+  created_at  BIGINT       NOT NULL,
+  PRIMARY KEY (task_id, name),
+  CONSTRAINT fk_task_outputs_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

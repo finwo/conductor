@@ -176,11 +176,12 @@ tasks:
     needs: [package, test]
     script:
       - ./publish.sh
+      - echo "::set-output url=https://dl.example.com/$VERSION::public"
 
   report:
     after: [publish]
     script:
-      - ./report.sh
+      - ./report.sh ${{ tasks.publish.outputs.url }}
 ```
 
 `arch` and `matrix` fan a task out into one task per combination. A dependency
@@ -191,6 +192,14 @@ architecture of its own, waits for all of them.
 `needs` waits for a task to succeed. `after` waits only for it to finish, so
 `report` runs whether the run went well or badly, which is usually when a
 report is worth having.
+
+A script hands a value to a later task by writing `::set-output` on its own
+output, and reads one back with `${{ tasks.<task>.outputs.<name> }}`, which
+is itself a reason to wait for that task. Outputs are masked unless marked
+`::public`, so a token passed between tasks stays out of both logs. A script
+can also write `::set-state success|failed|skipped` to decide its own
+outcome regardless of what it exited with; a skip is not a failure, and what
+came after it still runs.
 
 `requires` names features a worker must offer. A worker holding a signing key
 advertises `sign-key`, and only tasks asking for it are sent there. The key

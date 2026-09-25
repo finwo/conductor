@@ -15,6 +15,9 @@ export const ALL_EDGES = ['needs', 'after'];
 // Terminal states, which is what an `after` edge waits for.
 const FINISHED = ['success', 'failed', 'skipped', 'cancelled'];
 
+// What lets a `needs` dependent through. A skip is not a failure.
+const SATISFIED = ['success', 'skipped'];
+
 function depsOf(task, edges) {
   if (edges.length === 1) return task[edges[0]] ?? [];
   return edges.flatMap((kind) => task[kind] ?? []);
@@ -100,7 +103,7 @@ export function transitiveDependents(tasks, startNames, { edges = ['needs'] } = 
 
 // Tasks whose dependencies have all reached a satisfying state. Passed the
 // current state of every task by name.
-export function runnable(tasks, stateByName, { satisfied = ['success'], finished = FINISHED } = {}) {
+export function runnable(tasks, stateByName, { satisfied = SATISFIED, finished = FINISHED } = {}) {
   return tasks.filter((task) => {
     if (stateByName.get(task.name) !== 'queued') return false;
     if (!(task.needs ?? []).every((dep) => satisfied.includes(stateByName.get(dep)))) return false;

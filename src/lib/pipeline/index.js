@@ -12,7 +12,7 @@ import { selectForRef } from './only.js';
 import { PipelineError } from './schema.js';
 
 export { parsePipeline } from './parse.js';
-export { expandPipeline, interpolate } from './expand.js';
+export { expandPipeline, interpolate, outputRefsIn, fillOutputs } from './expand.js';
 export { topologicalOrder, depths, transitiveDependents, runnable, CycleError } from './dag.js';
 export { refMatches, taskRunsOnRef, selectForRef } from './only.js';
 export { PipelineError } from './schema.js';

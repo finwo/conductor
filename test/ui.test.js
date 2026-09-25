@@ -422,10 +422,10 @@ test('a mutation without the htmx header is refused', async () => {
 test('the task graph is one table, so columns line up across stages', () => {
   const job = { id: 'j1', state: 'running' };
   const tasks = [
-    { id: 't1', name: 'style', state: 'success', arch: 'x86-64', worker_name: 'w1', started_at: 1, finished_at: 2, exit_code: 0, needs: [] },
-    { id: 't2', name: 'test', state: 'success', arch: null, worker_name: 'w2', started_at: 1, finished_at: 2, exit_code: 0, needs: [] },
-    { id: 't3', name: 'images', state: 'queued', arch: null, worker_name: null, started_at: null, finished_at: null, exit_code: null, needs: ['t1', 't2'] },
-    { id: 't4', name: 'publish', state: 'queued', arch: null, worker_name: null, started_at: null, finished_at: null, exit_code: null, needs: ['t3'] },
+    { id: 't1', name: 'style', state: 'success', arch: 'x86-64', worker_name: 'w1', started_at: 1, finished_at: 2, needs: [] },
+    { id: 't2', name: 'test', state: 'success', arch: null, worker_name: 'w2', started_at: 1, finished_at: 2, needs: [] },
+    { id: 't3', name: 'images', state: 'queued', arch: null, worker_name: null, started_at: null, finished_at: null, needs: ['t1', 't2'] },
+    { id: 't4', name: 'publish', state: 'queued', arch: null, worker_name: null, started_at: null, finished_at: null, needs: ['t3'] },
   ];
 
   const out = toHtml(tasksTable(job, tasks));
@@ -438,11 +438,15 @@ test('the task graph is one table, so columns line up across stages', () => {
   assert.match(out, /stage 1/);
   assert.match(out, /stage 3/);
 
-  // Every task row carries the same six cells, so a column means the same
+  // Every task row carries the same five cells, so a column means the same
   // thing all the way down.
   for (const row of out.match(/<tr>\s*<td>.*?<\/tr>/gs) ?? []) {
-    assert.equal((row.match(/<td/g) ?? []).length, 6, `row has the wrong cell count: ${row}`);
+    assert.equal((row.match(/<td/g) ?? []).length, 5, `row has the wrong cell count: ${row}`);
   }
+
+  // The stage label spans the row, so it must track the column count.
+  assert.match(out, /colspan="5"/);
+  assert.doesNotMatch(out, /<th>exit<\/th>/, 'the exit code is no longer a column');
 });
 
 test('the sign in form is centred rather than stranded at the left edge', async () => {

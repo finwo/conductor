@@ -2,10 +2,8 @@
 //
 // A task carrying an `only` rule runs when the ref that triggered the run
 // matches one of its patterns, and is left out of the run entirely when it
-// does not. Left out rather than recorded as skipped, because the
-// scheduler treats a skipped task as a reason to fail the run: that is the
-// right reading when a dependency collapsed, and the wrong one for a
-// publish step that was never meant to run on this branch.
+// does not. Left out rather than recorded as skipped, so a task that was
+// never meant to run on this branch does not show up in the graph at all.
 //
 // Anything that needs an excluded task is excluded with it. The
 // alternative, quietly dropping the dependency, would let a task run

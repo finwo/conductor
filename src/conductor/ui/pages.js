@@ -100,17 +100,16 @@ export function tasksTable(job, tasks) {
   return html`<div id="tasks" ${live ? poll(`/partials/jobs/${job.id}/tasks`, 3) : ''}>
     <table class="tasks">
       <thead><tr>
-        <th>task</th><th>state</th><th>arch</th><th>worker</th><th>duration</th><th>exit</th>
+        <th>task</th><th>state</th><th>arch</th><th>worker</th><th>duration</th>
       </tr></thead>
       ${[...stages.keys()].sort((a, b) => a - b).map((depth) => html`<tbody class="stage">
-        <tr class="stage-label"><th colspan="6">stage ${depth + 1}</th></tr>
+        <tr class="stage-label"><th colspan="5">stage ${depth + 1}</th></tr>
         ${stages.get(depth).sort((a, b) => a.name.localeCompare(b.name)).map((task) => html`<tr>
           <td><a href="/tasks/${task.id}">${task.name}</a></td>
           <td>${badge(task.state)}</td>
           <td class="muted">${task.arch ?? ''}</td>
           <td class="muted">${task.worker_name ?? ''}</td>
           <td class="muted num">${duration(task.started_at, task.finished_at)}</td>
-          <td class="muted num">${task.exit_code === null ? '' : `exit ${task.exit_code}`}</td>
         </tr>`)}
       </tbody>`)}
     </table>
@@ -119,7 +118,7 @@ export function tasksTable(job, tasks) {
 
 // --- tasks ---
 
-export function taskPage({ task, artifacts, log, query = {} }) {
+export function taskPage({ task, artifacts, outputs = [], log, query = {} }) {
   return html`
     <div class="panel">
       <h2>${task.name}</h2>
@@ -137,6 +136,15 @@ export function taskPage({ task, artifacts, log, query = {} }) {
 
     <h3>log</h3>
     <div class="logpane">${taskLog(task, log)}</div>
+
+    ${outputs.length === 0 ? '' : html`
+      <h3>outputs</h3>
+      <table id="outputs"><tbody>
+        ${outputs.map((o) => html`<tr>
+          <td class="mono">${o.name}</td>
+          <td class="muted">${o.masked ? '[masked]' : o.value}</td>
+        </tr>`)}
+      </tbody></table>`}
 
     ${artifacts.rows.length === 0 ? '' : html`
       <h3>artifacts</h3>
@@ -519,11 +527,11 @@ function workerTasksTable(token, tasks, query) {
   return html`<div id="worker-tasks">
   <table class="tasks">
     <thead><tr>
-      <th>task</th><th>state</th><th>machine</th><th>arch</th><th>claimed</th><th>duration</th><th>exit</th>
+      <th>task</th><th>state</th><th>machine</th><th>arch</th><th>claimed</th><th>duration</th>
     </tr></thead>
     <tbody>
       ${tasks.rows.length === 0
-    ? html`<tr><td colspan="7" class="muted">This worker has not run anything yet.</td></tr>`
+    ? html`<tr><td colspan="6" class="muted">This worker has not run anything yet.</td></tr>`
     : tasks.rows.map((t) => html`<tr>
           <td><a href="/tasks/${t.id}">${t.name}</a></td>
           <td>${badge(t.state)}</td>
@@ -531,7 +539,6 @@ function workerTasksTable(token, tasks, query) {
           <td class="muted">${t.arch ?? ''}</td>
           <td class="muted">${t.claimed_at ? ago(t.claimed_at) : ''}</td>
           <td class="muted num">${duration(t.started_at, t.finished_at)}</td>
-          <td class="muted num">${t.exit_code ?? ''}</td>
         </tr>`)}
     </tbody>
   </table>

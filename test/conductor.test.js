@@ -67,12 +67,14 @@ async function claimNamed(h, name, query) {
   return (await drain(h, query))[name] ?? null;
 }
 
-async function finishRaw(h, taskId, { success = true, exitCode = 0, error = null } = {}) {
+async function finishRaw(h, taskId, {
+  success = true, state = null, exitCode = 0, error = null, outputs = [],
+} = {}) {
   return h.app.inject({
     method: 'POST',
     url: `/api/v1/tasks/${taskId}/complete`,
     headers: { ...h.auth, 'content-type': 'application/json' },
-    payload: JSON.stringify({ success, exit_code: exitCode, error }),
+    payload: JSON.stringify({ success, state, exit_code: exitCode, error, outputs }),
   });
 }
 
@@ -932,7 +934,15 @@ test('a job settles as failed once every task is terminal', async () => {
     const last = await finish(h, released['package:arch=aarch64,pkg=musl'].id, { success: true });
 
     assert.equal(last.job_state, 'failed');
-    assert.equal((await jobState(h, job)).job.state, 'failed');
+    const detail = await jobState(h, job);
+    assert.equal(detail.job.state, 'failed');
+
+    // The failure fails the job, not the skips it caused.
+    assert.ok(
+      detail.tasks.some((t) => t.state === 'skipped'),
+      'the cascade should have skipped something'
+    );
+    assert.ok(detail.tasks.some((t) => t.state === 'failed' && t.allow_failure === 0));
   });
 });
 
@@ -1350,6 +1360,274 @@ tasks:
     const tasks = tasksByName(await jobState(h, job));
     assert.equal(tasks.test.state, 'skipped');
     assert.equal(tasks.cleanup.state, 'success');
+  });
+});
+
+// --- task outputs and set-state ---
+
+test('an output reaches the task that reads it, and implies the dependency', async () => {
+  const pipeline = `
+version: 1
+defaults:
+  image: alpine
+tasks:
+  build:
+    script: ['true']
+  deploy:
+    script: ['ship \${{ tasks.build.outputs.tag }}']
+    env:
+      TAG: '\${{ tasks.build.outputs.tag }}'
+`;
+  await withHarness({ pipeline }, async (h) => {
+    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().data.job_id;
+    await h.waitForJob(job);
+
+    // deploy was never declared to need build; reading its output says so.
+    const tasks = tasksByName(await jobState(h, job));
+    assert.deepEqual(tasks.deploy.needs, [tasks.build.id]);
+
+    const build = await claimNamed(h, 'build', {});
+    assert.ok(build, 'build runs first');
+    assert.equal(await claimNamed(h, 'deploy', {}), null, 'deploy waits for it');
+
+    await finish(h, build.id, {
+      success: true,
+      outputs: [{ name: 'tag', value: 'v1.2.3', masked: false }],
+    });
+
+    const deploy = await claimNamed(h, 'deploy', {});
+    assert.deepEqual(deploy.script, ['ship v1.2.3']);
+    assert.equal(deploy.env.TAG, 'v1.2.3');
+  });
+});
+
+test('a masked output stays masked in the log of whatever reads it', async () => {
+  const pipeline = `
+version: 1
+defaults:
+  image: alpine
+tasks:
+  build:
+    script: ['true']
+  deploy:
+    script: ['ship \${{ tasks.build.outputs.token }}']
+`;
+  await withHarness({ pipeline }, async (h) => {
+    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().data.job_id;
+    await h.waitForJob(job);
+
+    const build = await claimNamed(h, 'build', {});
+    await finish(h, build.id, {
+      success: true,
+      outputs: [{ name: 'token', value: 'sup3rsecret', masked: true }],
+    });
+
+    const deploy = await claimNamed(h, 'deploy', {});
+    assert.deepEqual(deploy.script, ['ship sup3rsecret'], 'the value is still delivered');
+    assert.ok(
+      deploy.masked.includes('sup3rsecret'),
+      'and the worker is told to redact it from this task too'
+    );
+  });
+});
+
+test('outputs rest sealed rather than readable in the table', async () => {
+  const pipeline = `
+version: 1
+tasks:
+  build:
+    image: alpine
+    script: ['true']
+`;
+  await withHarness({ pipeline }, async (h) => {
+    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().data.job_id;
+    await h.waitForJob(job);
+
+    const build = await claimNamed(h, 'build', {});
+    await finish(h, build.id, {
+      success: true,
+      outputs: [{ name: 'tag', value: 'v1.2.3', masked: false }],
+    });
+
+    const row = await h.services.db.get(
+      'SELECT value FROM task_outputs WHERE task_id = {id}', { id: build.id }
+    );
+    assert.ok(!row.value.includes('v1.2.3'), `stored in the clear: ${row.value}`);
+  });
+});
+
+test('a task that reads an output that was never produced fails before it runs', async () => {
+  const pipeline = `
+version: 1
+defaults:
+  image: alpine
+tasks:
+  build:
+    script: ['true']
+  deploy:
+    script: ['ship \${{ tasks.build.outputs.tag }}']
+`;
+  await withHarness({ pipeline }, async (h) => {
+    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().data.job_id;
+    await h.waitForJob(job);
+
+    const build = await claimNamed(h, 'build', {});
+    await finish(h, build.id, { success: true });
+
+    assert.equal(await claimNamed(h, 'deploy', {}), null, 'nothing to hand a worker');
+
+    const tasks = tasksByName(await jobState(h, job));
+    assert.equal(tasks.deploy.state, 'failed');
+    assert.match(tasks.deploy.error, /produced no output "tag"/);
+    assert.equal(tasks.deploy.started_at, null, 'it never started');
+    assert.equal((await jobState(h, job)).job.state, 'failed');
+  });
+});
+
+test('set-state success overrides a non-zero exit', async () => {
+  const pipeline = `
+version: 1
+tasks:
+  check:
+    image: alpine
+    script: ['false']
+`;
+  await withHarness({ pipeline }, async (h) => {
+    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().data.job_id;
+    await h.waitForJob(job);
+
+    const check = await claimNamed(h, 'check', {});
+    const outcome = await finish(h, check.id, { success: false, state: 'success', exitCode: 1 });
+
+    assert.equal(outcome.state, 'success');
+    assert.equal(outcome.job_state, 'success');
+    const tasks = tasksByName(await jobState(h, job));
+    assert.equal(tasks.check.exit_code, 1, 'the exit code is still recorded');
+  });
+});
+
+test('a skipped task is not a failure, and what needed it still runs', async () => {
+  const pipeline = `
+version: 1
+defaults:
+  image: alpine
+tasks:
+  package:
+    script: ['true']
+  index:
+    script: ['reindex']
+    needs: [package]
+`;
+  await withHarness({ pipeline }, async (h) => {
+    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().data.job_id;
+    await h.waitForJob(job);
+
+    const pkg = await claimNamed(h, 'package', {});
+    const outcome = await finish(h, pkg.id, { success: false, state: 'skipped', exitCode: 0 });
+    assert.equal(outcome.state, 'skipped');
+    assert.equal(outcome.job_state, null, 'the job is not settled: index still has to run');
+
+    const index = await claimNamed(h, 'index', {});
+    assert.ok(index, 'a skip is not a failure, so the indexer still runs');
+    const last = await finish(h, index.id, { success: true });
+
+    assert.equal(last.job_state, 'success');
+    const tasks = tasksByName(await jobState(h, job));
+    assert.equal(tasks.package.state, 'skipped');
+  });
+});
+
+test('a skipped task that owed a value fails the one that needed it', async () => {
+  const pipeline = `
+version: 1
+defaults:
+  image: alpine
+tasks:
+  package:
+    script: ['true']
+  index:
+    script: ['reindex \${{ tasks.package.outputs.path }}']
+`;
+  await withHarness({ pipeline }, async (h) => {
+    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().data.job_id;
+    await h.waitForJob(job);
+
+    const pkg = await claimNamed(h, 'package', {});
+    await finish(h, pkg.id, { success: false, state: 'skipped', exitCode: 0 });
+
+    assert.equal(await claimNamed(h, 'index', {}), null);
+    const tasks = tasksByName(await jobState(h, job));
+    assert.equal(tasks.index.state, 'failed');
+    assert.match(tasks.index.error, /produced no output "path"/);
+  });
+});
+
+test('set-state failed fails a task that exited zero', async () => {
+  const pipeline = `
+version: 1
+tasks:
+  check:
+    image: alpine
+    script: ['true']
+`;
+  await withHarness({ pipeline }, async (h) => {
+    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().data.job_id;
+    await h.waitForJob(job);
+
+    const check = await claimNamed(h, 'check', {});
+    const outcome = await finish(h, check.id, { success: false, state: 'failed', exitCode: 0 });
+    assert.equal(outcome.state, 'failed');
+    assert.equal(outcome.job_state, 'failed');
+  });
+});
+
+test('a worker that reports no state at all is still understood', async () => {
+  const pipeline = `
+version: 1
+tasks:
+  check:
+    image: alpine
+    script: ['true']
+`;
+  await withHarness({ pipeline }, async (h) => {
+    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().data.job_id;
+    await h.waitForJob(job);
+
+    const check = await claimNamed(h, 'check', {});
+    const res = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/tasks/${check.id}/complete`,
+      headers: { ...h.auth, 'content-type': 'application/json' },
+      payload: JSON.stringify({ success: true, exit_code: 0 }),
+    });
+    assert.equal(data(res).state, 'success');
+  });
+});
+
+test('a retry drops what the failed attempt produced', async () => {
+  const pipeline = `
+version: 1
+tasks:
+  flaky:
+    image: alpine
+    script: ['true']
+    max_attempts: 2
+`;
+  await withHarness({ pipeline }, async (h) => {
+    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().data.job_id;
+    await h.waitForJob(job);
+
+    const first = await claimNamed(h, 'flaky', {});
+    await finish(h, first.id, {
+      success: false,
+      exitCode: 1,
+      outputs: [{ name: 'tag', value: 'from-the-bad-run', masked: false }],
+    });
+
+    const rows = await h.services.db.all(
+      'SELECT name FROM task_outputs WHERE task_id = {id}', { id: first.id }
+    );
+    assert.deepEqual(rows, [], 'a requeued task carries nothing forward');
   });
 });
 

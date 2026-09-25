@@ -415,6 +415,40 @@ test('a secret split across two writes is still masked', async () => {
   assert.ok(client.text.includes('[masked]'));
 });
 
+test('a secret named while the task runs is masked from then on', async () => {
+  const client = recordingClient();
+  const log = createLogStream(client, 'http://x/log', { flushMs: 5 });
+
+  assert.equal(log.addSecret('abcdef123456'), true);
+  log.write('token is abcdef123456 ok\n');
+  await log.close();
+
+  assert.ok(!client.text.includes('abcdef123456'), `leaked: ${client.text}`);
+  assert.ok(client.text.includes('[masked]'));
+});
+
+test('naming a secret also masks output still buffered', async () => {
+  const client = recordingClient();
+  const log = createLogStream(client, 'http://x/log', { flushMs: 50 });
+
+  log.write('echoed abcdef123456 early\n');
+  log.addSecret('abcdef123456');
+  await log.close();
+
+  assert.ok(!client.text.includes('abcdef123456'), `leaked: ${client.text}`);
+});
+
+test('a value too short to mask is refused rather than made into noise', async () => {
+  const client = recordingClient();
+  const log = createLogStream(client, 'http://x/log', { flushMs: 5 });
+
+  assert.equal(log.addSecret('ab'), false);
+  log.write('ab is everywhere\n');
+  await log.close();
+
+  assert.equal(client.text, 'ab is everywhere\n');
+});
+
 test('a failing conductor does not break the task', async () => {
   const client = {
     async appendLog() {

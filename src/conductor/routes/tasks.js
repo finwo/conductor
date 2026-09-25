@@ -33,9 +33,10 @@ import { canManageProject } from '../../lib/projects.js';
 import { verifySignature } from '../../lib/signature.js';
 import { ok } from './envelope.js';
 import { UnknownTask } from '../../lib/errors.js';
+import { outputAad } from '../../lib/outputs.js';
 import { limitOf, offsetOfQuery, pageBlock, paginateOffset } from '../../lib/page.js';
 
-export default async function taskRoutes(fastify, { cfg, db, projects, auth = null }) {
+export default async function taskRoutes(fastify, { cfg, db, projects, secrets, auth = null }) {
   const base = cfg.server.public_url.replace(/\/+$/, '');
 
   // Explicit columns rather than t.*, which would pull spec and
@@ -60,10 +61,32 @@ export default async function taskRoutes(fastify, { cfg, db, projects, auth = nu
     }
   }
 
+  // Names always, values only where the task said they could be shown.
+  async function readOutputs(taskId) {
+    const rows = await db.all(
+      'SELECT task_id, name, value, masked FROM task_outputs WHERE task_id = {task} ORDER BY name',
+      { task: taskId }
+    );
+    return rows.map((row) => {
+      const masked = row.masked === 1;
+      let value = null;
+      if (!masked) {
+        try {
+          value = secrets.open(row.value, outputAad(row.task_id, row.name));
+        } catch {
+          value = null;
+        }
+      }
+      return { name: row.name, masked, value };
+    });
+  }
+
   // Everything a caller is allowed to see, assembled once so the two routes
   // cannot drift into answering differently.
   async function represent(req, reply, row) {
     const spec = readSpec(row.spec);
+
+    const outputs = await readOutputs(row.id);
 
     const artifacts = await paginateOffset(db, {
       select: 'id, path, size, sha256, created_at, expires_at',
@@ -99,6 +122,7 @@ export default async function taskRoutes(fastify, { cfg, db, projects, auth = nu
         // What the task was told to collect, which is not the same as what
         // it managed to store. The list below is what exists.
         artifact_paths: spec.artifactPaths,
+        outputs,
         log_size: row.log_size,
         created_at: row.created_at,
         started_at: row.started_at,

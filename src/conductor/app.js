@@ -45,7 +45,7 @@ export async function createServices(cfg, options = {}) {
   const users = createUsers({ db, logger });
   const auth = createAuth({ cfg, users, logger });
 
-  const scheduler = createScheduler({ cfg, db, git, logs, storage, projects, variables, logger });
+  const scheduler = createScheduler({ cfg, db, git, logs, storage, projects, secrets, variables, logger });
   const retention = createRetention({ cfg, db, storage, logs, logger });
 
   // Without a first administrator there is no way into the admin surface.

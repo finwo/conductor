@@ -113,10 +113,10 @@ tbody tr:hover { background: #1b1f23; }
 tbody.stage:first-of-type .stage-label th { padding-top: .45rem; }
 tbody.stage tr.stage-label:hover { background: none; }
 
-/* Durations and exit codes are read down the column, not across the row,
-   so they are right aligned and set in figures of one width. */
+/* Durations are read down the column, not across the row, so they are
+   right aligned and set in figures of one width. */
 td.num { text-align: right; font-variant-numeric: tabular-nums; }
-table.tasks thead th:nth-last-child(-n+2) { text-align: right; }
+table.tasks thead th:last-child { text-align: right; }
 
 .logpane { max-height: 32rem; overflow: auto; border: 1px solid var(--border); border-radius: 6px; background: #0b0d0f; }
 pre.log {

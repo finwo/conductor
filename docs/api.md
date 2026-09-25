@@ -198,7 +198,12 @@ empty body.
     "allow_failure": false, "exit_code": 0, "error": null,
     "worker_name": "builder-1", "timeout": 3600, "workdir": "/work",
     "needs": ["build:arch=x86_64"], "after": [], "matrix": { "pkg": "musl" },
-    "artifact_paths": ["dist/**"], "log_size": 4096,
+    "artifact_paths": ["dist/**"],
+    "outputs": [
+      { "name": "tag", "masked": false, "value": "v1.2.3" },
+      { "name": "token", "masked": true, "value": null }
+    ],
+    "log_size": 4096,
     "created_at": 1800000000000, "started_at": null, "finished_at": null,
     "project_id": "demo", "job_id": "m2y5rj7ykdm9sfbr54hf", "job_number": 12,
     "ref": "refs/heads/main", "sha": "<40 hex>", "visibility": "public"
@@ -217,6 +222,9 @@ empty body.
 told the task to collect; `artifacts` is what it actually stored. Each carries a ready download `url`, which is a
 convenience rather than the permission: that route checks visibility again
 for itself.
+
+`outputs` is what the task wrote with `::set-output`. A masked one reports
+its name so the shape of a run is visible, and never its value.
 
 There is no `env` and no `services` here, deliberately. Both can hold
 project variables, and a service carries an environment of its own. The
@@ -305,13 +313,26 @@ that does not match its declared length is rejected.
 Requests are not enveloped; only responses are:
 
 ```json
-{ "success": true, "exit_code": 0, "error": null }
+{
+  "success": true, "state": "success", "exit_code": 0, "error": null,
+  "outputs": [{ "name": "tag", "value": "v1.2.3", "masked": false }]
+}
 ```
 
-A failure with attempts remaining requeues the task; otherwise everything
-that `needs` it, directly or transitively, is skipped. Tasks that only name
-it under `after` are released instead, since they asked to follow it rather
-than to be fed by it.
+`state` is one of `success`, `failed` or `skipped`, and is what the task
+wrote with `::set-state` if it wrote one. It takes precedence over
+`success`, which is kept for workers that do not send a state. Names and
+sizes in `outputs` are validated again here rather than trusted from the
+worker, and values are encrypted before they are stored.
+
+A failure with attempts remaining requeues the task, discarding any outputs
+that attempt produced; otherwise everything that `needs` it, directly or
+transitively, is skipped. Tasks that only name it under `after` are released
+instead, since they asked to follow it rather than to be fed by it.
+
+A task that reports `skipped` is not a failure: the job can still end
+`success`, and tasks that `needs` it still run. One of them reading an output
+it never produced fails on that, before it is handed to a worker.
 
 Artifacts
 ---------

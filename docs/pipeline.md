@@ -258,6 +258,96 @@ there is nothing left to wait for, so the edge is dropped rather than the
 dependent. This is the opposite of `needs`, which takes its dependents out
 of the run with it.
 
+Talking back from a script
+--------------------------
+
+A script can write directives on its own output to hand a value to a later
+task, or to say how it should be counted. Both take the same shape, a line
+starting at column 0:
+
+```
+::<command> <arguments>[::<data>]
+```
+
+The line is removed from the log before it is shipped, so a value written
+this way does not appear in it.
+
+### Outputs
+
+```yaml
+build:
+  script:
+    - 'make'
+    - 'echo "::set-output tag=$(git describe)::public"'
+
+deploy:
+  script: ['./deploy.sh ${{ tasks.build.outputs.tag }}']
+```
+
+`deploy` was never declared to need `build`. Reading its output says so, and
+the dependency is recorded exactly as if `needs: [build]` had been written.
+
+Outputs are masked unless stated otherwise, matching project variables:
+
+```
+::set-output token=hunter2            # masked
+::set-output token=hunter2::masked    # the same, said out loud
+::set-output tag=v1.2.3::public       # shown in the API and the UI
+```
+
+A masked value is redacted from the rest of that task's log, and from the log
+of every task that goes on to read it. It is never returned by the API and
+shows as `[masked]` in the UI. Both kinds are encrypted at rest, exactly as
+project variables are; `public` decides what may be shown again, not how it
+is stored.
+
+Values are stored per task, and a value is only reachable through a reference
+to the task that produced it, so two tasks may use the same output name
+without colliding. A reference may be read anywhere `${{ }}` works except
+`requires`, which chooses the worker before any task has run.
+
+Naming a matrix task waits for every instance of it and looks the output up
+across all of them, which is what a step collecting the whole matrix wants:
+
+```yaml
+package:
+  arch: [x86_64, aarch64]
+  script: ['./build.sh', 'echo "::set-output path-${{ arch }}=/out/pkg.tar::public"']
+
+index:
+  script: ['./reindex.sh ${{ tasks.package.outputs.path-x86_64 }}']
+```
+
+If the referencing task shares a dimension with the task it reads, the
+reference narrows to its own instance, the same way `needs` does.
+
+A reference to a value that was never produced fails the task before it is
+handed to a worker, naming what is missing. It does not run with a hole where
+the value should have been.
+
+### Choosing the outcome
+
+```yaml
+package:
+  script:
+    - './build.sh'
+    - '[ -f out/pkg.tar ] || echo "::set-state skipped"'
+```
+
+`::set-state` takes `success`, `failed` or `skipped`, and overrides what the
+exit code would have meant. It does not stop the script: the run continues,
+and the last directive written is the one that counts.
+
+A timeout, a cancellation, or a failure to start the container still fails
+the task. Those are not outcomes a script gets to talk its way out of.
+
+**A skip is not a failure.** A skipped task leaves the job green, and
+everything that needed it still runs: the indexer at the end of a package
+repository does its work whether or not this particular package was rebuilt.
+What it does not do is invent values: a task reading an output that a skipped
+task never produced fails on that missing output, which is the difference
+between not needing the value and needing one that is not there.
+
 Worker features
 ---------------
 
@@ -368,9 +458,14 @@ Injected automatically:
 Interpolation
 -------------
 
-`${{ ... }}` is substituted before the task is stored, in `image`, `script`,
-`env` values, `requires` and `services`. Two expressions are available:
-`arch` and `matrix.<name>`.
+`${{ ... }}` is substituted in `image`, `script`, `env` values, `requires`
+and `services`. Three expressions are available:
+
+| Expression                        | Substituted            |
+| --------------------------------- | ---------------------- |
+| `arch`                            | when the task is stored |
+| `matrix.<name>`                   | when the task is stored |
+| `tasks.<task>.outputs.<name>`     | when the task is dispatched |
 
 ```yaml
 build:
@@ -385,6 +480,12 @@ Referring to a dimension the task does not declare is an error. Inside
 `script` the `$ARCH` and `$MATRIX_*` variables usually read better, since the
 shell expands them; interpolation exists for the fields the shell never sees,
 such as `image`.
+
+The third is different in kind: its value does not exist until another task
+has run, so it survives compilation and is filled in when a worker claims the
+task. That is why it cannot appear in `requires`, which is read to decide
+which worker to offer the task to. See [talking back from a
+script](#talking-back-from-a-script).
 
 Full example
 ------------

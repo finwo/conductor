@@ -112,11 +112,17 @@ export function createClient(cfg) {
       return await data(res);
     },
 
-    async done(url, { success, exitCode, error }) {
+    async done(url, { success, state = null, exitCode, error, outputs = [] }) {
       const res = await fetch(url, {
         method: 'POST',
         headers: { ...auth, 'content-type': 'application/json' },
-        body: JSON.stringify({ success, exit_code: exitCode ?? null, error: error ?? null }),
+        body: JSON.stringify({
+          success,
+          state,
+          exit_code: exitCode ?? null,
+          error: error ?? null,
+          outputs,
+        }),
       });
       if (!res.ok) throw await readError(res, 'done');
       return await data(res);

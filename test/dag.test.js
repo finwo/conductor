@@ -89,9 +89,12 @@ test('failure skips transitive dependents, not just direct ones', () => {
   assert.equal(skipped.has('island'), false);
 });
 
-test('a skipped dependency never releases a dependent', () => {
+test('a failed dependency never releases a dependent', () => {
   assert.equal(runnable(GRAPH, states({ a: 'failed' })).some((j) => j.name === 'b'), false);
-  assert.equal(runnable(GRAPH, states({ a: 'skipped' })).some((j) => j.name === 'b'), false);
+});
+
+test('a skipped dependency releases a dependent, since a skip is not a failure', () => {
+  assert.equal(runnable(GRAPH, states({ a: 'skipped' })).some((j) => j.name === 'b'), true);
 });
 
 test('allowed failures can satisfy a dependency when asked to', () => {

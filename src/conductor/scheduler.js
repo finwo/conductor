@@ -19,8 +19,12 @@
 // Claiming is a conditional UPDATE guarded on the previous state, so two
 // workers polling at the same instant cannot both win the same task.
 
-import { compilePipeline, PipelineError, transitiveDependents, DEFAULT_WORKDIR } from '../lib/pipeline/index.js';
+import {
+  compilePipeline, PipelineError, transitiveDependents, DEFAULT_WORKDIR,
+  outputRefsIn, fillOutputs,
+} from '../lib/pipeline/index.js';
 import { inClause } from '../lib/db/query.js';
+import { outputAad } from '../lib/outputs.js';
 import { newJobId, newTaskId } from '../lib/ids.js';
 import { keys as storageKeys } from '../lib/storage/index.js';
 
@@ -33,12 +37,11 @@ const TERMINAL = ['success', 'failed', 'skipped', 'cancelled'];
 // The two spellings a repository may use without being configured for it.
 export const CONVENTIONAL_CONFIG_PATHS = ['.conductor.yml', '.conductor.yaml'];
 
-export function createScheduler({ cfg, db, git, logs, storage, projects, variables = null, logger = console }) {
-  // A task is eligible when it is queued, its job is live, and no dependency
-  // is outstanding. What outstanding means depends on the edge. A needs
-  // dependency has to have succeeded, and a failed one marked allow_failure
-  // counts as satisfied, which is the whole point of the flag. An after
-  // dependency only has to have stopped running.
+export function createScheduler({
+  cfg, db, git, logs, storage, projects, secrets, variables = null, logger = console,
+}) {
+  // needs is satisfied by success, skipped, or failed under allow_failure.
+  // after only waits for the dependency to stop running.
   const ELIGIBLE = `
     SELECT t.id, t.job_id, t.name, t.arch, t.image, t.requires, t.spec,
            t.timeout, t.attempt, t.max_attempts,
@@ -54,7 +57,7 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
                JOIN tasks dt ON dt.id = d.depends_on_id
               WHERE d.task_id = t.id
                 AND d.kind = 'needs'
-                AND dt.state <> 'success'
+                AND dt.state NOT IN ('success', 'skipped')
                 AND NOT (dt.state = 'failed' AND dt.allow_failure = 1)
            )
        AND NOT EXISTS (
@@ -127,7 +130,7 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
     const bad = await tx.get(
       `SELECT COUNT(*) AS c FROM tasks
         WHERE job_id = {job}
-          AND (state IN ('skipped', 'cancelled')
+          AND (state = 'cancelled'
                OR (state = 'failed' AND allow_failure = 0))`,
       { job: jobId }
     );
@@ -215,6 +218,7 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
                 matrix: task.matrix,
                 needs: task.needs,
                 after: task.after,
+                output_refs: task.output_refs ?? {},
                 depth: task.depth,
                 workdir,
               }),
@@ -324,6 +328,14 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
         }
         if (!requires.every((f) => featureSet.has(f))) continue;
 
+        // Before claiming: a task whose inputs are not there never runs, so
+        // there is no point handing it to a worker first.
+        const resolution = await resolveOutputs(candidate);
+        if (resolution.error) {
+          await failUnclaimable(candidate, resolution.error);
+          continue;
+        }
+
         const now = Date.now();
         const claimed = await db.run(
           `UPDATE tasks
@@ -338,6 +350,7 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
 
         const spec = JSON.parse(candidate.spec);
         const attempt = candidate.attempt + 1;
+        const fill = (value) => fillOutputs(value, resolution.values);
 
         // Project variables are resolved at dispatch and handed to the
         // worker, never written into the tasks table, so the only place a
@@ -360,16 +373,17 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
           project_id: candidate.project_id,
           name: candidate.name,
           arch: candidate.arch,
-          image: candidate.image,
+          image: fill(candidate.image),
           sha: candidate.head_sha,
           ref: candidate.ref,
           requires,
           timeout: candidate.timeout,
           attempt,
           max_attempts: candidate.max_attempts,
-          script: spec.script,
-          // Values the worker must redact from the log stream.
-          masked: injected.masked,
+          script: fill(spec.script),
+          // Values the worker must redact from the log stream. A masked
+          // output stays masked in every task that goes on to read it.
+          masked: [...injected.masked, ...resolution.masked],
           // Project variables, then pipeline env, then the facts about this
           // task. Ordered so a pipeline cannot quietly redefine the last
           // group, and a variable cannot shadow an explicit task setting.
@@ -379,7 +393,7 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
           // script, and the worker only copies them into the container.
           env: {
             ...injected.env,
-            ...spec.env,
+            ...fill(spec.env),
             CONDUCTOR_PROJECT: candidate.project_id,
             CONDUCTOR_JOB_ID: candidate.job_id,
             CONDUCTOR_JOB_NUMBER: String(candidate.number),
@@ -389,8 +403,8 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
             CONDUCTOR_REF: candidate.ref ?? '',
             CONDUCTOR_ATTEMPT: String(attempt),
           },
-          services: spec.services,
-          artifacts: spec.artifacts,
+          services: fill(spec.services),
+          artifacts: fill(spec.artifacts),
           workdir: spec.workdir ?? DEFAULT_WORKDIR,
         };
       }
@@ -417,7 +431,11 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
 
     // Records the outcome, retries if attempts remain, and otherwise skips
     // everything downstream.
-    async complete(taskId, { success, exitCode = null, error = null, tokenId = null }) {
+    async complete(taskId, {
+      state: reported = null, success, exitCode = null, error = null,
+      outputs = [], tokenId = null,
+    }) {
+      const outcome = reported ?? (success ? 'success' : 'failed');
       return db.transaction(async (tx) => {
         const task = await tx.get(
           `SELECT id, job_id, name, state, attempt, max_attempts, allow_failure, worker_token_id
@@ -436,13 +454,14 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
 
         const now = Date.now();
 
-        if (success) {
+        if (outcome === 'success' || outcome === 'skipped') {
           await tx.run(
-            "UPDATE tasks SET state = 'success', exit_code = {code}, finished_at = {now} WHERE id = {id}",
-            { id: taskId, code: exitCode, now }
+            'UPDATE tasks SET state = {state}, exit_code = {code}, finished_at = {now} WHERE id = {id}',
+            { id: taskId, state: outcome, code: exitCode, now }
           );
+          await writeOutputs(tx, taskId, outputs);
           const jobState = await settleJob(tx, task.job_id);
-          return { ok: true, state: 'success', jobState };
+          return { ok: true, state: outcome, jobState };
         }
 
         // Transient failure with attempts left: back to the queue rather
@@ -456,6 +475,7 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
               WHERE id = {id}`,
             { id: taskId, code: exitCode, error }
           );
+          await tx.run('DELETE FROM task_outputs WHERE task_id = {id}', { id: taskId });
           return { ok: true, state: 'queued', retry: true, attempt: task.attempt };
         }
 
@@ -463,6 +483,9 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
           "UPDATE tasks SET state = 'failed', exit_code = {code}, error = {error}, finished_at = {now} WHERE id = {id}",
           { id: taskId, code: exitCode, error, now }
         );
+        // Kept even here: an allow_failure dependency still runs its
+        // dependents, and they may read what it produced.
+        await writeOutputs(tx, taskId, outputs);
 
         let skipped = [];
         if (!task.allow_failure) {
@@ -538,6 +561,102 @@ export function createScheduler({ cfg, db, git, logs, storage, projects, variabl
 
     TERMINAL,
   };
+
+  // Looks up every ${{ tasks.x.outputs.y }} a task is about to run with.
+  // Returns an error instead of values when one of them was never produced,
+  // which is a real failure: the script would otherwise run with a hole in
+  // its arguments.
+  async function resolveOutputs(candidate) {
+    const spec = JSON.parse(candidate.spec);
+    const refs = spec.output_refs ?? {};
+    const wanted = [
+      ...outputRefsIn(candidate.spec),
+      ...outputRefsIn(candidate.image ?? ''),
+    ];
+    if (wanted.length === 0) return { values: new Map(), masked: [] };
+
+    const names = [...new Set(Object.values(refs).flat())];
+    const list = inClause('t', names);
+    const rows = list.empty ? [] : await db.all(
+      `SELECT o.task_id, o.name, o.value, o.masked, t.name AS task
+         FROM task_outputs o
+         JOIN tasks t ON t.id = o.task_id
+        WHERE t.job_id = {job} AND t.name IN (${list.sql})`,
+      { job: candidate.job_id, ...list.params }
+    );
+
+    const byTask = new Map();
+    for (const row of rows) {
+      if (!byTask.has(row.task)) byTask.set(row.task, new Map());
+      byTask.get(row.task).set(row.name, row);
+    }
+
+    const values = new Map();
+    const masked = [];
+    for (const { whole, ref, key } of wanted) {
+      if (values.has(whole)) continue;
+      const from = (refs[ref] ?? []).filter((name) => byTask.get(name)?.has(key));
+
+      if (from.length === 0) {
+        const where = (refs[ref] ?? []).join(', ') || ref;
+        return { error: `${where} produced no output ${JSON.stringify(key)}` };
+      }
+      if (from.length > 1) {
+        return {
+          error: `output ${JSON.stringify(key)} was produced by ${from.join(' and ')}; ` +
+            'name one of them',
+        };
+      }
+
+      const row = byTask.get(from[0]).get(key);
+      let value;
+      try {
+        value = secrets.open(row.value, outputAad(row.task_id, key));
+      } catch {
+        return { error: `output ${JSON.stringify(key)} of ${from[0]} could not be read` };
+      }
+      values.set(whole, value);
+      if (row.masked === 1) masked.push(value);
+    }
+
+    return { values, masked };
+  }
+
+  // Never claimed, so it never ran: failed straight from queued.
+  async function failUnclaimable(candidate, message) {
+    await db.transaction(async (tx) => {
+      const now = Date.now();
+      const marked = await tx.run(
+        `UPDATE tasks SET state = 'failed', error = {error}, finished_at = {now}
+          WHERE id = {id} AND state = 'queued'`,
+        { id: candidate.id, error: message, now }
+      );
+      if (marked.changes !== 1) return;
+      await skipDependents(tx, candidate.job_id, [candidate.id], now);
+      await settleJob(tx, candidate.job_id);
+    });
+    logger.warn?.(`task ${candidate.name} cannot run: ${message}`);
+  }
+
+  // Sealed whether masked or not; masked only decides what may be shown.
+  async function writeOutputs(tx, taskId, outputs) {
+    if (!Array.isArray(outputs) || outputs.length === 0) return;
+    await tx.run('DELETE FROM task_outputs WHERE task_id = {id}', { id: taskId });
+    const now = Date.now();
+    for (const { name, value, masked } of outputs) {
+      await tx.run(
+        `INSERT INTO task_outputs (task_id, name, value, masked, created_at)
+         VALUES ({task}, {name}, {value}, {masked}, {now})`,
+        {
+          task: taskId,
+          name,
+          value: secrets.seal(value, outputAad(taskId, name)),
+          masked: masked === false ? 0 : 1,
+          now,
+        }
+      );
+    }
+  }
 
   async function skipDependents(tx, jobId, fromTaskIds, now) {
     const graph = await loadGraph(tx, jobId);

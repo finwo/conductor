@@ -21,6 +21,7 @@ import { LogOffsetError } from '../../lib/log.js';
 import { hashingTransform } from '../../lib/stream.js';
 import { sanitizeRelativePath, keys as storageKeys } from '../../lib/storage/index.js';
 import { maskBuffer } from '../../lib/variables.js';
+import { readOutputList } from '../../lib/outputs.js';
 import { newArtifactId } from '../../lib/ids.js';
 import { ok } from './envelope.js';
 import {
@@ -38,6 +39,8 @@ const COMPLETE_FAILURES = {
   'not-held': TaskNotHeld,
   'not-running': TaskNotRunning,
 };
+
+const TASK_OUTCOMES = ['success', 'failed', 'skipped'];
 
 export default async function workerRoutes(fastify, { cfg, db, git, logs, storage, projects, scheduler, workerTokens, variables }) {
   // Raw bodies: log chunks and artifacts arrive as octet streams and must
@@ -275,13 +278,18 @@ export default async function workerRoutes(fastify, { cfg, db, git, logs, storag
 
     const body = req.body ?? {};
     const success = body.success === true;
+    // A worker too old to send a state still says whether it succeeded.
+    const state = TASK_OUTCOMES.includes(body.state)
+      ? body.state
+      : (success ? 'success' : 'failed');
     const exitCode = Number.isInteger(body.exit_code) ? body.exit_code : null;
     const error = typeof body.error === 'string' ? body.error.slice(0, 4096) : null;
 
     const outcome = await scheduler.complete(task.id, {
-      success,
+      state,
       exitCode,
       error,
+      outputs: readOutputList(body.outputs),
       tokenId: req.worker.id,
     });
     // All 409: by this point heldTask has already answered for a task that

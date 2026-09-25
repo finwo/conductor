@@ -548,3 +548,150 @@ tasks:
   b: { image: x, script: [s], after: [a] }
 `), /dependency cycle/);
 });
+
+// --- task outputs ---
+
+test('reading an output implies needing the task, and is left for dispatch', () => {
+  const p = compilePipeline(`
+version: 1
+defaults:
+  image: x
+tasks:
+  build:
+    script: [make]
+  deploy:
+    script: ['ship \${{ tasks.build.outputs.tag }}']
+`);
+  const deploy = byName(p).deploy;
+  assert.deepEqual(deploy.needs, ['build'], 'the reference is a reason to wait');
+  assert.deepEqual(deploy.output_refs, { build: ['build'] });
+  assert.deepEqual(
+    deploy.script,
+    ['ship ${{ tasks.build.outputs.tag }}'],
+    'the value is not known yet, so the reference survives compilation'
+  );
+  assert.equal(deploy.depth, 1);
+});
+
+test('an implied need is not repeated when it is also declared', () => {
+  const p = compilePipeline(`
+version: 1
+defaults:
+  image: x
+tasks:
+  build:
+    script: [make]
+  deploy:
+    script: ['ship \${{ tasks.build.outputs.tag }}']
+    needs: [build]
+`);
+  assert.deepEqual(byName(p).deploy.needs, ['build']);
+});
+
+test('reading an output of a matrix task waits for every instance of it', () => {
+  const p = compilePipeline(`
+version: 1
+defaults:
+  image: x
+tasks:
+  build:
+    arch: [x86_64, aarch64]
+    script: ['echo "::set-output pkg-\${{ arch }}=/out/\${{ arch }}.tar::public"']
+  index:
+    script: ['index \${{ tasks.build.outputs.pkg-x86_64 }} \${{ tasks.build.outputs.pkg-aarch64 }}']
+`);
+  const index = byName(p).index;
+  assert.deepEqual(index.needs, ['build:arch=aarch64', 'build:arch=x86_64']);
+  assert.deepEqual(index.output_refs, { build: ['build:arch=aarch64', 'build:arch=x86_64'] });
+});
+
+test('a shared dimension still narrows an output reference to its own instance', () => {
+  const p = compilePipeline(`
+version: 1
+defaults:
+  image: x
+tasks:
+  build:
+    arch: [x86_64, aarch64]
+    script: [make]
+  sign:
+    arch: [x86_64, aarch64]
+    script: ['sign \${{ tasks.build.outputs.path }}']
+`);
+  const tasks = byName(p);
+  assert.deepEqual(tasks['sign:arch=x86_64'].output_refs, { build: ['build:arch=x86_64'] });
+  assert.deepEqual(tasks['sign:arch=aarch64'].needs, ['build:arch=aarch64']);
+});
+
+test('an output name may carry dots and dashes', () => {
+  const p = compilePipeline(`
+version: 1
+defaults:
+  image: x
+tasks:
+  cook:
+    script: [make]
+  eat:
+    script: ['eat \${{ tasks.cook.outputs.pizza.calzone }} \${{ tasks.cook.outputs.side-dish }}']
+`);
+  assert.deepEqual(byName(p).eat.needs, ['cook']);
+});
+
+test('outputs cannot be read where a worker is chosen', () => {
+  assert.throws(
+    () => compilePipeline(`
+version: 1
+defaults:
+  image: x
+tasks:
+  build:
+    script: [make]
+  deploy:
+    script: [ship]
+    requires: ['\${{ tasks.build.outputs.feature }}']
+`),
+    /tasks\.deploy\.requires\[0\][\s\S]*not known until the task is dispatched/
+  );
+});
+
+test('an output reference is validated like any other dependency', () => {
+  assert.throws(
+    () => compilePipeline(`
+version: 1
+tasks:
+  a: { image: x, script: ['\${{ tasks.ghost.outputs.v }}'] }
+`),
+    /unknown task "ghost"/
+  );
+  assert.throws(
+    () => compilePipeline(`
+version: 1
+tasks:
+  a: { image: x, script: ['\${{ tasks.a.outputs.v }}'] }
+`),
+    /cannot depend on itself/
+  );
+});
+
+test('an output reference can close a cycle', () => {
+  assert.throws(
+    () => compilePipeline(`
+version: 1
+defaults:
+  image: x
+tasks:
+  a:
+    script: ['\${{ tasks.b.outputs.v }}']
+  b:
+    script: ['\${{ tasks.a.outputs.v }}']
+`),
+    /dependency cycle/
+  );
+});
+
+test('an unknown expression names task outputs as an option', () => {
+  assert.throws(
+    () => compilePipeline('version: 1\ntasks:\n  a: { image: x, script: ["${{ nonsense }}"] }\n'),
+    /expected arch, matrix\.<name> or tasks\.<task>\.outputs\.<name>/
+  );
+});
