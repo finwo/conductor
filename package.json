@@ -1,6 +1,6 @@
 {
   "name": "conductor",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Stand-alone CI system: in-repo pipelines, containerised jobs, pull-based workers",
   "type": "module",
   "main": "src/conductor/index.js",
