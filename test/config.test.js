@@ -75,6 +75,66 @@ test('an oidc discovery url without a client id is rejected', async () => {
   });
 });
 
+test('the built-in provider is on by default and answers at public_url', async () => {
+  await withEnv({ CONDUCTOR_PUBLIC_URL: 'https://ci.example.com/' }, () => {
+    const cfg = loadConfig();
+    assert.equal(cfg.auth.local.enabled, true);
+    assert.deepEqual(cfg.auth.local.redirect_uris, ['https://ci.example.com']);
+  });
+});
+
+test('configuring a provider turns the built-in one off', async () => {
+  await withEnv({
+    CONDUCTOR_OIDC_DISCOVERY_URL: 'https://idp.example.com/realms/ci/.well-known/openid-configuration',
+    CONDUCTOR_OIDC_CLIENT_ID: 'conductor',
+  }, () => {
+    assert.equal(loadConfig().auth.local.enabled, false);
+  });
+});
+
+// Only one provider can be advertised, so asking for the built-in one wins.
+test('enabling the built-in provider overrides a configured one', async () => {
+  await withEnv({
+    CONDUCTOR_OIDC_DISCOVERY_URL: 'https://idp.example.com/realms/ci/.well-known/openid-configuration',
+    CONDUCTOR_OIDC_CLIENT_ID: 'conductor',
+    CONDUCTOR_LOCAL_AUTH: 'true',
+  }, () => {
+    const cfg = loadConfig();
+    assert.equal(cfg.auth.mode, 'local');
+    assert.equal(cfg.auth.local.enabled, true);
+  });
+});
+
+test('disabling the built-in provider with no other one is rejected', async () => {
+  await withEnv({ CONDUCTOR_LOCAL_AUTH: 'false' }, () => {
+    assert.throws(() => loadConfig(), /nobody could sign in/);
+  });
+});
+
+test('redirect uris are split on commas and lose trailing slashes', async () => {
+  await withEnv({
+    CONDUCTOR_LOCAL_REDIRECT_URIS: 'https://app.example.com/ , https://alt.example.com',
+  }, () => {
+    assert.deepEqual(loadConfig().auth.local.redirect_uris, [
+      'https://app.example.com',
+      'https://alt.example.com',
+    ]);
+  });
+});
+
+test('token lifetimes are read from the environment as integers', async () => {
+  await withEnv({
+    CONDUCTOR_ACCESS_TTL: '300',
+    CONDUCTOR_REFRESH_TTL: '86400',
+    CONDUCTOR_REFRESH_SLIDING: 'off',
+  }, () => {
+    const cfg = loadConfig();
+    assert.equal(cfg.auth.access_ttl, 300);
+    assert.equal(cfg.auth.refresh_ttl, 86400);
+    assert.equal(cfg.auth.refresh_sliding, false);
+  });
+});
+
 test('a database url selects its dialect', async () => {
   await withEnv({ CONDUCTOR_DATABASE_URL: 'postgres://u:p@h:5432/ci' }, () => {
     assert.equal(loadConfig().database.dialect, 'postgres');

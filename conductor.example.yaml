@@ -43,17 +43,26 @@ auth:
   # Signs built-in session tokens. Generated per boot when unset, which logs
   # everyone out on restart, so set it in production.
   session_secret: null
-  session_ttl: 43200
-  # Setting a discovery url switches authentication to OIDC. Built-in
+  access_ttl: 900
+  refresh_ttl: 2592000
+  # False expires a session refresh_ttl after signing in rather than after
+  # last use.
+  refresh_sliding: true
+  # The built-in login provider. Derived from oidc.discovery_url when unset;
+  # setting it true uses the built-in one even with a provider configured.
+  local:
+    enabled: null
+    # Where the app is allowed to be sent back to, when it is not served
+    # from server.public_url. Comma separated.
+    redirect_uris: null
+  # Setting a discovery url switches authentication to the provider. Built-in
   # accounts are used when it is unset. Everything else about the provider,
   # including its issuer and every endpoint, is read from this document.
   oidc:
     discovery_url: null
-    # The client this conductor is registered as. The redirect uri to
-    # register is <server.public_url>/oidc/callback.
+    # The client this conductor is registered as. Register it as a public
+    # client with PKCE, and the app's origin as a redirect uri.
     client_id: null
-    # Only for a confidential client; leave unset for a public one.
-    client_secret: null
     scopes: openid profile email
     admin_role: conductor-admin
   # Created on first boot, only while the users table is empty, and only

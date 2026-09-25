@@ -45,16 +45,20 @@ const DEFAULTS = {
     },
   },
   auth: {
-    // Signs built-in session tokens. Random per boot when unset, which
-    // invalidates existing sessions on restart.
+    // Random per boot when unset, which invalidates existing sessions.
     session_secret: null,
-    session_ttl: 43200,
+    access_ttl: 900,
+    refresh_ttl: 2592000,
+    refresh_sliding: true,
+    local: {
+      enabled: null,
+      redirect_uris: null,
+    },
     oidc: {
       // The provider's OpenID configuration document. Its issuer and every
       // endpoint are read from here rather than configured separately.
       discovery_url: null,
       client_id: null,
-      client_secret: null,
       scopes: 'openid profile email',
       admin_role: 'conductor-admin',
     },
@@ -130,9 +134,13 @@ const ENV_MAP = [
   ['CONDUCTOR_S3_SECRET_ACCESS_KEY', 'storage.s3.secret_access_key', String],
   ['CONDUCTOR_S3_FORCE_PATH_STYLE',  'storage.s3.force_path_style', toBool],
   ['CONDUCTOR_SESSION_SECRET',       'auth.session_secret',         String],
+  ['CONDUCTOR_ACCESS_TTL',           'auth.access_ttl',             toInt],
+  ['CONDUCTOR_REFRESH_TTL',          'auth.refresh_ttl',            toInt],
+  ['CONDUCTOR_REFRESH_SLIDING',      'auth.refresh_sliding',        toBool],
+  ['CONDUCTOR_LOCAL_AUTH',           'auth.local.enabled',          toBool],
+  ['CONDUCTOR_LOCAL_REDIRECT_URIS',  'auth.local.redirect_uris',    String],
   ['CONDUCTOR_OIDC_DISCOVERY_URL',   'auth.oidc.discovery_url',     String],
   ['CONDUCTOR_OIDC_CLIENT_ID',       'auth.oidc.client_id',         String],
-  ['CONDUCTOR_OIDC_CLIENT_SECRET',   'auth.oidc.client_secret',     String],
   ['CONDUCTOR_OIDC_SCOPES',          'auth.oidc.scopes',            String],
   ['CONDUCTOR_OIDC_ADMIN_ROLE',      'auth.oidc.admin_role',        String],
   ['CONDUCTOR_ADMIN_USERNAME',       'auth.bootstrap_admin.username', String],
@@ -195,6 +203,13 @@ function deepFreeze(obj) {
   return Object.freeze(obj);
 }
 
+// Comma separated from the environment, a list from a config file.
+function redirectUris(value, publicUrl) {
+  const given = Array.isArray(value) ? value : String(value ?? '').split(',');
+  const uris = given.map((u) => String(u).trim().replace(/\/+$/, '')).filter(Boolean);
+  return uris.length > 0 ? uris : [publicUrl.replace(/\/+$/, '')];
+}
+
 // Reads a 32 byte key given as hex or base64. Returns a Buffer, or null.
 export function parseKey(value, label) {
   if (!value) return null;
@@ -243,8 +258,8 @@ function validate(cfg) {
     if (!cfg.auth.oidc.client_id) {
       errors.push('auth.oidc.client_id is required when auth.oidc.discovery_url is set');
     }
-  } else if (cfg.auth.oidc.client_id) {
-    errors.push('auth.oidc.client_id is set but auth.oidc.discovery_url is not');
+  } else if (cfg.auth.local.enabled === false) {
+    errors.push('auth.local.enabled is false and no auth.oidc.discovery_url is set, so nobody could sign in');
   }
 
   try {
@@ -340,7 +355,11 @@ export function loadConfig(explicitPath) {
   cfg.source = source;
   cfg.database.dialect = dialectFromUrl(cfg.database.url);
   cfg.storage.driver = cfg.storage.s3.bucket ? 's3' : 'local';
-  cfg.auth.mode = cfg.auth.oidc.discovery_url ? 'oidc' : 'local';
+
+  // The discovery document names one provider, so these two always agree.
+  if (cfg.auth.local.enabled === null) cfg.auth.local.enabled = !cfg.auth.oidc.discovery_url;
+  cfg.auth.mode = cfg.auth.local.enabled ? 'local' : 'oidc';
+  cfg.auth.local.redirect_uris = redirectUris(cfg.auth.local.redirect_uris, cfg.server.public_url);
 
   if (!cfg.auth.session_secret) {
     cfg.auth.session_secret = crypto.randomBytes(32).toString('hex');
