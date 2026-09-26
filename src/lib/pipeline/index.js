@@ -16,7 +16,7 @@ export { expandPipeline, interpolate, outputRefsIn, fillOutputs } from './expand
 export { topologicalOrder, depths, transitiveDependents, runnable, CycleError } from './dag.js';
 export { refMatches, taskRunsOnRef, selectForRef } from './only.js';
 export { PipelineError } from './schema.js';
-export { SUPPORTED_VERSION, VISIBILITIES, DEFAULT_WORKDIR, parseWorkdir } from './parse.js';
+export { SUPPORTED_VERSION, DEFAULT_WORKDIR, parseWorkdir } from './parse.js';
 
 export function compilePipeline(text, options = {}) {
   const pipeline = parsePipeline(text, options);
@@ -43,7 +43,6 @@ export function compilePipeline(text, options = {}) {
   return {
     version: pipeline.version,
     source: pipeline.source,
-    visibility: pipeline.visibility,
     workdir: pipeline.workdir,
     tasks,
   };

@@ -14,11 +14,24 @@ import taskRoutes from './tasks.js';
 import userRoutes from './users.js';
 import workerRoutes from './workers.js';
 import { envelopeFailures } from './envelope.js';
+import { MalformedJson } from '../../lib/errors.js';
 
 // prefix is dropped rather than passed on: it applied when this plugin was
 // registered, and handing it to the children would apply it a second time.
 export default async function apiRoutes(fastify, { prefix, ...services }) {
   envelopeFailures(fastify);
+
+  // Trigger signatures HMAC the raw bytes; registered here so rawBody
+  // reaches every child plugin.
+  fastify.addContentTypeParser('application/json', { parseAs: 'buffer' }, (req, body, done) => {
+    req.rawBody = body;
+    if (body.length === 0) return done(null, {});
+    try {
+      done(null, JSON.parse(body.toString('utf8')));
+    } catch {
+      done(new MalformedJson());
+    }
+  });
 
   await fastify.register(jobRoutes, services);
   await fastify.register(agentRoutes, services);

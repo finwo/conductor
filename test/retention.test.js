@@ -367,7 +367,7 @@ test('one project policy does not reach into another', async () => {
       repo_url: h.repoDir,
       trigger_secret: 'other-secret',
       visibility: 'public',
-    });
+    }, { allowLocalPath: true });
     await h.services.db.run(
       'UPDATE projects SET artifact_keep_days = 0 WHERE id = {id}', { id: 'other' }
     );

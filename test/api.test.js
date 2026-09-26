@@ -208,7 +208,7 @@ test('the lists an anonymous reader lands on hold only public rows', async () =>
       repo_url: h.repoDir,
       visibility: 'private',
       owner_id: null,
-    });
+    }, { allowLocalPath: true });
     const job = data(await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).job_id;
     await h.waitForJob(job);
 
@@ -231,7 +231,7 @@ test('a private project is absent rather than refused', async () => {
       repo_url: h.repoDir,
       visibility: 'private',
       owner_id: null,
-    });
+    }, { allowLocalPath: true });
 
     const res = await h.app.inject({ method: 'GET', url: '/api/v1/projects/hidden' });
     assert.equal(res.statusCode, 404, res.body);

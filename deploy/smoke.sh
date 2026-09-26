@@ -71,7 +71,6 @@ log "preparing a repository"
 mkdir -p "${WORK}/repo"
 cat > "${WORK}/repo/.conductor.yml" <<'PIPELINE'
 version: 1
-visibility: public
 defaults:
   image: alpine:3
 tasks:
@@ -162,7 +161,7 @@ compose exec -T conductor git -C /repo rev-parse HEAD >/dev/null \
   || fail "the copied repository is not readable inside the conductor"
 
 log "registering the project and a worker"
-compose exec -T conductor node src/admin-cli.js project:add demo /repo --secret "${SECRET}" >/dev/null
+compose exec -T conductor node src/admin-cli.js project:add demo /repo --secret "${SECRET}" --visibility public >/dev/null
 SMOKE_TOKEN=$(compose exec -T conductor node src/admin-cli.js token:add smoke-worker | awk '/token:/{print $2}')
 [ -n "${SMOKE_TOKEN}" ] || fail "no worker token was issued"
 export SMOKE_TOKEN

@@ -1,36 +1,18 @@
 // src/conductor/routes/tasks.js - reading a task back
 //
-// A task is the standalone unit a worker runs, and this is how everyone who
-// is not that worker looks at one: its state, and the artifacts it stored.
-// routes/workers.js holds the protocol the worker itself speaks, behind a
-// worker token. These two files share a URL prefix and nothing else, which
-// is why they are separate plugins: the token hook over there covers its
-// whole scope, and must not reach these routes.
-//
-// Two paths, one answer:
-//
 //   GET /tasks/:task                    a task id is unique on its own
-//   GET /projects/:project/tasks/:task  the same task, said in full
+//   GET /projects/:project/tasks/:task  the same task, project asserted
 //
-// They differ only in what may reach a private task. A task id is enough to
-// prove nothing, so the bare path accepts a public task or a session that
-// may manage the project. The scoped path can look up the project's trigger
-// secret, so it also accepts a signature, matching the job read-back it sits
-// beside: one credential covers starting a build, watching the job and
-// reading any task in it.
+// The worker protocol lives in routes/agent.js, a separate plugin so its
+// worker-token hook cannot reach these routes.
 //
-// Absent and forbidden are both 404, so neither can be used to find out
-// which tasks exist.
+// A public task reads without a session; a private one needs a session that
+// may manage the project. Absent and forbidden are both 404.
 //
-// What is deliberately not here: the task's environment, and its services,
-// which carry an environment of their own. Both can hold project variables,
-// and a public job is still built from a repository that may be private. The
-// script is left out for the same reason. What remains describes what the
-// task was and how it went, which is what a caller asking after a task is
-// actually asking.
+// env, services and script are deliberately omitted: all three can carry
+// project variables, and a public job may be built from a private repository.
 
 import { canManageProject } from '../../lib/projects.js';
-import { verifySignature } from '../../lib/signature.js';
 import { ok } from './envelope.js';
 import { UnknownTask } from '../../lib/errors.js';
 import { outputAad } from '../../lib/outputs.js';
@@ -126,7 +108,7 @@ export default async function taskRoutes(fastify, { cfg, db, logs, storage, proj
 
     if (row.visibility !== 'public') {
       const project = await projects.get(row.project_id);
-      if (!(await mayRead(req, project))) throw new UnknownTask();
+      if (!canManageProject(await currentUser(req), project)) throw new UnknownTask();
     }
     return row;
   }
@@ -210,13 +192,6 @@ export default async function taskRoutes(fastify, { cfg, db, logs, storage, proj
       expired: false,
     });
   });
-
-  async function mayRead(req, project) {
-    const secret = projects.triggerSecret(project);
-    if (secret && verifySignature(req, secret)) return true;
-
-    return canManageProject(await currentUser(req), project);
-  }
 }
 
 // The stored spec, reduced to the keys that are safe to publish. env and

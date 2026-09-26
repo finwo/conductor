@@ -46,7 +46,7 @@ export default async function projectRoutes(fastify, { cfg, auth, projects, vari
     const body = req.body ?? {};
 
     const owner = user.role === 'admin' && Object.hasOwn(body, 'owner_id') ? body.owner_id : user.id;
-    const secret = body.trigger_secret === null ? null : (body.trigger_secret || newToken());
+    const secret = body.trigger_secret || newToken();
 
     let project;
     try {

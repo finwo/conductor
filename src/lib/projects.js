@@ -19,6 +19,36 @@ import { Problems } from './pipeline/schema.js';
 
 export const VISIBILITIES = ['public', 'private'];
 
+// A git remote selects a transport: ext:: execs, file:// reads local disk,
+// http:// reaches anything routable from the conductor.
+const REPO_SCHEMES = new Set(['https:', 'ssh:', 'git:']);
+const SCP_LIKE = /^[A-Za-z0-9_.+-]+@[A-Za-z0-9_.-]+:(?!\/)/;
+
+// allowLocalPath: admin CLI only, which already has host access.
+export function assertRepoUrl(value, { allowLocalPath = false } = {}) {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error('repo_url is required');
+  }
+  const url = value.trim();
+  if (url.startsWith('-')) throw new Error('repo_url must not start with -');
+  if (allowLocalPath && url.startsWith('/')) return url;
+  if (SCP_LIKE.test(url)) return url;
+
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`repo_url is not a valid url: ${JSON.stringify(url)}`);
+  }
+  if (!REPO_SCHEMES.has(parsed.protocol)) {
+    throw new Error(
+      `repo_url scheme ${JSON.stringify(parsed.protocol)} is not allowed; `
+      + `use one of ${[...REPO_SCHEMES].join(', ')}`
+    );
+  }
+  return url;
+}
+
 // Validated with the same rule the pipeline uses, so a project and a
 // repository cannot disagree about what a usable working directory is.
 export function assertWorkdir(value) {
@@ -86,14 +116,14 @@ export function createProjects({ db, secrets }) {
       });
     },
 
-    async create(input) {
+    async create(input, { allowLocalPath = false } = {}) {
       const id = input.id ? slugify(input.id) : (slugify(input.name) || newProjectId());
       const now = Date.now();
 
       if (input.visibility && !VISIBILITIES.includes(input.visibility)) {
         throw new Error(`visibility must be one of ${VISIBILITIES.join(', ')}`);
       }
-      if (!input.repo_url) throw new Error('repo_url is required');
+      const repoUrl = assertRepoUrl(input.repo_url, { allowLocalPath });
 
       if (await this.get(id)) throw new Error(`project ${id} already exists`);
 
@@ -109,7 +139,7 @@ export function createProjects({ db, secrets }) {
         {
           id,
           name: input.name || id,
-          repo_url: input.repo_url,
+          repo_url: repoUrl,
           branch: input.default_branch || 'main',
           config_path: input.config_path || '.conductor.yml',
           workdir: input.workdir ? assertWorkdir(input.workdir) : null,

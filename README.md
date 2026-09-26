@@ -128,15 +128,18 @@ Who sees what
 -------------
 
 Everything is private by default. A job is visible to an anonymous visitor
-only when the project, or the pipeline at that commit, says it is public:
+only when its project is public:
 
-```yaml
-version: 1
-visibility: public
+```sh
+curl -X PATCH "$CONDUCTOR/api/v1/projects/demo" \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{"visibility":"public"}'
 ```
 
-Because it is recorded per job, making a repository private stops exposing
-future jobs without rewriting the history of past ones.
+The setting is copied onto each job as it is created, so turning a project
+private stops exposing future jobs without rewriting past ones. A repository
+cannot set this: a pipeline that could publish its own results would let
+anyone who can land a commit read a private project's logs and artifacts.
 
 Users register their own projects and their own workers. A worker someone
 registers is only ever offered tasks from that person's projects, which is

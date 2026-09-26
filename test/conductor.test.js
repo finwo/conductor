@@ -298,22 +298,26 @@ test('a public job is readable without any credential at all', async () => {
   });
 });
 
-test('a private job needs the trigger secret, and is otherwise absent', async () => {
-  const pipeline = DEFAULT_PIPELINE.replace('version: 1\n', 'version: 1\nvisibility: private\n');
-  await withHarness({ pipeline }, async (h) => {
+test('a private job is absent to anyone without a session', async () => {
+  await withHarness({ visibility: 'private', bootstrap: true }, async (h) => {
     const jobId = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().data.job_id;
     await h.waitForJob(jobId);
 
     const anon = await h.app.inject({ method: 'GET', url: `/api/v1/projects/demo/jobs/${jobId}` });
     assert.equal(anon.statusCode, 404);
 
+    // The trigger secret starts builds; it does not read them back.
     const signed = await h.app.inject({
       method: 'GET',
       url: `/api/v1/projects/demo/jobs/${jobId}`,
       headers: { 'content-type': 'application/json', 'x-hub-signature-256': h.sign('') },
     });
-    assert.equal(signed.statusCode, 200, signed.body);
-    assert.equal(signed.json().data.visibility, 'private');
+    assert.equal(signed.statusCode, 404, signed.body);
+
+    const { headers } = await h.login();
+    const admin = await h.app.inject({ method: 'GET', url: `/api/v1/projects/demo/jobs/${jobId}`, headers });
+    assert.equal(admin.statusCode, 200, admin.body);
+    assert.equal(admin.json().data.visibility, 'private');
   });
 });
 
@@ -551,9 +555,8 @@ test('reading a task back needs no worker token', async () => {
   });
 });
 
-test('a private task is absent without a credential, and needs its project named', async () => {
-  const pipeline = DEFAULT_PIPELINE.replace('version: 1\n', 'version: 1\nvisibility: private\n');
-  await withHarness({ pipeline }, async (h) => {
+test('a private task is absent without a session, by either path', async () => {
+  await withHarness({ visibility: 'private' }, async (h) => {
     const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
     await h.waitForJob(res.json().data.job_id);
     const task = await claimNamed(h, 'lint', {});
@@ -563,34 +566,18 @@ test('a private task is absent without a credential, and needs its project named
       assert.equal(anon.statusCode, 404, `${url} should be absent anonymously`);
     }
 
+    // A trigger secret reads nothing, on either path.
     const signed = { 'content-type': 'application/json', 'x-hub-signature-256': h.sign('') };
-
-    const scoped = await h.app.inject({
-      method: 'GET',
-      url: `/api/v1/projects/demo/tasks/${task.id}`,
-      headers: signed,
-    });
-    assert.equal(scoped.statusCode, 200, scoped.body);
-    assert.equal(scoped.json().data.task.visibility, 'private');
-
-    // The task names its own project, so the secret is checked either way.
-    const bare = await h.app.inject({ method: 'GET', url: `/api/v1/tasks/${task.id}`, headers: signed });
-    assert.equal(bare.statusCode, 200, bare.body);
-
-    // A signature from another project is still no use.
-    const wrong = await h.app.inject({
-      method: 'GET',
-      url: `/api/v1/tasks/${task.id}`,
-      headers: { 'content-type': 'application/json', 'x-hub-signature-256': 'sha256=' + '0'.repeat(64) },
-    });
-    assert.equal(wrong.statusCode, 404);
+    for (const url of taskUrls(task.id)) {
+      const res2 = await h.app.inject({ method: 'GET', url, headers: signed });
+      assert.equal(res2.statusCode, 404, `${url} should not accept a trigger secret`);
+    }
   });
 });
 
 test('a private task is readable by an administrator, by either path', async () => {
-  const pipeline = DEFAULT_PIPELINE.replace('version: 1\n', 'version: 1\nvisibility: private\n');
   // scrypt is slow, so the harness only creates the admin when asked.
-  await withHarness({ pipeline, bootstrap: true }, async (h) => {
+  await withHarness({ visibility: 'private', bootstrap: true }, async (h) => {
     const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
     await h.waitForJob(res.json().data.job_id);
     const task = await claimNamed(h, 'lint', {});

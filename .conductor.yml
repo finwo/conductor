@@ -7,7 +7,6 @@
 # keeps the fast job honest about what it did and did not check.
 
 version: 1
-visibility: public
 
 defaults:
   image: node:24-alpine

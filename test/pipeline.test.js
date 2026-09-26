@@ -695,3 +695,12 @@ test('an unknown expression names task outputs as an option', () => {
     /expected arch, matrix\.<name> or tasks\.<task>\.outputs\.<name>/
   );
 });
+
+test('the pipeline cannot set visibility; it is a project setting', () => {
+  for (const value of ['public', 'private']) {
+    assert.deepEqual(
+      errorPaths(() => compilePipeline(`version: 1\nvisibility: ${value}\n${MINIMAL.slice(MINIMAL.indexOf('tasks:'))}`)),
+      ['visibility']
+    );
+  }
+});

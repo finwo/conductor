@@ -153,7 +153,7 @@ export async function startHarness(options = {}) {
     // which creates private projects explicitly.
     visibility: options.visibility ?? 'public',
     owner_id: options.ownerId ?? null,
-  });
+  }, { allowLocalPath: true });
 
   const worker = await services.workerTokens.create('test-worker');
 

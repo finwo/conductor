@@ -86,6 +86,13 @@ export default async function userRoutes(fastify, { cfg, auth, users, refreshTok
     if (Object.hasOwn(body, 'password')) {
       const bad = validatePassword(String(body.password ?? ''));
       if (bad) throw new BadRequest(bad);
+
+      // Keeps a stolen access token from becoming a permanent takeover.
+      if (user.id === caller.id) {
+        const proven = await users.authenticate(user.username, String(body.current_password ?? ''));
+        if (!proven) throw new NotPermitted('current_password does not match');
+      }
+
       await users.setPassword(user.id, body.password);
       await refreshTokens.revokeAllFor(user.id);
     }

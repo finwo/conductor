@@ -1,22 +1,13 @@
-// src/conductor/routes/jobs.js - creating jobs, and reading them back
+// src/conductor/routes/jobs.js - job creation and read-back
 //
-// A job is a pipeline run: compiling the repository's .conductor.yml at one
-// commit produces the tasks that a worker will later claim. There are two
-// ways in, differing only in the shape of what they accept.
+//   POST /projects/:project/trigger  push payload: post-receive, GitHub, Gitea, GitLab
+//   POST /projects/:project/jobs     explicit { sha, base, ref, actor, trigger }
 //
-//   POST /projects/:project/trigger  takes a push payload. It accepts the
-//   generic one produced by hooks/post-receive and the push events of
-//   GitHub, Gitea and GitLab, since they all carry the same three facts.
+// Payloads are trusted only for which commit to read; the pipeline always
+// comes from the repository at that commit.
 //
-//   POST /projects/:project/jobs  takes those facts directly, for anything
-//   driving the conductor deliberately rather than forwarding a hook.
-//
-// Nothing in either payload is trusted beyond which commit to look at: the
-// pipeline is always read from the repository at that commit.
-//
-// A project with a trigger secret requires a valid signature. A project
-// without one accepts unsigned requests, which is convenient on a private
-// network and a bad idea anywhere else, so it is logged.
+// Create: valid signature, or a session that may manage the project.
+// Read:   session only. A trigger secret is not a read credential.
 
 import { SHA_PATTERN } from '../../lib/git.js';
 import { canManageProject } from '../../lib/projects.js';
@@ -31,34 +22,22 @@ import { limitOf, offsetOfQuery, pageBlock, paginateOffset } from '../../lib/pag
 
 const ZERO_SHA = '0'.repeat(40);
 
-export default async function jobRoutes(fastify, { cfg, auth, db, projects, scheduler, logger }) {
+export default async function jobRoutes(fastify, { cfg, auth, db, projects, scheduler }) {
   const base = cfg.server.public_url.replace(/\/+$/, '');
+  const identify = (req) => auth.identify(req).catch(() => null);
 
-  // HMAC is computed over the exact bytes received, so the raw body has to
-  // survive JSON parsing.
-  fastify.addContentTypeParser('application/json', { parseAs: 'buffer' }, (req, body, done) => {
-    req.rawBody = body;
-    if (body.length === 0) return done(null, {});
-    try {
-      done(null, JSON.parse(body.toString('utf8')));
-    } catch {
-      done(new MalformedJson());
-    }
-  });
-
-  // Shared by both creation routes: resolve the project, check the secret.
+  // A signature over the body, or a session that may manage the project.
   async function authorizedProject(req) {
     const project = await projects.get(req.params.project);
     if (!project) throw new UnknownProject();
     if (project.enabled !== 1) throw new ProjectDisabled();
 
     const secret = projects.triggerSecret(project);
-    if (secret) {
-      if (!verifySignature(req, secret)) throw new InvalidSignature();
-    } else {
-      logger.warn?.(`project ${project.id} accepted an unsigned request; set a trigger secret`);
-    }
-    return project;
+    if (secret && verifySignature(req, secret)) return project;
+
+    if (canManageProject(await identify(req), project)) return project;
+
+    throw new InvalidSignature();
   }
 
   // Records the job as pending and returns immediately. Pipeline compilation
@@ -118,19 +97,9 @@ export default async function jobRoutes(fastify, { cfg, auth, db, projects, sche
     j.trigger_type, j.actor, j.title, j.state, j.visibility, j.error,
     j.created_at, j.started_at, j.finished_at`;
 
-  // Holding the trigger secret is a third way in, so whatever starts a job
-  // can see how it went without also being a signed in user.
-  async function mayRead(req, project) {
-    const secret = projects.triggerSecret(project);
-    if (secret && verifySignature(req, secret)) return true;
-
-    const user = await auth.identify(req).catch(() => null);
-    return canManageProject(user, project);
-  }
-
   async function listJobs(req, reply, { project = null } = {}) {
-    const user = await auth.identify(req).catch(() => null);
-    const scope = project && await mayRead(req, project)
+    const user = await identify(req);
+    const scope = project && canManageProject(user, project)
       ? { sql: '1 = 1', params: {} }
       : visible(user, { project: 'p', job: 'j' });
 
@@ -175,7 +144,7 @@ export default async function jobRoutes(fastify, { cfg, auth, db, projects, sche
 
   // Missing rather than refused, so an id cannot be probed by status code.
   async function readableJob(req) {
-    const user = await auth.identify(req).catch(() => null);
+    const user = await identify(req);
     const job = await db.get(
       `SELECT ${JOB_COLUMNS} FROM jobs j WHERE j.id = {id}`,
       { id: req.params.job }
@@ -184,7 +153,7 @@ export default async function jobRoutes(fastify, { cfg, auth, db, projects, sche
     if (req.params.project !== undefined && req.params.project !== job.project_id) throw new UnknownJob();
 
     const project = await projects.get(job.project_id);
-    if (job.visibility !== 'public' && !(await mayRead(req, project))) throw new UnknownJob();
+    if (job.visibility !== 'public' && !canManageProject(user, project)) throw new UnknownJob();
     return { job, project, user };
   }
 

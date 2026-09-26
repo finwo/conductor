@@ -22,7 +22,7 @@ Three kinds of credential reach it, all in `Authorization: Bearer`:
 | ------------------- | ---------------------------------- | --------------------------- |
 | access token        | the code flow, see `docs/auth.md`  | everything a person may do  |
 | worker token        | `POST /api/v1/workers`             | the worker protocol only    |
-| project HMAC        | a project's trigger secret         | that project's jobs         |
+| project HMAC        | a project's trigger secret         | starting that project's jobs |
 
 An access token is a JWT and a worker token is 64 hex characters, so the
 two never parse as each other. The project HMAC is not a bearer credential
@@ -94,7 +94,8 @@ POST /api/v1/projects/:project/trigger
 Accepts the payload from `hooks/post-receive`, and the push events of
 GitHub, Gitea and GitLab. Signed with the project's trigger secret:
 `X-Hub-Signature-256: sha256=<hmac>` over the exact request body, or
-`X-Gitlab-Token`.
+`X-Gitlab-Token`. A session that may manage the project is accepted
+instead, for callers driving the API rather than forwarding a hook.
 
 ```json
 { "sha": "<40 hex>", "base": "<40 hex or empty>", "ref": "refs/heads/main", "actor": "alice" }
@@ -163,9 +164,8 @@ being quietly served. The lists take `?state=` alongside the paging.
 }
 ```
 
-Three ways to be allowed: the job is public, the caller holds the project's
-trigger secret, or the caller may manage the project. One credential
-therefore covers starting a build and watching it.
+Two ways to be allowed: the job is public, or the caller may manage the
+project.
 
 `/tasks` returns the tasks and the edges between them, which is what a
 stage graph is drawn from:
@@ -205,9 +205,7 @@ GET /api/v1/tasks/:task/artifacts
 
 Each also answers under `/api/v1/projects/:project/tasks/:task`, where the
 project is asserted: a guessed id cannot be read through whichever project
-happens to be readable. The task names its own project either way, so a
-trigger secret is checked on both. Signing a GET means an HMAC over an
-empty body.
+happens to be readable. A private task needs a session on both paths.
 
 ```json
 {
@@ -277,6 +275,13 @@ GET    /api/v1/sessions         /sessions/:id DELETE
 `me` is an ordinary user id that resolves to the caller, so `GET
 /api/v1/users/me` is who am I. Listing users as a non-administrator returns
 just themselves rather than a refusal.
+
+Changing your own password takes `current_password` alongside the new one.
+An administrator setting someone else's does not, which is what a reset is.
+
+`repo_url` must be `https`, `ssh` or `git`, or an `scp`-style `user@host:path`.
+Other schemes select a git transport rather than a location: `ext::` runs a
+command, `file://` reads the conductor's own disk.
 
 Two things are shown exactly once, in the response that creates them, and
 are not readable afterwards:

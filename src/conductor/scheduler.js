@@ -170,7 +170,7 @@ export function createScheduler({
 
       const info = await git.commitInfo(project, headSha).catch(() => ({ subject: null }));
       const now = Date.now();
-      const visibility = pipeline.visibility ?? project.visibility ?? 'private';
+      const visibility = project.visibility ?? 'private';
       const workdir = pipeline.workdir ?? project.workdir ?? DEFAULT_WORKDIR;
 
       await db.transaction(async (tx) => {

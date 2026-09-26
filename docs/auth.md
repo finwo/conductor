@@ -200,6 +200,9 @@ the header cannot be confused. It reaches the worker protocol and nothing
 else.
 
 A project trigger secret is an HMAC over the exact request body, in
-`X-Hub-Signature-256`, or `X-Gitlab-Token` compared directly. A project
-with no secret accepts unsigned triggers and says so in the log, which is
-convenient on a private network and a bad idea anywhere else.
+`X-Hub-Signature-256`, or `X-Gitlab-Token` compared directly. It starts
+builds on its own project and reaches nothing else.
+
+Starting a build takes either that signature or a session that may manage
+the project. A project whose secret has been cleared is buildable only by
+its owner and by administrators, never anonymously.

@@ -14,7 +14,6 @@ Top level
 | Key          | Required | Description                                         |
 | ------------ | -------- | --------------------------------------------------- |
 | `version`    | yes      | Must be `1`.                                        |
-| `visibility` | no       | `public` or `private`. Overrides the project.       |
 | `workdir`    | no       | Absolute path tasks run in. Overrides the project.  |
 | `defaults`   | no       | Values inherited by every task.                     |
 | `tasks`      | yes      | Mapping of task name to task.                       |
@@ -43,17 +42,13 @@ tasks:
 Visibility
 ----------
 
-Jobs are private unless something says otherwise, and the repository has the
-final word on its own results:
-
-```yaml
-version: 1
-visibility: public
-```
-
-Unset means the project's setting stands. The value is recorded on each job
-as it is created, so turning a repository private stops exposing future jobs
+Visibility is a project setting, not a pipeline one. It is recorded on each
+job as it is created, so turning a project private stops exposing future jobs
 without retroactively hiding, or revealing, earlier ones.
+
+A `visibility` key here is rejected: a repository that could publish its own
+results would let anyone able to land a commit read a private project's logs
+and artifacts. Set it with `PATCH /api/v1/projects/:id` instead.
 
 A public job, its logs and its artifacts are readable by anyone. A private
 job is readable by the project's owner and by administrators.

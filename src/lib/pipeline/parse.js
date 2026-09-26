@@ -22,11 +22,7 @@ import {
   NAME_PATTERN,
 } from './schema.js';
 
-const TOP_KEYS = ['version', 'visibility', 'workdir', 'defaults', 'tasks'];
-
-// A repository decides whether its own build results are readable without
-// signing in. Unset means the project's setting stands.
-export const VISIBILITIES = ['public', 'private'];
+const TOP_KEYS = ['version', 'workdir', 'defaults', 'tasks'];
 
 // Where the tree is put inside a task container, and the directory every
 // script starts in. Unset means the project's setting stands, and failing
@@ -114,22 +110,20 @@ export function parsePipeline(text, options = {}) {
     );
   }
 
+  // Named outright; checkUnknown would only offer a nearest match.
+  if (doc.visibility !== undefined) {
+    throw new PipelineError(
+      [{ path: 'visibility', message: 'is no longer set by the pipeline; it is a project setting' }],
+      source
+    );
+  }
+
   checkUnknown(problems, '', doc, TOP_KEYS);
 
   if (doc.version === undefined) {
     problems.add('version', `is required; this conductor understands version ${SUPPORTED_VERSION}`);
   } else if (doc.version !== SUPPORTED_VERSION) {
     problems.add('version', `unsupported version ${JSON.stringify(doc.version)}, expected ${SUPPORTED_VERSION}`);
-  }
-
-  let visibility = null;
-  if (doc.visibility !== undefined) {
-    const value = asString(problems, 'visibility', doc.visibility);
-    if (value !== undefined && !VISIBILITIES.includes(value)) {
-      problems.add('visibility', `expected one of ${VISIBILITIES.join(', ')}, got ${JSON.stringify(value)}`);
-    } else if (value !== undefined) {
-      visibility = value;
-    }
   }
 
   const defaults = parseDefaults(problems, doc.defaults);
@@ -161,7 +155,7 @@ export function parsePipeline(text, options = {}) {
   const workdir = doc.workdir === undefined ? null : parseWorkdir(problems, 'workdir', doc.workdir);
 
   problems.throwIfAny(source);
-  return { version: SUPPORTED_VERSION, visibility, workdir, defaults, tasks, source };
+  return { version: SUPPORTED_VERSION, workdir, defaults, tasks, source };
 }
 
 function parseDefaults(problems, raw) {

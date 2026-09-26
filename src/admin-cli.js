@@ -119,8 +119,9 @@ try {
         repo_url: repoUrl,
         default_branch: flags.branch ? String(flags.branch) : 'main',
         config_path: flags.config ? String(flags.config) : '.conductor.yml',
+        visibility: flags.visibility ? String(flags.visibility) : 'private',
         trigger_secret: secret,
-      });
+      }, { allowLocalPath: true });
 
       console.log(`created project ${project.id}`);
       console.log(`  repository:  ${project.repo_url}`);

@@ -44,6 +44,10 @@ function gitEnv(env = process.env) {
     GIT_TERMINAL_PROMPT: '0',
     GIT_ASKPASS: '',
     GCM_INTERACTIVE: 'never',
+    // Backstop for assertRepoUrl: blocks ext:: and every other helper
+    // transport. file stays for local mirrors, which assertRepoUrl gates.
+    GIT_ALLOW_PROTOCOL: 'file:git:ssh:https',
+    GIT_PROTOCOL_FROM_USER: '0',
     LC_ALL: 'C',
     GIT_CONFIG_COUNT: String(base + 1),
     [`GIT_CONFIG_KEY_${base}`]: 'safe.directory',
