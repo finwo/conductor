@@ -182,11 +182,19 @@ printf '%s\n' "${RESPONSE}"
 JOB=$(printf '%s' "${RESPONSE}" | sed 's/.*"job_id":"\([^"]*\)".*/\1/')
 [ -n "${JOB}" ] || fail "no job was created"
 
-# The job state is the first badge on the job page. A job still being
-# compiled is not readable yet, so a refusal is just another turn.
+# A job still being compiled is not readable yet, so a refusal is just
+# another turn.
 job_state() {
-  curl -fsS "${BASE_URL}/jobs/$1" 2>/dev/null \
-    | sed -n 's/.*class="badge \([a-z]*\)".*/\1/p' | head -1
+  curl -fsS "${BASE_URL}/api/v1/jobs/$1" 2>/dev/null \
+    | sed -n 's/.*"state":"\([a-z]*\)".*/\1/p' | head -1
+}
+
+# One object per line, so a task can be matched on its name and read for
+# its id without depending on which order the keys came out in.
+objects() { printf '%s' "$1" | tr '{' '\n'; }
+
+task_id() {
+  objects "$1" | grep "\"name\":\"$2\"" | sed 's/.*"id":"\([^"]*\)".*/\1/' | head -1
 }
 
 # A pipeline that fails to compile is recorded on the job row and nowhere
@@ -226,19 +234,33 @@ printf 'job %s finished as %s after %ss\n' "${JOB}" "${STATE_NOW}" "${i}"
 }
 
 log "checking the log and the artifact"
-# Task ids carry no structure, so the build task is found by following the
-# link from the job page rather than by assembling an id.
-TASK=$(curl -fsS "${BASE_URL}/jobs/${JOB}" \
-  | sed -n 's#.*href="/tasks/\([^"]*\)">build<.*#\1#p' | head -1)
-[ -n "${TASK}" ] || fail "no build task was linked from the job page"
+# Task ids carry no structure, so the build task is found by name in the
+# job's task list rather than by assembling an id.
+TASKS=$(curl -fsS "${BASE_URL}/api/v1/jobs/${JOB}/tasks")
+TASK=$(task_id "${TASKS}" build)
+[ -n "${TASK}" ] || fail "no build task was listed for the job"
 
-PAGE=$(curl -fsS "${BASE_URL}/tasks/${TASK}")
-printf '%s\n' "${PAGE}" | grep -q 'run 1 of demo' || fail "the task environment did not reach the script"
+# The edges are what a stage graph is drawn from, and nothing else
+# publishes them.
+printf '%s' "${TASKS}" | grep -q '"depends_on_id"' \
+  || fail "the task list carried no dependency edges"
 
-ARTIFACT_PATH=$(printf '%s' "${PAGE}" \
-  | sed -n 's#.*href="\(/api/v1/[^"]*/artifacts/[^"]*\)".*#\1#p' | head -1)
-[ -n "${ARTIFACT_PATH}" ] || fail "no artifact was recorded"
+LOG=$(curl -fsS "${BASE_URL}/api/v1/tasks/${TASK}/log")
+printf '%s' "${LOG}" | grep -q 'run 1 of demo' \
+  || fail "the task environment did not reach the script"
+printf '%s' "${LOG}" | grep -q '"expired":false' \
+  || fail "the log did not report whether it had expired"
 
+ARTIFACTS=$(curl -fsS "${BASE_URL}/api/v1/tasks/${TASK}/artifacts")
+printf '%s' "${ARTIFACTS}" | grep -q '"path":"out/result.txt"' \
+  || fail "the artifact was not listed"
+
+ARTIFACT_URL=$(printf '%s' "${ARTIFACTS}" | sed -n 's#.*"url":"\([^"]*\)".*#\1#p' | head -1)
+[ -n "${ARTIFACT_URL}" ] || fail "no artifact download url was offered"
+
+# The url is built from public_url, which is the conductor's own name on
+# the compose network rather than the published port this runs against.
+ARTIFACT_PATH=$(printf '%s' "${ARTIFACT_URL}" | sed 's#^https\{0,1\}://[^/]*##')
 CONTENT=$(curl -fsSL "${BASE_URL}${ARTIFACT_PATH}")
 printf 'artifact contents: %s\n' "${CONTENT}"
 [ "${CONTENT}" = packaged ] || fail "the artifact did not round trip"
@@ -254,10 +276,6 @@ for URL in "/api/v1/tasks/${TASK}" "/api/v1/projects/demo/tasks/${TASK}"; do
 
   printf '%s' "${BODY}" | grep -q '"state":"success"' \
     || fail "${URL} did not report the task state"
-  printf '%s' "${BODY}" | grep -q '"path":"out/result.txt"' \
-    || fail "${URL} did not list the artifact"
-  printf '%s' "${BODY}" | grep -q '"url":"http' \
-    || fail "${URL} did not offer a download url"
 
   if printf '%s' "${BODY}" | grep -q 'CONDUCTOR_PROJECT'; then
     fail "${URL} leaked the task environment"
@@ -267,8 +285,75 @@ for URL in "/api/v1/tasks/${TASK}" "/api/v1/projects/demo/tasks/${TASK}"; do
   fi
 done
 
-log "checking the interface"
-curl -fsS "${BASE_URL}/" | grep -q 'conductor' || fail "the interface did not render"
+# Naming a project that does not own the task must not widen anything.
+curl -fsS -o /dev/null "${BASE_URL}/api/v1/projects/absent/tasks/${TASK}" 2>/dev/null \
+  && fail "a task was readable through a project that does not own it"
+
+log "signing in"
+# The whole flow against the shipped image: discovery, the login page, a
+# code, a token, and a call that needs it.
+DISCOVERY=$(curl -fsS "${BASE_URL}/.well-known/openid-configuration")
+printf '%s' "${DISCOVERY}" | grep -q '"client_id":"conductor"' \
+  || fail "discovery did not name the client"
+
+REDIRECT="http://conductor:9080/"
+VERIFIER=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
+CHALLENGE=$(printf '%s' "${VERIFIER}" \
+  | openssl dgst -sha256 -binary | openssl base64 | tr '+/' '-_' | tr -d '=\n')
+
+AUTHORIZE="${BASE_URL}/auth/authorize?response_type=code&client_id=conductor"
+AUTHORIZE="${AUTHORIZE}&redirect_uri=http%3A%2F%2Fconductor%3A9080%2F"
+AUTHORIZE="${AUTHORIZE}&code_challenge=${CHALLENGE}&code_challenge_method=S256&state=smoke"
+
+curl -fsS "${AUTHORIZE}" | grep -q 'name="password"' \
+  || fail "the login page was not served"
+
+LOCATION=$(curl -sS -o /dev/null -w '%{redirect_url}' -X POST "${AUTHORIZE}" \
+  -d 'username=admin&password=smoke-admin-password')
+CODE=$(printf '%s' "${LOCATION}" | sed -n 's/.*[?&]code=\([^&]*\).*/\1/p')
+[ -n "${CODE}" ] || fail "signing in produced no authorization code"
+
+GRANT=$(curl -fsS -X POST "${BASE_URL}/auth/token" \
+  -d "grant_type=authorization_code&code=${CODE}&code_verifier=${VERIFIER}&redirect_uri=${REDIRECT}")
+ACCESS=$(printf '%s' "${GRANT}" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+REFRESH=$(printf '%s' "${GRANT}" | sed -n 's/.*"refresh_token":"\([^"]*\)".*/\1/p')
+[ -n "${ACCESS}" ] || fail "no access token was issued"
+
+curl -fsS "${BASE_URL}/api/v1/users/me" -H "Authorization: Bearer ${ACCESS}" \
+  | grep -q '"username":"admin"' || fail "the access token did not identify the administrator"
+
+# The session is listed with what it was last used from, which is the
+# whole point of the revocation screen.
+curl -fsS "${BASE_URL}/api/v1/sessions" -H "Authorization: Bearer ${ACCESS}" \
+  | grep -q '"user_agent":"curl' || fail "the session was not listed"
+
+# Redeeming a code twice must not work.
+curl -fsS -o /dev/null -X POST "${BASE_URL}/auth/token" \
+  -d "grant_type=authorization_code&code=${CODE}&code_verifier=${VERIFIER}&redirect_uri=${REDIRECT}" 2>/dev/null \
+  && fail "an authorization code was redeemed twice"
+
+# An unregistered origin is refused rather than redirected to.
+curl -fsS -o /dev/null "${BASE_URL}/auth/authorize?response_type=code&client_id=conductor&redirect_uri=https%3A%2F%2Fevil.example%2F&code_challenge=${CHALLENGE}&code_challenge_method=S256" 2>/dev/null \
+  && fail "an unregistered redirect uri was accepted"
+
+# Refreshing keeps the same token and issues a new access token.
+SECOND=$(curl -fsS -X POST "${BASE_URL}/auth/token" \
+  -d "grant_type=refresh_token&refresh_token=${REFRESH}")
+printf '%s' "${SECOND}" | grep -q "\"refresh_token\":\"${REFRESH}\"" \
+  || fail "refreshing did not keep the refresh token"
+
+log "checking the application"
+INDEX=$(curl -fsS "${BASE_URL}/")
+printf '%s' "${INDEX}" | grep -q '<title>conductor</title>' \
+  || fail "the application index was not served"
+BUNDLE=$(printf '%s' "${INDEX}" | sed -n 's/.*<script src="\([^"]*\)".*/\1/p' | head -1)
+[ -n "${BUNDLE}" ] || fail "the application index referenced no bundle"
+curl -fsS -o /dev/null "${BASE_URL}/${BUNDLE}" || fail "the bundle ${BUNDLE} was not served"
+
+# The policy is what keeps a refresh token in local storage out of reach of
+# an injected script, so its absence is a finding rather than a detail.
+curl -fsS -D - -o /dev/null "${BASE_URL}/" | grep -qi 'content-security-policy' \
+  || fail "the application was served without a content security policy"
 
 # The release task is restricted to main. A push to anything else must not
 # produce it at all, rather than produce it and skip it, since a skipped
@@ -297,12 +382,12 @@ done
 
 # The trigger only records the job, so the tasks are counted off the
 # finished job rather than the response.
-BRANCH_PAGE=$(curl -fsS "${BASE_URL}/jobs/${BRANCH_JOB}")
-BRANCH_TASKS=$(printf '%s' "${BRANCH_PAGE}" | grep -c 'href="/tasks/')
+BRANCH_LIST=$(curl -fsS "${BASE_URL}/api/v1/jobs/${BRANCH_JOB}/tasks")
+BRANCH_TASKS=$(objects "${BRANCH_LIST}" | grep -c '"name":"')
 [ "${BRANCH_TASKS}" -eq 2 ] \
   || fail "expected 2 tasks on a branch, got ${BRANCH_TASKS}"
 
-printf '%s' "${BRANCH_PAGE}" | grep -q '>release<' \
+printf '%s' "${BRANCH_LIST}" | grep -q '"name":"release"' \
   && fail "the release task should not exist on a branch job"
 
 printf 'branch job finished as %s with %s tasks and no release task\n' \
