@@ -29,7 +29,7 @@ test('its tasks declare the features they actually need', async () => {
   const { tasks } = await selfPipeline();
   const byName = new Map(tasks.map((task) => [task.name, task]));
 
-  for (const name of ['style', 'test', 'integration', 'images', 'smoke', 'publish']) {
+  for (const name of ['style', 'build', 'test', 'integration', 'images', 'smoke', 'publish']) {
     assert.ok(byName.has(name), `expected a ${name} task`);
   }
 
@@ -47,7 +47,7 @@ test('its tasks declare the features they actually need', async () => {
   }
 
   // Conversely, the tasks meant to run anywhere must not demand features.
-  for (const name of ['style', 'test']) {
+  for (const name of ['style', 'build', 'test']) {
     assert.deepEqual(byName.get(name).requires, [], `${name} should run on any worker`);
   }
 });

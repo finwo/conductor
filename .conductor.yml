@@ -22,6 +22,13 @@ tasks:
       - npm install --no-audit --no-fund
       - node --test test/ascii.test.js
 
+  # The bundle the image ships. Built here too, so a broken frontend is
+  # caught by itself rather than as a confusing Dockerfile failure.
+  build:
+    script:
+      - npm install --no-audit --no-fund
+      - npm run build
+
   # Everything that runs without a docker socket.
   test:
     script:
@@ -44,7 +51,7 @@ tasks:
   # Host architecture only, since this runs on every branch and the point
   # is to catch a broken Dockerfile early rather than to ship anything.
   images:
-    needs: [style, test]
+    needs: [style, build, test]
     requires: [docker]
     image: docker:28-cli
     script:

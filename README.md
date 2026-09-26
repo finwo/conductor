@@ -32,7 +32,7 @@ Under construction. Working today:
   - triggers, job scheduling, the worker API, live logs, artifacts, reaping
   - the worker: containerised tasks, services, features, caches, cleanup
   - accounts, OIDC, project ownership, visibility and project variables
-  - the web interface, server rendered with htmx
+  - a JSON API, and a single page application that is a client of it
   - container images for amd64, arm64 and riscv64, published on release
 
 Installation
@@ -74,16 +74,23 @@ Three capabilities switch on when configured and fall back when not:
 | ----------------------- | -------------------- | --------------------- |
 | `database.url`          | mysql/tidb, postgres | sqlite at a file path |
 | `storage.s3.bucket`     | S3 compatible store  | local filesystem      |
-| `auth.oidc.discovery_url` | OIDC               | built-in accounts     |
+| `auth.oidc.discovery_url` | that provider      | the built-in login page |
 
-With OIDC the provider owns identity. Point `auth.oidc.discovery_url` at the
-provider's OpenID configuration document and set `client_id` (and
-`client_secret` for a confidential client); the issuer and every endpoint
-come from that document. Register `<server.public_url>/oidc/callback` as the
-redirect uri. An account is created locally the first time someone signs in,
-keyed on issuer and subject, so they can own projects and workers. The role
-in the token wins on every request, and disabling the local account locks
-them out regardless of what the provider says.
+Authentication is an authorization code flow either way, and the
+application cannot tell the two apart: it reads
+`/.well-known/openid-configuration` from this conductor and uses whatever
+that names. Only one provider is ever advertised.
+
+With a provider configured it owns identity. Register conductor as a
+**public** client with PKCE; there is no client secret, because the
+application redeems the code itself and the conductor never does. An
+account is created locally the first time someone signs in, keyed on issuer
+and subject, so they can own projects and workers. The role in the token
+wins on every request, and disabling the local account locks them out
+regardless of what the provider says.
+
+`docs/auth.md` has the whole of it, including the Keycloak setup and the
+audience claim that catches everyone out.
 
 Usage
 -----
@@ -221,9 +228,10 @@ git push -> post-receive -> conductor -> task graph in the database
              source tarball, container, log stream, artifacts
 ```
 
-  - `src/conductor` triggers, scheduling, the worker API, the interface
+  - `src/conductor` triggers, scheduling, the API, the login provider
   - `src/worker`    the agent that runs tasks, with no npm dependencies
   - `src/lib`       configuration, database, storage, pipelines, git
+  - `web`           the application, a mithril client of the API
 
 Queries are written once against all three databases using named `{key}`
 markers, which each driver compiles to its own placeholder syntax.
@@ -236,8 +244,15 @@ Testing
 npm test
 ```
 
-That is the whole setup. With docker available the suite starts what it
-needs and cleans up after itself:
+That is the whole setup. The application is built separately, and the
+container image builds it in its own stage:
+
+```sh
+npm run build
+```
+
+With docker available the suite starts what it needs and cleans up after
+itself:
 
 | Dependency          | Used for                                     |
 | ------------------- | -------------------------------------------- |

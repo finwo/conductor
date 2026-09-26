@@ -12,24 +12,29 @@ A worker deals only in tasks. It is never told which project or job a task
 belongs to, and the task id it receives carries no structure it could read
 that out of. What it gets is a context and a script.
 
-The conductor exposes five HTTP surfaces, all under `/api/v1`. Everything
-else, including signing in and managing projects, workers and users,
-happens in the interface.
+Everything the conductor does is under `/api/v1`. There is no second
+surface: the application in `web/` is an ordinary client of what follows,
+and the only page the conductor renders itself is the built-in login form.
 
-| Surface                                       | Authentication        |
-| --------------------------------------------- | --------------------- |
-| `POST /api/v1/projects/:project/trigger`       | per project HMAC      |
-| `POST /api/v1/projects/:project/jobs`          | per project HMAC      |
-| `GET  /api/v1/projects/:project/jobs/:job`     | HMAC, session, or anonymous for a public job |
-| `GET  /api/v1/tasks/:task`                     | session, or anonymous for a public task |
-| `GET  /api/v1/projects/:project/tasks/:task`   | HMAC, session, or anonymous for a public task |
-| `POST /api/v1/tasks/claim`, `/tasks/:task/...` | worker token          |
-| `GET  /api/v1/projects/.../artifacts/...`      | session, or anonymous for a public job |
+Three kinds of credential reach it, all in `Authorization: Bearer`:
+
+| Credential          | Obtained by                        | Reaches                     |
+| ------------------- | ---------------------------------- | --------------------------- |
+| access token        | the code flow, see `docs/auth.md`  | everything a person may do  |
+| worker token        | `POST /api/v1/workers`             | the worker protocol only    |
+| project HMAC        | a project's trigger secret         | that project's jobs         |
+
+An access token is a JWT and a worker token is 64 hex characters, so the
+two never parse as each other. The project HMAC is not a bearer credential
+at all: it is `X-Hub-Signature-256` over the exact request body.
 
 Note the two readings of `/api/v1/tasks/:task`. Asking after the task
 itself is a public read; everything below it is the worker protocol and
 needs a token. They are separate plugins for that reason, so the token
 requirement cannot accidentally spread to the first or lapse on the rest.
+
+Anonymous is not an error. A public project's jobs and tasks read without
+any credential at all.
 
 Responses
 ---------
@@ -137,54 +142,71 @@ Reading a job back
 ------------------
 
 ```
-GET /api/v1/projects/:project/jobs/:job
+GET  /api/v1/jobs                              every job the caller may see
+GET  /api/v1/projects/:project/jobs            one project's jobs
+GET  /api/v1/jobs/:job
+GET  /api/v1/projects/:project/jobs/:job
+GET  /api/v1/jobs/:job/tasks
+POST /api/v1/jobs/:job/cancel
+POST /api/v1/jobs/:job/retry
 ```
 
-Returns the job and the state of every task in it.
+A job id is unique on its own, so naming the project is optional. Where it
+is named it is asserted: a job of some other project is a 404 rather than
+being quietly served. The lists take `?state=` alongside the paging.
+
+```json
+{
+  "ok": true,
+  "data": { "id": "...", "number": 12, "state": "running", "ref": "refs/heads/main",
+            "head_sha": "...", "visibility": "private", "created_at": 1800000000000 }
+}
+```
+
+Three ways to be allowed: the job is public, the caller holds the project's
+trigger secret, or the caller may manage the project. One credential
+therefore covers starting a build and watching it.
+
+`/tasks` returns the tasks and the edges between them, which is what a
+stage graph is drawn from:
 
 ```json
 {
   "ok": true,
   "data": {
-    "job": { "id": "...", "number": 12, "state": "running", "ref": "refs/heads/main",
-             "head_sha": "...", "visibility": "private", "created_at": 1800000000000 },
     "tasks": [
       { "id": "...", "name": "build:arch=x86_64", "state": "success", "exit_code": 0,
         "arch": "x86_64", "attempt": 1, "worker_name": "builder-1" }
+    ],
+    "deps": [
+      { "task_id": "...", "depends_on_id": "...", "kind": "needs" }
     ]
   },
   "pagination": { "offset": 0, "total": 6 }
 }
 ```
 
-`pagination` describes `tasks`.
+`kind` is `needs` or `after`. An `after` edge orders a task without putting
+it downstream of a failure.
 
-Three ways to be allowed: the job is public, the caller holds the project's
-trigger secret, or the caller is signed in and may manage the project. One
-credential therefore covers starting a build and watching it.
+`cancel` only applies to a running job and is a 409 otherwise. `retry`
+starts a new job at the same commit and returns its id; the original stays
+readable rather than being overwritten.
 
 Reading a task back
 -------------------
 
 ```
 GET /api/v1/tasks/:task
-GET /api/v1/projects/:project/tasks/:task
+GET /api/v1/tasks/:task/log
+GET /api/v1/tasks/:task/outputs
+GET /api/v1/tasks/:task/artifacts
 ```
 
-A task's state and the artifacts it stored. Both paths return the same
-body. A task id is unique on its own, so naming the project is optional;
-doing so only widens what may reach a private task, because there is then a
-trigger secret to check against.
-
-| | public task | trigger secret | session that may manage the project |
-| --- | --- | --- | --- |
-| `/tasks/:task` | yes | not applicable | yes |
-| `/projects/:project/tasks/:task` | yes | yes | yes |
-
-A signature on the bare path proves nothing, since there is no project in
-it to look a secret up from. On the scoped path the project must be the one
-the task belongs to, so a guessed id cannot be read through some other
-project that happens to be readable. Signing a GET means an HMAC over an
+Each also answers under `/api/v1/projects/:project/tasks/:task`, where the
+project is asserted: a guessed id cannot be read through whichever project
+happens to be readable. The task names its own project either way, so a
+trigger secret is checked on both. Signing a GET means an HMAC over an
 empty body.
 
 ```json
@@ -199,31 +221,36 @@ empty body.
     "worker_name": "builder-1", "timeout": 3600, "workdir": "/work",
     "needs": ["build:arch=x86_64"], "after": [], "matrix": { "pkg": "musl" },
     "artifact_paths": ["dist/**"],
-    "outputs": [
-      { "name": "tag", "masked": false, "value": "v1.2.3" },
-      { "name": "token", "masked": true, "value": null }
-    ],
-    "log_size": 4096,
+    "log_size": 4096, "log_expired": false,
     "created_at": 1800000000000, "started_at": null, "finished_at": null,
     "project_id": "demo", "job_id": "m2y5rj7ykdm9sfbr54hf", "job_number": 12,
     "ref": "refs/heads/main", "sha": "<40 hex>", "visibility": "public"
-  },
-  "artifacts": [
-    { "id": "...", "path": "dist/app", "size": 1048576, "sha256": "<64 hex>",
-      "created_at": 1800000000000, "expires_at": null,
-      "url": "https://ci.example.com/api/v1/projects/demo/jobs/<job>/tasks/<task>/artifacts/<id>" }
-  ]
-  },
-  "pagination": { "offset": 0, "total": 1 }
+  }
+  }
 }
 ```
 
-`pagination` describes `artifacts`. `artifact_paths` is what the pipeline
-told the task to collect; `artifacts` is what it actually stored. Each carries a ready download `url`, which is a
-convenience rather than the permission: that route checks visibility again
-for itself.
+The log, the outputs and the artifacts are each their own page, because
+each grows without bound and none of them belongs inside one response.
 
-`outputs` is what the task wrote with `::set-output`. A masked one reports
+```
+GET /api/v1/tasks/:task/log?offset=0&limit=262144
+```
+
+```json
+{ "ok": true, "data": { "offset": 0, "size": 4096, "data": "...", "expired": false } }
+```
+
+`size` is the whole log, so a tail asks from where it stopped and is given
+only what is new. `expired` is true once retention has removed it, which is
+a different answer from an empty log.
+
+`artifact_paths` on the task is what the pipeline told it to collect;
+`/artifacts` is what it actually stored. Each carries a ready download
+`url`, a convenience rather than the permission: that route checks
+visibility again for itself.
+
+`/outputs` is what the task wrote with `::set-output`. A masked one reports
 its name so the shape of a run is visible, and never its value.
 
 There is no `env` and no `services` here, deliberately. Both can hold
@@ -231,6 +258,64 @@ project variables, and a service carries an environment of its own. The
 `script` is left out for the same reason: a public job can be built from a
 repository that is not public. A worker gets all three because it has to;
 nobody else does.
+
+Managing things
+---------------
+
+All of this needs an access token. What it may reach follows from who the
+token belongs to rather than from which URL was used: an administrator acts
+on anything, anyone else on what they own. Something they may not see is
+reported as missing, not refused.
+
+```
+GET    /api/v1/users            /users/:id   PATCH, DELETE   POST /users
+GET    /api/v1/projects         /projects/:id PATCH, DELETE  POST /projects
+GET    /api/v1/workers          /workers/:id PATCH, DELETE   POST /workers
+GET    /api/v1/sessions         /sessions/:id DELETE
+```
+
+`me` is an ordinary user id that resolves to the caller, so `GET
+/api/v1/users/me` is who am I. Listing users as a non-administrator returns
+just themselves rather than a refusal.
+
+Two things are shown exactly once, in the response that creates them, and
+are not readable afterwards:
+
+```json
+{ "ok": true, "data": { "id": "demo", "trigger_secret": "<64 hex>" } }
+{ "ok": true, "data": { "id": "...", "name": "builder-1", "token": "<64 hex>" } }
+```
+
+`POST /api/v1/projects/:id/trigger-secret` replaces the first. There is no
+way to read either back; losing one means generating another.
+
+Project retention takes three answers and they are all different. Absent
+leaves the setting alone, `null` follows the server default, and `0` keeps
+forever:
+
+```
+PATCH /api/v1/projects/:id   { "artifact_keep_days": null, "log_keep_days": 0 }
+```
+
+Variables are per project, and a value is never read back:
+
+```
+GET    /api/v1/projects/:id/variables
+PUT    /api/v1/projects/:id/variables/:name   { "value": "...", "masked": true }
+DELETE /api/v1/projects/:id/variables/:name
+```
+
+A worker's machines and its recent tasks hang off it:
+
+```
+GET /api/v1/workers/:id/agents
+GET /api/v1/workers/:id/tasks
+```
+
+Sessions are the revocation surface. Each row carries the browser and
+address it was last used from, so a person can tell one from another. They
+are recorded for that and nothing else: a session arriving from a new
+address is ordinary, and is never refused for it.
 
 The worker API
 --------------

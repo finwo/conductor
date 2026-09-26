@@ -32,7 +32,7 @@ Pin both to the same version if they are upgraded separately.
 ## Quick start
 
 A worker needs no inbound connectivity, so this works from behind NAT.
-Mint a token in the interface under Workers, or with the admin CLI on the
+Mint a token under Workers in the application, or with the admin CLI on the
 server, then:
 
 ```sh

@@ -1,7 +1,7 @@
 # conductor
 
 A small CI server. Accepts triggers, schedules jobs, serves the worker
-API and renders the interface. One service, one image.
+API and hosts the application that drives it. One service, one image.
 
 Source and issues: https://github.com/finwo/conductor
 

@@ -2,8 +2,9 @@ Deployment
 ==========
 
 One service, one image. The conductor accepts triggers, schedules jobs,
-serves the worker API and renders the interface. Workers are separate and
-may live anywhere, including on machines you do not administer.
+serves the API and hosts the application that drives it. Workers are
+separate and may live anywhere, including on machines you do not
+administer.
 
 Quick start
 -----------
@@ -92,7 +93,7 @@ Worth setting in production:
 | Variable                   | Why                                              |
 | -------------------------- | ------------------------------------------------ |
 | `CONDUCTOR_PUBLIC_URL`     | Workers get absolute callback URLs built from it. |
-| `CONDUCTOR_SESSION_SECRET` | Otherwise sessions end at every restart.          |
+| `CONDUCTOR_SESSION_SECRET` | Otherwise access tokens stop verifying at every restart. |
 | `CONDUCTOR_SECRET_KEY`     | Otherwise stored secrets are kept in the clear.   |
 | `CONDUCTOR_ADMIN_PASSWORD` | Otherwise one is generated and logged once.       |
 
@@ -172,7 +173,32 @@ artifact to its own disk before the conductor sees a byte, which for
 multi gigabyte build output is both slow and surprising.
 
 Set `CONDUCTOR_PUBLIC_URL=https://ci.example.com` to match, or workers will
-be handed callback URLs that do not work.
+be handed callback URLs that do not work. It is also the issuer the
+built-in provider names in its tokens, and the default redirect uri the
+application is allowed to come back to.
+
+Nothing special is needed for the application's own routing. It routes on
+the fragment, so a deep link is `https://ci.example.com/#!/jobs/<id>` and
+the path the proxy sees is always the root. There is no history fallback
+to configure.
+
+### Serving the application from somewhere else
+
+The bundle in `web/dist` is static and can be served by anything. If it is
+not on the conductor's own origin, two things have to be said:
+
+```sh
+CONDUCTOR_LOCAL_REDIRECT_URIS=https://ci.example.com,https://app.example.com
+```
+
+so the built-in provider will send a browser back there, and the
+application still needs to reach `/.well-known/openid-configuration` and
+`/api/v1` on the conductor. CORS is already open, but the browser will
+refuse the cross-origin fetch unless the Content-Security-Policy on
+whatever serves the bundle allows it.
+
+Hosting it on the conductor itself avoids all of that, which is why that is
+the default.
 
 Retention
 ---------
@@ -221,8 +247,8 @@ job. That is deliberate, and is how a bulky intermediate avoids becoming
 immortal by being green.
 
 Logs go by age alone. Sweeping a log deletes the bytes and leaves the task,
-so a job stays explainable after its output is gone, and the interface can
-tell an expired log apart from one that was never written.
+so a job stays explainable after its output is gone, and a reader is told
+the log expired rather than that it was empty.
 
 The same sweep forgets machines that have stopped claiming, after
 `retention.worker_agent_keep_hours` (default 24, `0` keeps them for ever).
