@@ -29,11 +29,17 @@ services:
       # Must match how the outside world reaches this, because workers are
       # handed absolute callback URLs built from it.
       CONDUCTOR_PUBLIC_URL: "${CONDUCTOR_PUBLIC_URL:-http://127.0.0.1:8080}"
-      # Without these two, sessions do not survive a restart and stored
-      # secrets are kept in the clear. Generate with: openssl rand -hex 32
+      # Without these two, every access token stops verifying at restart
+      # and stored secrets are kept in the clear. openssl rand -hex 32
       CONDUCTOR_SESSION_SECRET: "${CONDUCTOR_SESSION_SECRET:-}"
       CONDUCTOR_SECRET_KEY: "${CONDUCTOR_SECRET_KEY:-}"
       CONDUCTOR_ADMIN_PASSWORD: "${CONDUCTOR_ADMIN_PASSWORD:-}"
+      # localhost and 127.0.0.1 are different origins, and only registered
+      # ones may be signed in from. Defaults to public_url alone.
+      CONDUCTOR_LOCAL_REDIRECT_URIS: "${CONDUCTOR_LOCAL_REDIRECT_URIS:-http://127.0.0.1:8080,http://localhost:8080}"
+      CONDUCTOR_OIDC_DISCOVERY_URL: "${CONDUCTOR_OIDC_DISCOVERY_URL:-}"
+      CONDUCTOR_OIDC_CLIENT_ID: "${CONDUCTOR_OIDC_CLIENT_ID:-}"
+      CONDUCTOR_OIDC_ADMIN_ROLE: "${CONDUCTOR_OIDC_ADMIN_ROLE:-}"
       CONDUCTOR_DATABASE_URL: "${CONDUCTOR_DATABASE_URL:-}"
       CONDUCTOR_S3_ENDPOINT: "${CONDUCTOR_S3_ENDPOINT:-}"
       CONDUCTOR_S3_BUCKET: "${CONDUCTOR_S3_BUCKET:-}"

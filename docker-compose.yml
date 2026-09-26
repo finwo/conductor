@@ -1,0 +1,50 @@
+# docker-compose.yml - built from this tree, for local use. Signs in as
+# admin / conductor. deploy/docker-compose.yml is the deployment one.
+#
+#   docker compose up -d --build
+#   docker compose exec conductor node src/admin-cli.js token:add local
+#   CONDUCTOR_WORKER_TOKEN=<token> docker compose --profile worker up -d
+
+name: conductor-dev
+
+services:
+  conductor:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "${CONDUCTOR_PORT:-8080}:8080"
+    environment:
+      CONDUCTOR_PUBLIC_URL: "http://localhost:${CONDUCTOR_PORT:-8080}"
+      # localhost and 127.0.0.1 are different origins.
+      CONDUCTOR_LOCAL_REDIRECT_URIS: "http://localhost:${CONDUCTOR_PORT:-8080},http://127.0.0.1:${CONDUCTOR_PORT:-8080}"
+      # Signs access tokens. Fixed, so a restart does not sign you out.
+      CONDUCTOR_SESSION_SECRET: development-session-secret-not-for-real-use
+      # Encrypts secrets at rest. 32 bytes, hex or base64.
+      CONDUCTOR_SECRET_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      CONDUCTOR_ADMIN_PASSWORD: conductor
+      # Short, so the refresh path gets exercised.
+      CONDUCTOR_ACCESS_TTL: "60"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+    volumes:
+      - dev-data:/data
+
+  worker:
+    profiles: ["worker"]
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.worker
+    depends_on:
+      - conductor
+    environment:
+      CONDUCTOR_URL: http://conductor:8080
+      CONDUCTOR_WORKER_NAME: local
+      # Interpolation happens before profiles are filtered, so this cannot
+      # be required or it would break `up` without the worker.
+      CONDUCTOR_WORKER_TOKEN: "${CONDUCTOR_WORKER_TOKEN:-}"
+      CONDUCTOR_WORKER_CONCURRENCY: "2"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  dev-data:
