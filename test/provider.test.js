@@ -328,6 +328,18 @@ test('logout redirects only to a registered uri', async () => {
   });
 });
 
+test('logout ignores id_token_hint and client_id', async () => {
+  await withConductor(async (c) => {
+    const res = await c.app.inject({
+      method: 'GET',
+      url: `/auth/logout?post_logout_redirect_uri=${encodeURIComponent(PUBLIC_URL)}`
+        + '&client_id=conductor&id_token_hint=whatever',
+    });
+    assert.equal(res.statusCode, 303);
+    assert.equal(res.headers.location, PUBLIC_URL);
+  });
+});
+
 test('the key set is advertised and empty', async () => {
   await withConductor(async (c) => {
     const res = await c.app.inject({ method: 'GET', url: '/auth/jwks' });

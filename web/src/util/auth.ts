@@ -5,6 +5,7 @@
 
 const STORE = 'conductor.refresh';
 const PENDING = 'conductor.pending';
+const IDENTITY = 'conductor.identity';
 
 export type Discovery = {
   issuer: string;
@@ -120,6 +121,7 @@ async function exchange(doc: Discovery, body: Record<string, string>): Promise<v
   accessToken = grant.access_token;
   expiresAt = Date.now() + (grant.expires_in ?? 300) * 1000;
   if (grant.refresh_token) localStorage.setItem(STORE, grant.refresh_token);
+  if (grant.id_token) localStorage.setItem(IDENTITY, grant.id_token);
 }
 
 let refreshing: Promise<void> | null = null;
@@ -153,10 +155,12 @@ export function forget(): void {
   accessToken = null;
   expiresAt = 0;
   localStorage.removeItem(STORE);
+  localStorage.removeItem(IDENTITY);
 }
 
 export async function signOut(): Promise<void> {
   const token = refreshToken();
+  const identity = localStorage.getItem(IDENTITY);
   const doc = discovery;
 
   if (doc?.revocation_endpoint && token) {
@@ -172,6 +176,8 @@ export async function signOut(): Promise<void> {
   if (doc?.end_session_endpoint) {
     const url = new URL(doc.end_session_endpoint);
     url.searchParams.set('post_logout_redirect_uri', redirectUri());
+    url.searchParams.set('client_id', doc.client_id);
+    if (identity) url.searchParams.set('id_token_hint', identity);
     location.assign(url.toString());
     return;
   }
