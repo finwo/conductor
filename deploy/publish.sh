@@ -224,6 +224,7 @@ docker buildx build \
 sync_readme() {
     image=$1
     file=$2
+    summary=$3
     repo=${image#*/}
     namespace=${image%%/*}
 
@@ -247,16 +248,23 @@ sync_readme() {
     [ -n "${api}" ] || { log "could not get a hub api token, leaving the readme alone"; return 0; }
 
     # The body is json, so the markdown has to be escaped rather than
-    # pasted: it is full of quotes, backslashes and newlines.
-    payload=$(FILE="${file}" awk '
-        BEGIN { printf "{\"full_description\":\"" }
-        {
-            line = $0
-            gsub(/\\/, "\\\\", line)
-            gsub(/"/, "\\\"", line)
-            gsub(/\t/, "\\t", line)
-            printf "%s\\n", line
+    # pasted: it is full of quotes, backslashes and newlines. The summary
+    # comes through the environment so awk does the escaping, not the shell.
+    payload=$(SUMMARY="${summary}" awk '
+        function esc(s) {
+            gsub(/\\/, "\\\\", s)
+            gsub(/"/, "\\\"", s)
+            gsub(/\t/, "\\t", s)
+            return s
         }
+        BEGIN {
+            printf "{"
+            # Sending an empty one would clear what is already there.
+            summary = esc(ENVIRON["SUMMARY"])
+            if (summary != "") printf "\"description\":\"%s\",", summary
+            printf "\"full_description\":\""
+        }
+        { printf "%s\\n", esc($0) }
         END { printf "\"}" }
     ' "${file}")
 
@@ -273,8 +281,15 @@ sync_readme() {
 }
 
 log "updating the repository pages"
-sync_readme "${CONDUCTOR_IMAGE}" "${ROOT}/deploy/hub/conductor.md"
-sync_readme "${WORKER_IMAGE}" "${ROOT}/deploy/hub/conductor-worker.md"
+
+# The short description under the image name. Taken from package.json so it
+# is not maintained in a web form as well as here. Left alone if it cannot
+# be read, rather than failing a release that has already been pushed.
+PKG_SUMMARY=$(sed -n 's/.*"description"[[:space:]]*:[[:space:]]*"\(.*\)".*/\1/p' "${ROOT}/package.json" | head -n 1)
+[ -n "${PKG_SUMMARY}" ] || log "no description in package.json, leaving the short descriptions alone"
+
+sync_readme "${CONDUCTOR_IMAGE}" "${ROOT}/deploy/hub/conductor.md" "${PKG_SUMMARY}"
+sync_readme "${WORKER_IMAGE}" "${ROOT}/deploy/hub/conductor-worker.md" "Worker for conductor: pulls tasks and runs each in its own container"
 
 log "verifying the manifests"
 for image in "${CONDUCTOR_IMAGE}" "${WORKER_IMAGE}"; do

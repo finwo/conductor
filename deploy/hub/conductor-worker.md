@@ -114,6 +114,18 @@ simply how you say this worker's tasks may use the socket mounted above.
 
 ## Documentation
 
-- [Workers](https://github.com/finwo/conductor/blob/main/docs/worker.md)
-- [Pipelines](https://github.com/finwo/conductor/blob/main/docs/pipeline.md)
-- [Deployment](https://github.com/finwo/conductor/blob/main/docs/deployment.md)
+- [Workers](https://github.com/finwo/conductor/blob/main/docs/worker.md):
+  running a worker
+- [Pipelines](https://github.com/finwo/conductor/blob/main/docs/pipeline.md):
+  the `.conductor.yml` reference
+- [Deployment](https://github.com/finwo/conductor/blob/main/docs/deployment.md):
+  images, state, production settings
+- [Authentication](https://github.com/finwo/conductor/blob/main/docs/auth.md):
+  accounts, OIDC, who may see what
+- [HTTP API](https://github.com/finwo/conductor/blob/main/docs/api.md):
+  the JSON API and its credentials
+- [Contributing](https://github.com/finwo/conductor/blob/main/docs/contributing.md):
+  layout, testing, building
+
+Overview and quick start:
+[README](https://github.com/finwo/conductor/blob/main/README.md).
