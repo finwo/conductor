@@ -183,12 +183,22 @@ export function createRetention({ cfg, db, storage, logs, logger = {} }) {
     return res.changes ?? 0;
   }
 
+  // A session nobody can present any more, expired rather than revoked, so
+  // there is a window in which it can still be listed as ended.
+  async function sweepRefreshTokens(now) {
+    const res = await db.run(
+      'DELETE FROM refresh_tokens WHERE expires_at < {cutoff}',
+      { cutoff: now - DAY }
+    );
+    return res.changes ?? 0;
+  }
+
   return {
     // One pass over everything. Returns what it did, which the tests read
     // and the log line summarises.
     async sweep({ now = Date.now(), batch = defaults.batch } = {}) {
       const total = {
-        artifacts: 0, artifactBytes: 0, logs: 0, logBytes: 0, agents: 0,
+        artifacts: 0, artifactBytes: 0, logs: 0, logBytes: 0, agents: 0, sessions: 0,
       };
 
       const expired = await sweepExpiredArtifacts(now, batch);
@@ -212,11 +222,12 @@ export function createRetention({ cfg, db, storage, logs, logger = {} }) {
       }
 
       total.agents = await sweepWorkerAgents(now);
+      total.sessions = await sweepRefreshTokens(now);
 
-      if (total.artifacts > 0 || total.logs > 0 || total.agents > 0) {
+      if (total.artifacts > 0 || total.logs > 0 || total.agents > 0 || total.sessions > 0) {
         logger.info?.(
           `retention: removed ${total.artifacts} artifact(s), ${total.logs} log(s) and ` +
-          `${total.agents} worker record(s), ` +
+          `${total.agents} worker record(s) and ${total.sessions} session(s), ` +
           `freeing ${Math.round((total.artifactBytes + total.logBytes) / 1024)} KiB`
         );
       }

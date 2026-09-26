@@ -465,62 +465,63 @@ test('artifacts.expire in a pipeline reaches the stored artifact', async () => {
   });
 });
 
-test('the api reports and accepts project retention', { skip: 'the JSON API was removed' }, async () => {
+test('the api reports and accepts project retention', async () => {
   await withHarness({
     bootstrap: true,
     retention: { artifact_keep_jobs: 7, artifact_keep_days: 21, log_keep_days: 9 },
   }, async (h) => {
-    const login = await h.app.inject({
-      method: 'POST',
-      url: '/api/auth/login',
-      payload: { username: 'admin', password: 'bootstrap-password' },
-    });
-    assert.equal(login.statusCode, 200);
-    const auth = { cookie: login.headers['set-cookie'].split(';')[0] };
+    const { headers } = await h.login();
+    const json = { ...headers, 'content-type': 'application/json' };
 
-    // The defaults have to be discoverable, or a null on a project is
-    // meaningless to whoever is reading it.
-    const defaults = await h.app.inject({ method: 'GET', url: '/api/retention', headers: auth });
-    assert.equal(defaults.statusCode, 200);
-    assert.deepEqual(defaults.json().defaults, {
-      artifact_keep_jobs: 7,
-      artifact_keep_days: 21,
-      log_keep_days: 9,
+    const patch = (payload) => h.app.inject({
+      method: 'PATCH',
+      url: `/api/v1/projects/${h.project.id}`,
+      headers: json,
+      payload: JSON.stringify(payload),
     });
 
     const before = await h.app.inject({
-      method: 'GET', url: `/api/projects/${h.project.id}`, headers: auth,
+      method: 'GET', url: `/api/v1/projects/${h.project.id}`, headers,
     });
-    assert.equal(before.json().project.artifact_keep_days, null, 'unset means inherited');
+    assert.equal(before.json().data.artifact_keep_days, null, 'unset means inherited');
 
-    const patched = await h.app.inject({
-      method: 'PATCH',
-      url: `/api/projects/${h.project.id}`,
-      headers: auth,
-      payload: { artifact_keep_jobs: 3, artifact_keep_days: 0, log_keep_days: 30 },
-    });
-    assert.equal(patched.statusCode, 200);
-    assert.equal(patched.json().project.artifact_keep_jobs, 3);
-    assert.equal(patched.json().project.artifact_keep_days, 0, 'zero is a value, not an absence');
-    assert.equal(patched.json().project.log_keep_days, 30);
+    const patched = await patch({ artifact_keep_jobs: 3, artifact_keep_days: 0, log_keep_days: 30 });
+    assert.equal(patched.statusCode, 200, patched.body);
+    assert.equal(patched.json().data.artifact_keep_jobs, 3);
+    assert.equal(patched.json().data.artifact_keep_days, 0, 'zero is a value, not an absence');
+    assert.equal(patched.json().data.log_keep_days, 30);
 
     // And back to following the server default.
-    const cleared = await h.app.inject({
-      method: 'PATCH',
-      url: `/api/projects/${h.project.id}`,
-      headers: auth,
-      payload: { artifact_keep_jobs: null },
-    });
-    assert.equal(cleared.json().project.artifact_keep_jobs, null);
+    const cleared = await patch({ artifact_keep_jobs: null });
+    assert.equal(cleared.json().data.artifact_keep_jobs, null);
 
-    const rejected = await h.app.inject({
-      method: 'PATCH',
-      url: `/api/projects/${h.project.id}`,
-      headers: auth,
-      payload: { log_keep_days: -5 },
-    });
+    const rejected = await patch({ log_keep_days: -5 });
     assert.equal(rejected.statusCode, 400);
-    assert.match(rejected.json().error, /zero or more/);
+    assert.match(rejected.json().error.message, /zero or more/);
+  });
+});
+
+test('a session outlives its expiry only until the next sweep', async () => {
+  await withHarness({ bootstrap: true }, async (h) => {
+    const grant = await h.login();
+    const live = await h.services.refreshTokens.page({ offset: 0, limit: 10 });
+    assert.equal(live.total, 1);
+
+    // Still within the grace window, so it can be reported as ended.
+    await h.services.db.run(
+      'UPDATE refresh_tokens SET expires_at = {then}',
+      { then: Date.now() - 1000 }
+    );
+    assert.equal((await h.services.retention.sweep()).sessions, 0);
+
+    const refused = await h.token({ grant_type: 'refresh_token', refresh_token: grant.refresh_token });
+    assert.equal(refused.statusCode, 400);
+
+    await h.services.db.run(
+      'UPDATE refresh_tokens SET expires_at = {then}',
+      { then: Date.now() - 3 * 24 * 60 * 60 * 1000 }
+    );
+    assert.equal((await h.services.retention.sweep()).sessions, 1);
   });
 });
 

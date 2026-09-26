@@ -185,13 +185,13 @@ test('a task reports its artifacts as a page', async () => {
     await h.waitForJob(job);
     const task = data(await h.claim({})).task;
 
-    const res = await h.app.inject({ method: 'GET', url: `/api/v1/tasks/${task.id}` });
+    const res = await h.app.inject({ method: 'GET', url: `/api/v1/tasks/${task.id}/artifacts` });
     assert.equal(res.statusCode, 200, res.body);
 
     const body = res.json();
-    assert.ok(Array.isArray(body.data.artifacts));
+    assert.ok(Array.isArray(body.data));
     assert.equal(body.pagination.offset, 0);
-    assert.equal(body.pagination.total, body.data.artifacts.length);
+    assert.equal(body.pagination.total, body.data.length);
   });
 });
 

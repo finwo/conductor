@@ -7,10 +7,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { startHarness, DEFAULT_PIPELINE, data, apiError } from './helpers/harness.js';
 
-// Tests that exercised the JSON read API, which has been removed. Kept
-// until the suite is rebuilt against the interface.
-const apiGone = { skip: 'the JSON API was removed' };
-
 // Each test gets its own harness so that ordering never matters.
 async function withHarness(options, fn) {
   const h = await startHarness(options);
@@ -25,8 +21,8 @@ function tasksByName(payload) {
   return Object.fromEntries(payload.tasks.map((j) => [j.name, j]));
 }
 
-// Reads a job and its tasks straight from the database. There is no read API;
-// the interface is for people, and the tests inspect the data itself.
+// Straight from the database, so a test can assert on what the API chooses
+// not to publish.
 async function jobState(h, jobId) {
   const job = await h.services.db.get('SELECT * FROM jobs WHERE id = {id}', { id: jobId });
   const tasks = await h.services.db.all(
@@ -443,10 +439,10 @@ test('a task lists the artifacts it stored, with a usable download url', async (
       payload: Buffer.from('artifact bytes'),
     });
 
-    const res = await h.app.inject({ method: 'GET', url: `/api/v1/tasks/${task.id}` });
+    const res = await h.app.inject({ method: 'GET', url: `/api/v1/tasks/${task.id}/artifacts` });
     assert.equal(res.statusCode, 200, res.body);
 
-    const { artifacts } = data(res);
+    const artifacts = data(res);
     assert.equal(artifacts.length, 1);
     assert.equal(artifacts[0].path, 'dist/app');
     assert.equal(artifacts[0].size, 14);
@@ -457,6 +453,86 @@ test('a task lists the artifacts it stored, with a usable download url', async (
     const download = await h.app.inject({ method: 'GET', url: new URL(artifacts[0].url).pathname });
     assert.equal(download.statusCode, 200);
     assert.equal(download.body, 'artifact bytes');
+  });
+});
+
+test('outputs are a page of their own, with masked values withheld', async () => {
+  await withHarness({}, async (h) => {
+    const tr = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(tr.json().data.job_id);
+    const task = await claimNamed(h, 'lint', {});
+
+    await h.services.db.run(
+      `INSERT INTO task_outputs (task_id, name, value, masked, created_at)
+       VALUES ({t}, 'version', {v}, 0, {now})`,
+      { t: task.id, v: h.services.secrets.seal('1.2.3', `task:${task.id}/output:version`), now: Date.now() }
+    );
+    await h.services.db.run(
+      `INSERT INTO task_outputs (task_id, name, value, masked, created_at)
+       VALUES ({t}, 'password', {v}, 1, {now})`,
+      { t: task.id, v: h.services.secrets.seal('hunter2', `task:${task.id}/output:password`), now: Date.now() }
+    );
+
+    const res = await h.app.inject({ method: 'GET', url: `/api/v1/tasks/${task.id}/outputs` });
+    assert.equal(res.statusCode, 200, res.body);
+
+    const outputs = Object.fromEntries(data(res).map((o) => [o.name, o]));
+    assert.equal(outputs.version.value, '1.2.3');
+    assert.equal(outputs.password.masked, true);
+    assert.equal(outputs.password.value, null);
+    assert.ok(!res.body.includes('hunter2'));
+    assert.equal(res.json().pagination.total, 2);
+  });
+});
+
+test('a log is read by byte offset and reports the total size', async () => {
+  await withHarness({}, async (h) => {
+    const tr = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(tr.json().data.job_id);
+    const task = await claimNamed(h, 'lint', {});
+
+    await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/tasks/${task.id}/log`,
+      headers: { ...h.auth, 'content-type': 'application/octet-stream', 'x-log-offset': '0' },
+      payload: Buffer.from('hello world\n'),
+    });
+
+    const whole = data(await h.app.inject({ method: 'GET', url: `/api/v1/tasks/${task.id}/log` }));
+    assert.equal(whole.data, 'hello world\n');
+    assert.equal(whole.size, 12);
+    assert.equal(whole.offset, 0);
+    assert.equal(whole.expired, false);
+
+    // A tail asks from where it stopped and is given only what is new.
+    const tail = data(await h.app.inject({ method: 'GET', url: `/api/v1/tasks/${task.id}/log?offset=6` }));
+    assert.equal(tail.data, 'world\n');
+    assert.equal(tail.offset, 6);
+    assert.equal(tail.size, 12);
+
+    // Asking from the end is how a caller learns there is nothing new.
+    const caught = data(await h.app.inject({ method: 'GET', url: `/api/v1/tasks/${task.id}/log?offset=12` }));
+    assert.equal(caught.data, '');
+    assert.equal(caught.size, 12);
+  });
+});
+
+test('a swept log reports that it expired rather than that it is empty', async () => {
+  await withHarness({}, async (h) => {
+    const tr = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(tr.json().data.job_id);
+    const task = await claimNamed(h, 'lint', {});
+
+    await h.services.db.run(
+      'UPDATE tasks SET log_expired_at = {now} WHERE id = {id}',
+      { id: task.id, now: Date.now() }
+    );
+
+    const log = data(await h.app.inject({ method: 'GET', url: `/api/v1/tasks/${task.id}/log` }));
+    assert.equal(log.expired, true);
+
+    const detail = data(await h.app.inject({ method: 'GET', url: `/api/v1/tasks/${task.id}` }));
+    assert.equal(detail.task.log_expired, true);
   });
 });
 
@@ -497,10 +573,17 @@ test('a private task is absent without a credential, and needs its project named
     assert.equal(scoped.statusCode, 200, scoped.body);
     assert.equal(scoped.json().data.task.visibility, 'private');
 
-    // Without a project in the path there is no secret to check against, so
-    // a signature proves nothing here.
+    // The task names its own project, so the secret is checked either way.
     const bare = await h.app.inject({ method: 'GET', url: `/api/v1/tasks/${task.id}`, headers: signed });
-    assert.equal(bare.statusCode, 404, 'a signature is meaningless without a project');
+    assert.equal(bare.statusCode, 200, bare.body);
+
+    // A signature from another project is still no use.
+    const wrong = await h.app.inject({
+      method: 'GET',
+      url: `/api/v1/tasks/${task.id}`,
+      headers: { 'content-type': 'application/json', 'x-hub-signature-256': 'sha256=' + '0'.repeat(64) },
+    });
+    assert.equal(wrong.statusCode, 404);
   });
 });
 
