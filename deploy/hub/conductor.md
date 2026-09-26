@@ -10,11 +10,24 @@ Source and issues: https://github.com/finwo/conductor
 | Tag              | What it is                                 |
 | ---------------- | ------------------------------------------ |
 | `latest`         | the most recent release                    |
-| `0.6.0`          | an exact version                           |
-| `0.6`            | the latest patch of that minor series      |
+| `0.9.0`          | an exact version                           |
+| `0.9`            | the latest patch of that minor series      |
 | `main`           | the tip of the default branch              |
 
 Built for `linux/amd64`, `linux/arm64` and `linux/riscv64`.
+
+**0.9.0 changed how people sign in.** Workers are unaffected; the protocol
+they speak is unchanged.
+
+- The server rendered interface is gone. The image now serves a single page
+  application that talks to `/api/v1`, and sessions are bearer tokens
+  rather than a cookie. Everyone is signed out once on upgrade.
+- `CONDUCTOR_OIDC_CLIENT_SECRET` no longer exists. An OIDC client must be
+  reconfigured from confidential to **public**, with PKCE required, the
+  conductor's origin in Web Origins, and that origin registered as a
+  redirect URI. Leaving it confidential means nobody can sign in.
+- `CONDUCTOR_SESSION_TTL` is replaced by `CONDUCTOR_ACCESS_TTL` and
+  `CONDUCTOR_REFRESH_TTL`.
 
 **Upgrade the conductor and its workers together.** Two releases have
 changed what a worker has to understand:
@@ -62,12 +75,40 @@ configuration file is needed. Worth setting in production:
 
 | Variable                   | Why                                              |
 | -------------------------- | ------------------------------------------------ |
-| `CONDUCTOR_PUBLIC_URL`     | Workers get absolute callback URLs built from it. |
-| `CONDUCTOR_SESSION_SECRET` | Otherwise sessions end at every restart.          |
+| `CONDUCTOR_PUBLIC_URL`     | Workers get absolute callback URLs built from it, and it is the issuer tokens are signed under. |
+| `CONDUCTOR_SESSION_SECRET` | Otherwise every access token stops verifying at restart. |
 | `CONDUCTOR_SECRET_KEY`     | Otherwise stored secrets are kept in the clear.   |
 | `CONDUCTOR_ADMIN_PASSWORD` | Otherwise one is generated and logged once.       |
 
 Generate the two secrets with `openssl rand -hex 32`.
+
+## Signing in
+
+The image serves the application and a login page for it.
+
+| Variable                        | Default        | What it does                    |
+| ------------------------------- | -------------- | ------------------------------- |
+| `CONDUCTOR_ACCESS_TTL`          | `900`          | Access token lifetime, seconds. |
+| `CONDUCTOR_REFRESH_TTL`         | `2592000`      | Session lifetime, seconds.      |
+| `CONDUCTOR_REFRESH_SLIDING`     | `true`         | Measure that from last use rather than from signing in. |
+| `CONDUCTOR_LOCAL_REDIRECT_URIS` | `CONDUCTOR_PUBLIC_URL` | Origins the browser may be sent back to, comma separated. |
+| `CONDUCTOR_LOCAL_AUTH`          | derived        | Force the built-in login page even with a provider configured. |
+
+`localhost` and `127.0.0.1` are different origins. An unregistered origin
+is refused, so list every one in use. `*` allows any, for local testing.
+
+An external provider instead of the built-in page:
+
+```sh
+-e CONDUCTOR_OIDC_DISCOVERY_URL=https://idp.example.com/realms/ci/.well-known/openid-configuration \
+-e CONDUCTOR_OIDC_CLIENT_ID=conductor \
+-e CONDUCTOR_OIDC_ADMIN_ROLE=conductor-admin
+```
+
+Register conductor as a **public** client with PKCE. There is no client
+secret: the application redeems the code itself and the conductor never
+does. Only one provider is ever used, so configuring this turns the
+built-in login page off.
 
 Postgres or MySQL instead of sqlite:
 
@@ -106,6 +147,7 @@ Zero means keep forever.
 ## Documentation
 
 - [Deployment](https://github.com/finwo/conductor/blob/main/docs/deployment.md)
+- [Authentication](https://github.com/finwo/conductor/blob/main/docs/auth.md)
 - [Pipelines](https://github.com/finwo/conductor/blob/main/docs/pipeline.md)
 - [Workers](https://github.com/finwo/conductor/blob/main/docs/worker.md)
 - [HTTP API](https://github.com/finwo/conductor/blob/main/docs/api.md)
