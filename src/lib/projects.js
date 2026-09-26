@@ -13,7 +13,7 @@
 // original value, so it is sealed with the secret box.
 
 import { newProjectId, slugify } from './ids.js';
-import { paginate } from './page.js';
+import { paginateOffset } from './page.js';
 import { parseWorkdir } from './pipeline/parse.js';
 import { Problems } from './pipeline/schema.js';
 
@@ -70,17 +70,19 @@ export function createProjects({ db, secrets }) {
       return db.all(`SELECT ${COLUMNS} FROM projects WHERE owner_id = {owner} ORDER BY name`, { owner: ownerId });
     },
 
-    // One page of what this user manages: everything for an administrator,
-    // their own otherwise. Same rule as the two lists above, counted.
-    async pageManagedBy(user, page) {
+    // One page of what this user may see: everything for an administrator,
+    // their own plus anything public otherwise.
+    async pageVisible(user, { offset, limit }) {
       const admin = user && user.role === 'admin';
-      return paginate(db, {
+      const mine = user ? "(owner_id = {owner} OR visibility = 'public')" : "visibility = 'public'";
+      return paginateOffset(db, {
         select: COLUMNS,
         from: 'projects',
-        where: admin ? '1 = 1' : 'owner_id = {owner}',
+        where: admin ? '1 = 1' : mine,
         order: 'name',
-        params: admin ? {} : { owner: user.id },
-        page,
+        params: user && !admin ? { owner: user.id } : {},
+        offset,
+        limit,
       });
     },
 

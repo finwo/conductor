@@ -272,16 +272,19 @@ test('a job can be read back, with the state of every task', async () => {
     await h.waitForJob(jobId);
 
     const signature = h.sign('');
+    const headers = { 'content-type': 'application/json', 'x-hub-signature-256': signature };
+
     const signed = await h.app.inject({
       method: 'GET',
       url: `/api/v1/projects/demo/jobs/${jobId}`,
-      headers: { 'content-type': 'application/json', 'x-hub-signature-256': signature },
+      headers,
     });
     assert.equal(signed.statusCode, 200, signed.body);
+    assert.equal(data(signed).id, jobId);
+    assert.equal(data(signed).state, 'running');
 
-    const body = data(signed);
-    assert.equal(body.job.id, jobId);
-    assert.equal(body.job.state, 'running');
+    const tasks = await h.app.inject({ method: 'GET', url: `/api/v1/jobs/${jobId}/tasks`, headers });
+    const body = data(tasks);
     assert.equal(body.tasks.length, 6);
     assert.ok(body.tasks.every((t) => t.state === 'queued'));
     assert.ok(body.tasks.some((t) => t.name === 'build:arch=x86_64'));
@@ -295,7 +298,7 @@ test('a public job is readable without any credential at all', async () => {
 
     const res = await h.app.inject({ method: 'GET', url: `/api/v1/projects/demo/jobs/${jobId}` });
     assert.equal(res.statusCode, 200, res.body);
-    assert.equal(res.json().data.job.visibility, 'public');
+    assert.equal(res.json().data.visibility, 'public');
   });
 });
 
@@ -314,7 +317,7 @@ test('a private job needs the trigger secret, and is otherwise absent', async ()
       headers: { 'content-type': 'application/json', 'x-hub-signature-256': h.sign('') },
     });
     assert.equal(signed.statusCode, 200, signed.body);
-    assert.equal(signed.json().data.job.visibility, 'private');
+    assert.equal(signed.json().data.visibility, 'private');
   });
 });
 
@@ -508,10 +511,10 @@ test('a private task is readable by an administrator, by either path', async () 
     const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
     await h.waitForJob(res.json().data.job_id);
     const task = await claimNamed(h, 'lint', {});
-    const { cookie } = await h.login();
+    const { headers } = await h.login();
 
     for (const url of taskUrls(task.id)) {
-      const res = await h.app.inject({ method: 'GET', url, headers: { cookie } });
+      const res = await h.app.inject({ method: 'GET', url, headers });
       assert.equal(res.statusCode, 200, `${url}: ${res.body}`);
       assert.equal(res.json().data.task.id, task.id);
     }
@@ -1098,24 +1101,45 @@ test('a second push produces an independent, numbered job', async () => {
   });
 });
 
-test('jobs can be listed and filtered by project', apiGone, async () => {
-  await withHarness({}, async (h) => {
-    await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+test('a jobs list belongs to its project', async () => {
+  await withHarness({ visibility: 'public' }, async (h) => {
+    const res = await h.trigger({ sha: h.sha, ref: 'refs/heads/main' });
+    await h.waitForJob(res.json().data.job_id);
 
-    const all = await h.app.inject({ method: 'GET', url: '/api/jobs' });
-    assert.equal(all.json().data.jobs.length, 1);
+    const mine = await h.app.inject({ method: 'GET', url: '/api/v1/projects/demo/jobs' });
+    assert.equal(mine.json().data.length, 1);
 
-    const mine = await h.app.inject({ method: 'GET', url: '/api/jobs?project=demo' });
-    assert.equal(mine.json().data.jobs.length, 1);
-
-    const other = await h.app.inject({ method: 'GET', url: '/api/jobs?project=absent' });
-    assert.equal(other.json().data.jobs.length, 0);
+    const other = await h.app.inject({ method: 'GET', url: '/api/v1/projects/absent/jobs' });
+    assert.equal(other.statusCode, 404);
   });
 });
 
-test('unknown jobs, tasks and artifacts return 404', apiGone, async () => {
+test('a job is addressable with or without its project', async () => {
+  await withHarness({ visibility: 'public' }, async (h) => {
+    const jobId = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().data.job_id;
+    await h.waitForJob(jobId);
+
+    for (const url of [`/api/v1/jobs/${jobId}`, `/api/v1/projects/demo/jobs/${jobId}`]) {
+      const res = await h.app.inject({ method: 'GET', url });
+      assert.equal(res.statusCode, 200, `${url}: ${res.body}`);
+      assert.equal(res.json().data.id, jobId);
+    }
+
+    // Naming the wrong project asserts it rather than being ignored.
+    const wrong = await h.app.inject({ method: 'GET', url: `/api/v1/projects/absent/jobs/${jobId}` });
+    assert.equal(wrong.statusCode, 404);
+  });
+});
+
+test('unknown jobs, tasks and artifacts return 404', async () => {
   await withHarness({}, async (h) => {
-    for (const url of ['/api/jobs/nope', '/api/tasks/nope', '/api/tasks/nope/log', '/api/artifacts/nope']) {
+    const urls = [
+      '/api/v1/jobs/nope',
+      '/api/v1/jobs/nope/tasks',
+      '/api/v1/tasks/nope',
+      '/api/v1/projects/nope',
+    ];
+    for (const url of urls) {
       const res = await h.app.inject({ method: 'GET', url });
       assert.equal(res.statusCode, 404, `${url} should be 404`);
     }

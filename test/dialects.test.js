@@ -18,7 +18,7 @@ import path from 'node:path';
 
 import { startDatabase, dialectAvailable } from './helpers/database.js';
 import { openDatabase, runMigrations, dialectFromUrl } from '../src/lib/db/index.js';
-import { paginate, paginateOffset, pageBlock } from '../src/lib/page.js';
+import { paginateOffset, pageBlock } from '../src/lib/page.js';
 import { createStorage } from '../src/lib/storage/index.js';
 import { createLogStore } from '../src/lib/log.js';
 import { createRetention } from '../src/conductor/retention.js';
@@ -106,22 +106,18 @@ for (const dialect of ['postgres', 'mysql']) {
       // driver would otherwise hand over as a string and turn the page
       // arithmetic into concatenation. Checked before the sweep, while
       // all five jobs are still there.
-      const firstPage = await paginate(db, {
-        select: 'id', from: 'jobs', order: 'number', page: 1, perPage: 2,
+      const firstPage = await paginateOffset(db, {
+        select: 'id', from: 'jobs', order: 'number', offset: 0, limit: 2,
       });
       assert.equal(firstPage.rows.length, 2);
       assert.equal(typeof firstPage.total, 'number', 'COUNT came back as a string');
       assert.equal(firstPage.total, 5);
-      assert.equal(firstPage.pages, 3);
 
-      const lastPage = await paginate(db, {
-        select: 'id', from: 'jobs', order: 'number', page: 3, perPage: 2,
+      const lastPage = await paginateOffset(db, {
+        select: 'id', from: 'jobs', order: 'number', offset: 4, limit: 2,
       });
       assert.deepEqual(lastPage.rows.map((r) => r.id), ['r5'], 'the offset landed wrong');
 
-      // The API pages by offset over the same binding, and its total feeds
-      // the decision to send a next url at all, so it has to be a number
-      // here for the same reason.
       const window = await paginateOffset(db, {
         select: 'id', from: 'jobs', order: 'number', offset: 2, limit: 2,
       });

@@ -105,45 +105,49 @@ test('discovery reports an unreachable provider and a bad status', async () => {
   );
 });
 
-test('a token carrying the admin role authenticates as an administrator', apiGone, async () => {
+test('a token carrying the admin role authenticates as an administrator', opts, async () => {
   await withOidcConductor({}, async (h) => {
     const headers = await oidc.headers('persona-admin');
 
-    const me = await h.app.inject({ method: 'GET', url: '/api/auth/me', headers });
+    const me = await h.app.inject({ method: 'GET', url: '/api/v1/users/me', headers });
     assert.equal(me.statusCode, 200);
-    assert.equal(me.json().user.username, 'alice');
-    assert.equal(me.json().user.role, 'admin');
-    assert.equal(me.json().user.source, 'oidc');
+    assert.equal(me.json().data.username, 'alice');
+    assert.equal(me.json().data.role, 'admin');
+    assert.equal(me.json().data.source, 'oidc');
 
-    // And can reach the administrator only surface.
-    assert.equal((await h.app.inject({ method: 'GET', url: '/api/admin/users', headers })).statusCode, 200);
+    const users = await h.app.inject({ method: 'GET', url: '/api/v1/users', headers });
+    assert.equal(users.statusCode, 200);
+    assert.ok(users.json().data.length >= 1);
   });
 });
 
-test('a token without the admin role is an ordinary user', apiGone, async () => {
+test('a token without the admin role is an ordinary user', opts, async () => {
   await withOidcConductor({}, async (h) => {
     const headers = await oidc.headers('persona-viewer');
 
-    const me = await h.app.inject({ method: 'GET', url: '/api/auth/me', headers });
-    assert.equal(me.json().user.username, 'bob');
-    assert.equal(me.json().user.role, 'user');
+    const me = await h.app.inject({ method: 'GET', url: '/api/v1/users/me', headers });
+    assert.equal(me.json().data.username, 'bob');
+    assert.equal(me.json().data.role, 'user');
 
-    assert.equal((await h.app.inject({ method: 'GET', url: '/api/admin/users', headers })).statusCode, 403);
+    // Listing accounts returns only their own rather than refusing.
+    const users = await h.app.inject({ method: 'GET', url: '/api/v1/users', headers });
+    assert.equal(users.statusCode, 200);
+    assert.deepEqual(users.json().data.map((u) => u.username), ['bob']);
   });
 });
 
-test('roles are recognised in the groups and resource_access shapes', apiGone, async () => {
+test('roles are recognised in the groups and resource_access shapes', opts, async () => {
   await withOidcConductor({}, async (h) => {
     for (const persona of ['persona-groups', 'persona-resource']) {
       const me = await h.app.inject({
-        method: 'GET', url: '/api/auth/me', headers: await oidc.headers(persona),
+        method: 'GET', url: '/api/v1/users/me', headers: await oidc.headers(persona),
       });
-      assert.equal(me.json().user.role, 'admin', `${persona} should map to admin`);
+      assert.equal(me.json().data.role, 'admin', `${persona} should map to admin`);
     }
   });
 });
 
-test('an OIDC user gets a local account and can own a project', apiGone, async () => {
+test('an OIDC user gets a local account and can own a project', opts, async () => {
   await withOidcConductor({}, async (h) => {
     const headers = await oidc.headers('persona-viewer');
 
@@ -152,7 +156,7 @@ test('an OIDC user gets a local account and can own a project', apiGone, async (
 
     const created = await h.app.inject({
       method: 'POST',
-      url: '/api/projects',
+      url: '/api/v1/projects',
       headers: json(headers),
       payload: JSON.stringify({ id: 'bobs-app', repo_url: 'https://git.example.com/bob.git' }),
     });
@@ -161,7 +165,7 @@ test('an OIDC user gets a local account and can own a project', apiGone, async (
 
     const account = await h.services.users.byUsername('bob');
     assert.ok(account, 'a local account should have been provisioned');
-    assert.equal(created.json().project.owner_id, account.id);
+    assert.equal(created.json().data.owner_id, account.id);
 
     // The account cannot be signed into with a password.
     assert.equal(await h.services.users.authenticate('bob', 'external'), null);
@@ -169,22 +173,22 @@ test('an OIDC user gets a local account and can own a project', apiGone, async (
   });
 });
 
-test('the same subject keeps one account even when the display name changes', apiGone, async () => {
+test('the same subject keeps one account even when the display name changes', opts, async () => {
   await withOidcConductor({}, async (h) => {
     const first = await h.app.inject({
-      method: 'GET', url: '/api/auth/me', headers: await oidc.headers('persona-admin'),
+      method: 'GET', url: '/api/v1/users/me', headers: await oidc.headers('persona-admin'),
     });
     const second = await h.app.inject({
-      method: 'GET', url: '/api/auth/me', headers: await oidc.headers('persona-admin-renamed'),
+      method: 'GET', url: '/api/v1/users/me', headers: await oidc.headers('persona-admin-renamed'),
     });
 
     // Identity is the subject, not the label the provider shows.
-    assert.equal(second.json().user.id, first.json().user.id);
+    assert.equal(second.json().data.id, first.json().data.id);
     assert.equal((await h.services.users.list()).filter((u) => u.external_id).length, 1);
   });
 });
 
-test('a display name colliding with a local account gets its own username', apiGone, async () => {
+test('a display name colliding with a local account gets its own username', opts, async () => {
   await withOidcConductor({}, async (h) => {
     // A local account that predates OIDC already holds the name 'admin'.
     const local = await h.services.users.create({
@@ -192,21 +196,21 @@ test('a display name colliding with a local account gets its own username', apiG
     });
 
     const me = await h.app.inject({
-      method: 'GET', url: '/api/auth/me', headers: await oidc.headers('persona-collision'),
+      method: 'GET', url: '/api/v1/users/me', headers: await oidc.headers('persona-collision'),
     });
     assert.equal(me.statusCode, 200);
-    assert.notEqual(me.json().user.id, local.id, 'the local account must not be taken over');
-    assert.notEqual(me.json().user.username, 'admin');
-    assert.match(me.json().user.username, /^admin-\d+$/);
+    assert.notEqual(me.json().data.id, local.id, 'the local account must not be taken over');
+    assert.notEqual(me.json().data.username, 'admin');
+    assert.match(me.json().data.username, /^admin-\d+$/);
   });
 });
 
-test('a role revoked at the provider is lost on the next request', apiGone, async () => {
+test('a role revoked at the provider is lost on the next request', opts, async () => {
   await withOidcConductor({}, async (h) => {
     const asAdmin = await h.app.inject({
-      method: 'GET', url: '/api/auth/me', headers: await oidc.headers('persona-admin'),
+      method: 'GET', url: '/api/v1/users/me', headers: await oidc.headers('persona-admin'),
     });
-    assert.equal(asAdmin.json().user.role, 'admin');
+    assert.equal(asAdmin.json().data.role, 'admin');
 
     // The provider stops asserting the role for that subject.
     const account = await h.services.users.byExternalId(`${oidc.issuer}|alice-sub`);
@@ -218,167 +222,122 @@ test('a role revoked at the provider is lost on the next request', apiGone, asyn
   });
 });
 
-test('an account disabled locally is refused despite a valid token', apiGone, async () => {
+test('an account disabled locally is refused despite a valid token', opts, async () => {
   await withOidcConductor({}, async (h) => {
     const headers = await oidc.headers('persona-admin');
-    assert.equal((await h.app.inject({ method: 'GET', url: '/api/auth/me', headers })).statusCode, 200);
+    assert.equal((await h.app.inject({ method: 'GET', url: '/api/v1/users/me', headers })).statusCode, 200);
 
     const account = await h.services.users.byExternalId(`${oidc.issuer}|alice-sub`);
     await h.services.users.setDisabled(account.id, true);
 
     // The provider would still admit them; the conductor does not.
-    assert.equal((await h.app.inject({ method: 'GET', url: '/api/auth/me', headers })).statusCode, 401);
+    assert.equal((await h.app.inject({ method: 'GET', url: '/api/v1/users/me', headers })).statusCode, 401);
   });
 });
 
-test('a forged signature is refused', apiGone, async () => {
+test('a forged signature is refused', opts, async () => {
   await withOidcConductor({}, async (h) => {
     const token = await forgedToken(oidc.issuer);
     const res = await h.app.inject({
-      method: 'GET', url: '/api/auth/me', headers: { cookie: `conductor_session=${token}` },
+      method: 'GET', url: '/api/v1/users/me', headers: { authorization: `Bearer ${token}` },
     });
     assert.equal(res.statusCode, 401);
     assert.equal(await h.services.users.byUsername('mallory'), undefined, 'no account should be created');
   });
 });
 
-test('an expired token is refused', apiGone, async () => {
+test('an expired token is refused', opts, async () => {
   await withOidcConductor({}, async (h) => {
     const res = await h.app.inject({
-      method: 'GET', url: '/api/auth/me', headers: await oidc.headers('persona-expired'),
+      method: 'GET', url: '/api/v1/users/me', headers: await oidc.headers('persona-expired'),
     });
     assert.equal(res.statusCode, 401);
   });
 });
 
-test('a token from a different issuer is refused', apiGone, async () => {
+test('a token from a different issuer is refused', opts, async () => {
   // The conductor trusts the issuer in its discovery document; a token
   // minted under another path of the same server must not be accepted.
   await withOidcConductor({
     oidcDiscoveryUrl: `${oidc.issuer.replace(/\/conductor$/, '/other')}/.well-known/openid-configuration`,
   }, async (h) => {
     const res = await h.app.inject({
-      method: 'GET', url: '/api/auth/me', headers: await oidc.headers('persona-admin'),
+      method: 'GET', url: '/api/v1/users/me', headers: await oidc.headers('persona-admin'),
     });
     assert.equal(res.statusCode, 401);
   });
 });
 
-test('an anonymous visitor asking for a protected page is sent to the provider', opts, async () => {
+// Keycloak puts the client in azp and leaves aud as the resource server, so
+// asserting aud alone rejects every real access token.
+test('a token naming the client only in azp is accepted', opts, async () => {
   await withOidcConductor({}, async (h) => {
-    const res = await h.app.inject({ method: 'GET', url: '/projects' });
-    assert.equal(res.statusCode, 302);
-    assert.ok(res.headers.location.startsWith(`${oidc.issuer}/authorize`), res.headers.location);
-  });
-});
-
-test('a browser signs in at the provider and comes back with a session', opts, async () => {
-  await withOidcConductor({}, async (h) => {
-    // Asking for the login page is a redirect to the provider, built from
-    // the endpoint its discovery document advertised.
-    const login = await h.app.inject({ method: 'GET', url: '/login' });
-    assert.equal(login.statusCode, 302);
-    const authorization = new URL(login.headers.location);
-    assert.equal(authorization.origin + authorization.pathname, `${oidc.issuer}/authorize`);
-    assert.equal(authorization.searchParams.get('client_id'), 'conductor');
-    assert.equal(authorization.searchParams.get('redirect_uri'), 'http://conductor.test/oidc/callback');
-    assert.ok(authorization.searchParams.get('state'));
-
-    // Sign in at the provider, which sends the browser back with a code.
-    const callback = await oidc.signIn(login.headers.location, {
-      username: 'alice',
-      claims: {
-        sub: 'alice-sub',
-        preferred_username: 'alice',
-        realm_access: { roles: ['conductor-admin'] },
-      },
-    });
-    const returned = new URL(callback);
-    assert.equal(returned.origin + returned.pathname, 'http://conductor.test/oidc/callback');
-
-    const done = await h.app.inject({
-      method: 'GET',
-      url: returned.pathname + returned.search,
-    });
-    assert.equal(done.statusCode, 302, done.body);
-    assert.equal(done.headers.location, '/');
-
-    const session = done.headers['set-cookie'].split(';')[0];
-    const home = await h.app.inject({ method: 'GET', url: '/', headers: { cookie: session } });
-    assert.match(home.body, /href="\/projects"/, 'the signed in administrator sees the projects link');
-  });
-});
-
-test('a callback with a forged state is refused', opts, async () => {
-  await withOidcConductor({}, async (h) => {
-    const res = await h.app.inject({ method: 'GET', url: '/oidc/callback?code=x&state=forged.signature' });
-    assert.equal(res.statusCode, 400);
-    assert.match(res.body, /did not start here/);
-  });
-});
-
-test('local passwords are refused while OIDC is in charge', apiGone, async () => {
-  await withOidcConductor({ bootstrap: true }, async (h) => {
     const res = await h.app.inject({
-      method: 'POST',
-      url: '/api/auth/login',
-      headers: { 'content-type': 'application/json' },
-      payload: JSON.stringify({ username: 'admin', password: 'bootstrap-password' }),
+      method: 'GET', url: '/api/v1/users/me', headers: await oidc.headers('persona-azp'),
     });
-    assert.equal(res.statusCode, 400);
-    assert.match(res.json().error, /OIDC/);
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(res.json().data.role, 'admin');
   });
 });
 
-test('an OIDC administrator can drive the interface', opts, async () => {
+test('a token issued to another client is refused', opts, async () => {
   await withOidcConductor({}, async (h) => {
-    const headers = await oidc.headers('persona-admin');
-
-    const page = await h.app.inject({ method: 'GET', url: '/', headers });
-    assert.equal(page.statusCode, 200);
-    assert.match(page.body, /href="\/projects"/);
-    // Accounts cannot sign in while the provider owns identity, so the users
-    // page is kept off the nav even for an administrator.
-    assert.ok(!page.body.includes('href="/users"'), 'the users link should be hidden');
-
-    // It remains reachable directly, for preparing to move off OIDC.
-    const users = await h.app.inject({ method: 'GET', url: '/users', headers });
-    assert.equal(users.statusCode, 200);
-    assert.match(users.body, /alice/);
+    const res = await h.app.inject({
+      method: 'GET', url: '/api/v1/users/me', headers: await oidc.headers('persona-other-client'),
+    });
+    assert.equal(res.statusCode, 401);
   });
 });
 
-test('worker ownership follows the OIDC identity', apiGone, async () => {
+test('discovery passes the provider through and names the client', opts, async () => {
+  await withOidcConductor({}, async (h) => {
+    const res = await h.discovery();
+    assert.equal(res.statusCode, 200);
+
+    const doc = res.json();
+    assert.equal(doc.issuer, oidc.issuer);
+    assert.equal(doc.authorization_endpoint, `${oidc.issuer}/authorize`);
+    assert.equal(doc.client_id, 'conductor');
+  });
+});
+
+// Only one provider is ever advertised, so only one may answer.
+test('the built-in provider is not mounted while a provider is configured', opts, async () => {
+  await withOidcConductor({}, async (h) => {
+    for (const url of ['/auth/authorize', '/auth/token', '/auth/jwks']) {
+      assert.equal((await h.app.inject({ method: 'GET', url })).statusCode, 404, url);
+    }
+  });
+});
+
+test('worker ownership follows the OIDC identity', opts, async () => {
   await withOidcConductor({ visibility: 'private' }, async (h) => {
     const alice = await oidc.headers('persona-admin');
     const bob = await oidc.headers('persona-viewer');
 
-    // Bob owns a project and registers a worker for it.
     const project = await h.app.inject({
       method: 'POST',
-      url: '/api/projects',
+      url: '/api/v1/projects',
       headers: json(bob),
       payload: JSON.stringify({ id: 'bob-proj', repo_url: h.repoDir }),
     });
-    assert.equal(project.statusCode, 201);
+    assert.equal(project.statusCode, 201, project.body);
 
     const bobToken = await h.app.inject({
-      method: 'POST', url: '/api/worker-tokens', headers: json(bob), payload: JSON.stringify({ name: 'bob-pi' }),
+      method: 'POST', url: '/api/v1/workers', headers: json(bob), payload: JSON.stringify({ name: 'bob-pi' }),
     });
     const aliceToken = await h.app.inject({
-      method: 'POST', url: '/api/worker-tokens', headers: json(alice), payload: JSON.stringify({ name: 'alice-pi' }),
+      method: 'POST', url: '/api/v1/workers', headers: json(alice), payload: JSON.stringify({ name: 'alice-pi' }),
     });
 
-    // Alice cannot see bob's worker, even as an administrator listing her
-    // own, and bob cannot see the project he does not own.
-    const aliceList = await h.app.inject({ method: 'GET', url: '/api/worker-tokens', headers: alice });
-    const names = aliceList.json().worker_tokens.map((t) => t.name);
+    const aliceList = await h.app.inject({ method: 'GET', url: '/api/v1/workers', headers: alice });
+    const names = aliceList.json().data.map((t) => t.name);
     assert.ok(names.includes('bob-pi'), 'an administrator sees every worker');
 
-    const bobList = await h.app.inject({ method: 'GET', url: '/api/worker-tokens', headers: bob });
-    assert.deepEqual(bobList.json().worker_tokens.map((t) => t.name), ['bob-pi']);
+    const bobList = await h.app.inject({ method: 'GET', url: '/api/v1/workers', headers: bob });
+    assert.deepEqual(bobList.json().data.map((t) => t.name), ['bob-pi']);
 
-    assert.ok(bobToken.json().token);
-    assert.ok(aliceToken.json().token);
+    assert.ok(bobToken.json().data.token);
+    assert.ok(aliceToken.json().data.token);
   });
 });

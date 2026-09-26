@@ -1,10 +1,8 @@
-// src/lib/static.js - the interface's static assets
+// src/lib/static.js - the built application bundle
 //
-// Pages are rendered by the server, so the only static files are the
-// stylesheet and the vendored htmx build. An allowlist is used rather than
-// a general static file server: nothing can be requested that is not named
-// here, which makes path traversal impossible by construction rather than
-// by careful escaping.
+// The directory is read once at startup and the routes are built from what
+// was actually found, so nothing can be requested that is not on disk and
+// path traversal is impossible by construction rather than by escaping.
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -12,37 +10,95 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-export const ASSET_DIR = path.resolve(HERE, '../../assets');
+export const WEB_DIR = path.resolve(HERE, '../../web/dist');
 
-const FILES = {
-  '/style.css': { file: 'style.css', type: 'text/css; charset=utf-8' },
-  '/vendor/htmx.min.js': { file: 'vendor/htmx.min.js', type: 'text/javascript; charset=utf-8' },
-  '/vendor/htmx-LICENSE.txt': { file: 'vendor/htmx-LICENSE.txt', type: 'text/plain; charset=utf-8' },
+const TYPES = {
+  '.css': 'text/css; charset=utf-8',
+  '.html': 'text/html; charset=utf-8',
+  '.ico': 'image/x-icon',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.map': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
+  '.txt': 'text/plain; charset=utf-8',
+  '.webmanifest': 'application/manifest+json',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
 };
 
-export default async function staticRoutes(fastify, { dir = ASSET_DIR } = {}) {
-  // Read once at startup. These are small and never change at runtime.
+// Nothing in the bundle is inline, which is what makes this possible, and it
+// is what keeps a refresh token in local storage from being readable by an
+// injected script.
+export function contentSecurityPolicy(connect = []) {
+  return [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self'",
+    "img-src 'self' data:",
+    "font-src 'self'",
+    `connect-src 'self'${connect.length > 0 ? ` ${connect.join(' ')}` : ''}`,
+    "frame-ancestors 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+  ].join('; ');
+}
+
+async function collect(dir, base = '') {
+  const out = [];
+  let entries;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    // A tree with no build simply serves nothing.
+    return out;
+  }
+
+  for (const entry of entries) {
+    const route = `${base}/${entry.name}`;
+    if (entry.isDirectory()) out.push(...await collect(path.join(dir, entry.name), route));
+    else if (entry.isFile()) out.push({ route, file: path.join(dir, entry.name) });
+  }
+  return out;
+}
+
+export default async function staticRoutes(fastify, { dir = WEB_DIR, csp = contentSecurityPolicy() } = {}) {
   const cache = new Map();
 
-  for (const [route, entry] of Object.entries(FILES)) {
-    let body;
-    try {
-      body = await fs.readFile(path.join(dir, entry.file));
-    } catch {
-      // A deployment that does not ship the assets simply has no styling.
-      continue;
-    }
-    const etag = `"${crypto.createHash('sha256').update(body).digest('hex').slice(0, 32)}"`;
-    cache.set(route, { body, type: entry.type, etag });
+  for (const { route, file } of await collect(dir)) {
+    const body = await fs.readFile(file);
+    cache.set(route, {
+      body,
+      type: TYPES[path.extname(file)] ?? 'application/octet-stream',
+      etag: `"${crypto.createHash('sha256').update(body).digest('hex').slice(0, 32)}"`,
+    });
+  }
+
+  const index = cache.get('/index.html');
+
+  function serve(reply, entry, req) {
+    if (req.headers['if-none-match'] === entry.etag) return reply.code(304).send();
+    reply.header('content-type', entry.type);
+    reply.header('etag', entry.etag);
+    reply.header('cache-control', 'no-cache');
+    if (entry === index) reply.header('content-security-policy', csp);
+    return reply.send(entry.body);
   }
 
   for (const [route, entry] of cache) {
-    fastify.get(route, async (req, reply) => {
-      if (req.headers['if-none-match'] === entry.etag) return reply.code(304).send();
-      reply.header('content-type', entry.type);
-      reply.header('etag', entry.etag);
-      reply.header('cache-control', 'no-cache');
-      return reply.send(entry.body);
-    });
+    fastify.get(route, async (req, reply) => serve(reply, entry, req));
+    if (route === '/index.html') fastify.get('/', async (req, reply) => serve(reply, entry, req));
   }
+
+  if (!index) return;
+
+  // The application routes client side, so a deep link is a page request
+  // rather than a missing file. The API answers its own 404s inside its own
+  // prefix, so those are unaffected.
+  fastify.setNotFoundHandler((req, reply) => {
+    if (req.method !== 'GET' || !(req.headers.accept ?? '').includes('text/html')) {
+      return reply.code(404).send({ ok: false, error: { name: 'NotFound', message: 'not found' } });
+    }
+    return serve(reply, index, req);
+  });
 }

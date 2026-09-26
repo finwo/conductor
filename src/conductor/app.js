@@ -17,12 +17,13 @@ import { createWorkerTokens } from '../lib/workers.js';
 import { createUsers } from '../lib/users.js';
 import { createVariables } from '../lib/variables.js';
 import { createAuth } from '../lib/auth/index.js';
+import { createRefreshTokens } from '../lib/auth/refresh.js';
 import { createScheduler } from './scheduler.js';
 import { createRetention } from './retention.js';
 
 import apiRoutes from './routes/api.js';
 import { ok } from './routes/envelope.js';
-import uiRoutes from './ui/routes.js';
+import authRoutes from './auth/index.js';
 import staticRoutes from '../lib/static.js';
 
 export async function createServices(cfg, options = {}) {
@@ -43,20 +44,21 @@ export async function createServices(cfg, options = {}) {
   const workerTokens = createWorkerTokens({ db });
   const variables = createVariables({ db, secrets });
   const users = createUsers({ db, logger });
+  const refreshTokens = createRefreshTokens({ db });
   const auth = createAuth({ cfg, users, logger });
 
   const scheduler = createScheduler({ cfg, db, git, logs, storage, projects, secrets, variables, logger });
   const retention = createRetention({ cfg, db, storage, logs, logger });
 
   // Without a first administrator there is no way into the admin surface.
-  // Only done for local accounts; with OIDC the provider owns identity.
+  // Only done for local accounts; with a provider it owns identity.
   if (options.bootstrap !== false && auth.localLogin) {
     await users.bootstrap(cfg);
   }
 
   return {
     cfg, db, secrets, storage, logs, git,
-    projects, workerTokens, variables, users, auth, scheduler, retention, logger,
+    projects, workerTokens, variables, users, auth, refreshTokens, scheduler, retention, logger,
   };
 }
 
@@ -82,16 +84,14 @@ export async function buildServer(services, options = {}) {
     auth: cfg.auth.mode,
   }));
 
-  // The only HTTP surface besides the interface: creating and reading jobs,
-  // reading tasks back, the edge workers poll, and artifact downloads.
-  // Everything else is the UI.
   await fastify.register(apiRoutes, { ...services, prefix: '/api/v1' });
 
-  // Signing in, managing projects and registering workers all happen in the
-  // interface; there is no separate management API.
+  // Discovery is answered in both modes, so the app finds its provider the
+  // same way either way.
+  await fastify.register(authRoutes, { ...services });
+
   if (options.ui !== false) {
     await fastify.register(staticRoutes, {});
-    await fastify.register(uiRoutes, { ...services });
   }
 
   return fastify;

@@ -13,7 +13,7 @@
 // advertises is kept per reported name in worker_agents.
 
 import { newToken, hashToken, newWorkerTokenId, newWorkerAgentId } from './ids.js';
-import { paginate, windowOf } from './page.js';
+import { paginateOffset } from './page.js';
 
 function parseList(value) {
   try {
@@ -127,16 +127,17 @@ export function createWorkerTokens({ db }) {
 
     // One page of listVisible. An anonymous caller sees nothing, so the
     // window is empty rather than a query nobody needs.
-    async pageVisible(user, page) {
-      if (!user) return windowOf({ rows: [], total: 0, page });
+    async pageVisible(user, { offset, limit }) {
+      if (!user) return { rows: [], total: 0, offset, limit };
       const admin = user.role === 'admin';
-      return paginate(db, {
+      return paginateOffset(db, {
         select: 'id, name, enabled, owner_id, created_at, last_seen_at, last_ip',
         from: 'worker_tokens',
         where: admin ? '1 = 1' : 'owner_id = {owner}',
         order: 'created_at DESC',
         params: admin ? {} : { owner: user.id },
-        page,
+        offset,
+        limit,
       });
     },
 

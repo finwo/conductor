@@ -71,6 +71,23 @@ export class InvalidWorkerToken extends ApiError {
   static defaultMessage = 'The worker token is missing or wrong';
 }
 
+export class NotAuthenticated extends ApiError {
+  static code = 401;
+  static defaultMessage = 'This endpoint needs an access token';
+}
+
+// Only for something the caller is allowed to know exists. Anything else is
+// a 404, so identifiers cannot be probed.
+export class NotPermitted extends ApiError {
+  static code = 403;
+  static defaultMessage = 'That is not yours to do';
+}
+
+export class Conflict extends ApiError {
+  static code = 409;
+  static defaultMessage = 'That conflicts with something that already exists';
+}
+
 // 403 reaching for a task it never held, 409 losing one mid-report.
 export class TaskNotHeld extends ApiError {
   static code = 403;

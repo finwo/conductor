@@ -12,7 +12,6 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import crypto from 'node:crypto';
 import { reapStale } from './containers.js';
-import { SESSION_COOKIE } from '../../src/lib/auth/token.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -75,6 +74,23 @@ const PERSONAS = {
     realm_access: { roles: ['conductor-admin'] },
     aud: ['conductor'],
     exp: 1000000000,
+  },
+  // What Keycloak actually issues: the client in azp, the resource server
+  // in aud. Every persona above names the client in aud, which a broken
+  // audience rule would pass.
+  'persona-azp': {
+    sub: 'heidi-sub',
+    preferred_username: 'heidi',
+    realm_access: { roles: ['conductor-admin'] },
+    aud: ['account'],
+    azp: 'conductor',
+  },
+  'persona-other-client': {
+    sub: 'ivan-sub',
+    preferred_username: 'ivan',
+    realm_access: { roles: ['conductor-admin'] },
+    aud: ['account'],
+    azp: 'some-other-client',
   },
 };
 
@@ -183,10 +199,10 @@ export async function startOidc() {
       return (await res.json()).access_token;
     },
 
-    // A session cookie for a persona, as the browser would carry after
-    // signing in. The conductor accepts no other credential.
+    // The bearer header for a persona, as the application would send it
+    // after running the code flow against this provider directly.
     async headers(persona) {
-      return { cookie: `${SESSION_COOKIE}=${await this.token(persona)}` };
+      return { authorization: `Bearer ${await this.token(persona)}` };
     },
 
     // Completes the authorization code flow for a URL the conductor built,

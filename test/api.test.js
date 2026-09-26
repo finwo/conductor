@@ -117,7 +117,7 @@ test('a page reports where it sits and how many there are', async () => {
     const job = data(await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).job_id;
     await h.waitForJob(job);
 
-    const res = await h.app.inject({ method: 'GET', url: `/api/v1/projects/demo/jobs/${job}?limit=2` });
+    const res = await h.app.inject({ method: 'GET', url: `/api/v1/jobs/${job}/tasks?limit=2` });
     assert.equal(res.statusCode, 200, res.body);
 
     const body = res.json();
@@ -135,7 +135,7 @@ test('following next walks the whole collection exactly once', async () => {
     await h.waitForJob(job);
 
     const seen = [];
-    let url = `/api/v1/projects/demo/jobs/${job}?limit=2`;
+    let url = `/api/v1/jobs/${job}/tasks?limit=2`;
     for (let i = 0; i < 20 && url; i += 1) {
       const res = await h.app.inject({ method: 'GET', url });
       const body = res.json();
@@ -156,7 +156,7 @@ test('next is absent on the last page', async () => {
     const job = data(await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).job_id;
     await h.waitForJob(job);
 
-    const res = await h.app.inject({ method: 'GET', url: `/api/v1/projects/demo/jobs/${job}` });
+    const res = await h.app.inject({ method: 'GET', url: `/api/v1/jobs/${job}/tasks` });
     const { pagination } = res.json();
 
     assert.equal(pagination.offset, 0);
@@ -171,7 +171,7 @@ test('an unusable offset or limit falls back rather than failing', async () => {
 
     const res = await h.app.inject({
       method: 'GET',
-      url: `/api/v1/projects/demo/jobs/${job}?offset=-5&limit=banana`,
+      url: `/api/v1/jobs/${job}/tasks?offset=-5&limit=banana`,
     });
 
     assert.equal(res.statusCode, 200, res.body);

@@ -22,9 +22,10 @@ import { SHA_PATTERN } from '../../lib/git.js';
 import { canManageProject } from '../../lib/projects.js';
 import { verifySignature } from '../../lib/signature.js';
 import { ok } from './envelope.js';
+import { visible } from './guard.js';
 import {
-  InvalidSha, InvalidSignature, MalformedJson, NoCommitInPayload,
-  ProjectDisabled, ShaRequired, UnknownJob, UnknownProject,
+  Conflict, InvalidSha, InvalidSignature, MalformedJson, NoCommitInPayload,
+  NotPermitted, ProjectDisabled, ShaRequired, UnknownJob, UnknownProject,
 } from '../../lib/errors.js';
 import { limitOf, offsetOfQuery, pageBlock, paginateOffset } from '../../lib/page.js';
 
@@ -113,32 +114,80 @@ export default async function jobRoutes(fastify, { cfg, auth, db, projects, sche
     });
   });
 
-  // Read one back. A caller that can start a job should be able to see how
-  // it went, and scraping the interface for that is no kind of answer.
-  //
-  // Three ways to be allowed: the job is public, the caller holds the
-  // project's trigger secret, or the caller is signed in and may manage the
-  // project. Refusal is a 404 either way, so this cannot be used to probe
-  // which jobs exist.
-  fastify.get('/projects/:project/jobs/:job', async (req, reply) => {
+  const JOB_COLUMNS = `j.id, j.project_id, j.number, j.ref, j.base_sha, j.head_sha,
+    j.trigger_type, j.actor, j.title, j.state, j.visibility, j.error,
+    j.created_at, j.started_at, j.finished_at`;
+
+  // Holding the trigger secret is a third way in, so whatever starts a job
+  // can see how it went without also being a signed in user.
+  async function mayRead(req, project) {
+    const secret = projects.triggerSecret(project);
+    if (secret && verifySignature(req, secret)) return true;
+
+    const user = await auth.identify(req).catch(() => null);
+    return canManageProject(user, project);
+  }
+
+  fastify.get('/projects/:project/jobs', async (req, reply) => {
     const project = await projects.get(req.params.project);
-    if (!project) throw new UnknownJob();
+    if (!project) throw new UnknownProject();
 
-    const job = await db.get(
-      `SELECT id, project_id, number, ref, head_sha, trigger_type, actor, title,
-              state, visibility, error, created_at, started_at, finished_at
-         FROM jobs
-        WHERE id = {id} AND project_id = {project}`,
-      { id: req.params.job, project: project.id }
-    );
-    if (!job) throw new UnknownJob();
+    const user = await auth.identify(req).catch(() => null);
+    const scope = await mayRead(req, project)
+      ? { sql: '1 = 1', params: {} }
+      : visible(user, { project: 'p', job: 'j' });
 
-    if (job.visibility !== 'public' && !(await mayRead(req, project))) {
-      throw new UnknownJob();
+    const filters = [scope.sql, 'j.project_id = {project}'];
+    const params = { ...scope.params, project: project.id };
+    if (typeof req.query.state === 'string') {
+      filters.push('j.state = {state}');
+      params.state = req.query.state;
     }
 
     const window = await paginateOffset(db, {
-      select: `id, name, state, arch, attempt, exit_code, error,
+      select: JOB_COLUMNS,
+      from: 'jobs j JOIN projects p ON p.id = j.project_id',
+      where: filters.join(' AND '),
+      order: 'j.created_at DESC',
+      params,
+      offset: offsetOfQuery(req.query),
+      limit: limitOf(req.query),
+    });
+
+    return ok(reply, window.rows, pageBlock({ ...window, url: base + req.url }));
+  });
+
+  // A job id is unique on its own, so it is addressable with or without its
+  // project. Spelling the project out asserts it rather than decorating it.
+  function both(method, suffix, handler) {
+    fastify[method](`/jobs/:job${suffix}`, handler);
+    fastify[method](`/projects/:project/jobs/:job${suffix}`, handler);
+  }
+
+  // Missing rather than refused, so an id cannot be probed by status code.
+  async function readableJob(req) {
+    const user = await auth.identify(req).catch(() => null);
+    const job = await db.get(
+      `SELECT ${JOB_COLUMNS} FROM jobs j WHERE j.id = {id}`,
+      { id: req.params.job }
+    );
+    if (!job) throw new UnknownJob();
+    if (req.params.project !== undefined && req.params.project !== job.project_id) throw new UnknownJob();
+
+    const project = await projects.get(job.project_id);
+    if (job.visibility !== 'public' && !(await mayRead(req, project))) throw new UnknownJob();
+    return { job, project, user };
+  }
+
+  both('get', '', async (req, reply) => ok(reply, (await readableJob(req)).job));
+
+  // The edges come with the tasks: the stage graph cannot be drawn without
+  // them, and nothing else exposes task_deps.
+  both('get', '/tasks', async (req, reply) => {
+    const { job } = await readableJob(req);
+
+    const window = await paginateOffset(db, {
+      select: `id, name, base_name, state, arch, attempt, exit_code, error,
                worker_name, created_at, started_at, finished_at`,
       from: 'tasks',
       where: 'job_id = {job}',
@@ -148,16 +197,42 @@ export default async function jobRoutes(fastify, { cfg, auth, db, projects, sche
       limit: limitOf(req.query),
     });
 
-    return ok(reply, { job, tasks: window.rows }, pageBlock({ ...window, url: base + req.url }));
+    const deps = await db.all(
+      `SELECT d.task_id, d.depends_on_id, d.kind
+         FROM task_deps d JOIN tasks t ON t.id = d.task_id
+        WHERE t.job_id = {job}`,
+      { job: job.id }
+    );
+
+    return ok(reply, { tasks: window.rows, deps }, pageBlock({ ...window, url: base + req.url }));
   });
 
-  async function mayRead(req, project) {
-    const secret = projects.triggerSecret(project);
-    if (secret && verifySignature(req, secret)) return true;
-
-    const user = await auth.identify(req).catch(() => null);
-    return canManageProject(user, project);
+  async function manageableJob(req) {
+    const { job, project, user } = await readableJob(req);
+    if (!canManageProject(user, project)) throw new NotPermitted();
+    return { job, project, user };
   }
+
+  both('post', '/cancel', async (req, reply) => {
+    const { job, user } = await manageableJob(req);
+    const outcome = await scheduler.cancelJob(job.id, `cancelled by ${user.username}`);
+    if (!outcome.ok) throw new Conflict(outcome.reason);
+    return ok(reply, { id: job.id, cancelled: true });
+  });
+
+  // A retry is a new job at the same commit, so the original stays readable.
+  both('post', '/retry', async (req, reply) => {
+    const { job, project, user } = await manageableJob(req);
+
+    const created = await scheduler.createJob(project, {
+      ref: job.ref,
+      baseSha: job.base_sha,
+      headSha: job.head_sha,
+      trigger: 'manual',
+      actor: user.username,
+    });
+    return ok(reply, { status: 'created', job_id: created.jobId });
+  });
 }
 
 // Reduces the supported payload shapes to { sha, base, ref, actor }.

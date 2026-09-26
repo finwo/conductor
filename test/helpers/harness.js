@@ -113,7 +113,6 @@ export async function startHarness(options = {}) {
         '  oidc:',
         `    discovery_url: ${options.oidcDiscoveryUrl}`,
         `    client_id: ${options.oidcClientId ?? 'conductor'}`,
-        ...(options.oidcClientSecret ? [`    client_secret: ${options.oidcClientSecret}`] : []),
         ...(options.oidcScopes ? [`    scopes: ${options.oidcScopes}`] : []),
         ...(options.oidcAdminRole ? [`    admin_role: ${options.oidcAdminRole}`] : []),
       ]
@@ -226,19 +225,56 @@ export async function startHarness(options = {}) {
       });
     },
 
-    // Signs in through the interface, which is the only way in, and returns
-    // the session cookie. The interface's login form is htmx only.
+    // Drives the built-in provider's authorization code flow the way the
+    // application does, and returns the grant plus a ready bearer header.
     async login(username = options.adminUsername ?? 'admin', password = options.adminPassword ?? 'bootstrap-password') {
-      const res = await app.inject({
+      const redirectUri = `${cfg.server.public_url}/callback`;
+      const verifier = crypto.randomBytes(32).toString('base64url');
+      const query = new URLSearchParams({
+        client_id: 'conductor',
+        redirect_uri: redirectUri,
+        response_type: 'code',
+        code_challenge: crypto.createHash('sha256').update(verifier).digest('base64url'),
+        code_challenge_method: 'S256',
+        state: 'harness',
+      });
+
+      const authorized = await app.inject({
         method: 'POST',
-        url: '/login',
-        headers: { 'hx-request': 'true', 'content-type': 'application/x-www-form-urlencoded' },
+        url: `/auth/authorize?${query}`,
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
         payload: new URLSearchParams({ username, password }).toString(),
       });
-      if (res.statusCode !== 204) {
-        throw new Error(`login failed: ${res.statusCode} ${res.body}`);
+      if (authorized.statusCode !== 303) {
+        throw new Error(`authorize failed: ${authorized.statusCode} ${authorized.body.slice(0, 200)}`);
       }
-      return { cookie: res.headers['set-cookie'].split(';')[0] };
+
+      const code = new URL(authorized.headers.location).searchParams.get('code');
+      const granted = await this.token({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: redirectUri,
+        code_verifier: verifier,
+      });
+      if (granted.statusCode !== 200) {
+        throw new Error(`token exchange failed: ${granted.statusCode} ${granted.body.slice(0, 200)}`);
+      }
+
+      const grant = granted.json();
+      return { ...grant, headers: { authorization: `Bearer ${grant.access_token}` } };
+    },
+
+    async token(body) {
+      return app.inject({
+        method: 'POST',
+        url: '/auth/token',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        payload: new URLSearchParams(body).toString(),
+      });
+    },
+
+    async discovery() {
+      return app.inject({ method: 'GET', url: '/.well-known/openid-configuration' });
     },
 
     async stop() {

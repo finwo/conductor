@@ -1,10 +1,9 @@
-// test/auth.test.js - password hashing, session tokens and role mapping
+// test/auth.test.js - password hashing, access tokens and role mapping
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { hashPassword, verifyPassword, validatePassword, generatePassword } from '../src/lib/auth/password.js';
-import { issueToken, verifyToken, parseCookies, sessionCookie, SESSION_COOKIE } from '../src/lib/auth/token.js';
-import { createState, verifyState } from '../src/lib/auth/state.js';
+import { signToken, verifyToken } from '../src/lib/auth/token.js';
 import { collectRoles } from '../src/lib/auth/oidc.js';
 import { maskBuffer } from '../src/lib/variables.js';
 
@@ -48,75 +47,66 @@ test('password length is bounded', () => {
   assert.ok(generatePassword().length >= 20);
 });
 
-test('a session token round trips its claims', () => {
-  const token = issueToken('secret', { sub: 'u1', name: 'alice', role: 'admin' });
-  const claims = verifyToken('secret', token);
+const ACCESS = { use: 'access', iss: 'https://ci.example', aud: 'conductor' };
+
+test('an access token round trips its claims', () => {
+  const token = signToken('secret', { ...ACCESS, sub: 'u1', name: 'alice', role: 'admin', ttl: 900 });
+  const claims = verifyToken('secret', token, ACCESS);
   assert.equal(claims.sub, 'u1');
   assert.equal(claims.name, 'alice');
   assert.equal(claims.role, 'admin');
 });
 
 test('a token signed with another secret is refused', () => {
-  const token = issueToken('secret', { sub: 'u1', name: 'a', role: 'admin' });
-  assert.equal(verifyToken('other-secret', token), null);
+  const token = signToken('secret', { ...ACCESS, sub: 'u1', ttl: 900 });
+  assert.equal(verifyToken('other-secret', token, ACCESS), null);
 });
 
 test('a tampered payload is refused', () => {
-  const token = issueToken('secret', { sub: 'u1', name: 'a', role: 'user' });
+  const token = signToken('secret', { ...ACCESS, sub: 'u1', role: 'user', ttl: 900 });
   const [header, payload, signature] = token.split('.');
   const forged = Buffer.from(JSON.stringify({
     ...JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')),
     role: 'admin',
   })).toString('base64url');
 
-  assert.equal(verifyToken('secret', `${header}.${forged}.${signature}`), null);
+  assert.equal(verifyToken('secret', `${header}.${forged}.${signature}`, ACCESS), null);
 });
 
 test('an expired token is refused', () => {
-  const token = issueToken('secret', { sub: 'u1', name: 'a', role: 'admin' }, { ttl: 60 });
-  assert.ok(verifyToken('secret', token));
-  assert.equal(verifyToken('secret', token, { now: Date.now() + 61_000 }), null);
+  const token = signToken('secret', { ...ACCESS, sub: 'u1', ttl: 60 });
+  assert.ok(verifyToken('secret', token, ACCESS));
+  assert.equal(verifyToken('secret', token, { ...ACCESS, now: Date.now() + 61_000 }), null);
 });
 
 test('a malformed token is refused rather than throwing', () => {
   for (const bad of ['', 'a.b', 'a.b.c.d', 'not-a-token', null, undefined, 12]) {
-    assert.equal(verifyToken('secret', bad), null);
+    assert.equal(verifyToken('secret', bad, ACCESS), null);
   }
 });
 
-test('cookies are parsed and issued', () => {
-  const cookies = parseCookies(`a=1; ${SESSION_COOKIE}=abc%20def; b=2`);
-  assert.equal(cookies[SESSION_COOKIE], 'abc def');
-  assert.deepEqual(parseCookies(undefined), {});
-
-  const header = sessionCookie('tok', { ttl: 60, secure: true });
-  assert.ok(header.includes('HttpOnly'));
-  assert.ok(header.includes('SameSite=Lax'));
-  assert.ok(header.includes('Secure'));
-  assert.ok(header.includes('Max-Age=60'));
-  assert.ok(!sessionCookie('tok', { secure: false }).includes('Secure'));
+// A worker token shares the Authorization header with these.
+test('an opaque worker token never parses as an access token', () => {
+  assert.equal(verifyToken('secret', 'a'.repeat(64), ACCESS), null);
 });
 
-test('the oidc login state round trips with its return path', () => {
-  const now = 1_700_000_000_000;
-  const state = createState('secret', '/projects?tab=1', { now });
-  assert.deepEqual(verifyState('secret', state, { now }), { iat: 1_700_000_000, url: '/projects?tab=1' });
+// Both are signed with the same secret, so only _tu keeps them apart.
+test('an authorization code cannot be spent as an access token', () => {
+  const code = signToken('secret', { ...ACCESS, use: 'code', sub: 'u1', ttl: 60 });
+
+  assert.ok(verifyToken('secret', code, { ...ACCESS, use: 'code' }));
+  assert.equal(verifyToken('secret', code, ACCESS), null);
 });
 
-test('a missing return path means the root', () => {
-  const state = createState('secret', undefined, { now: 1000 });
-  assert.deepEqual(verifyState('secret', state, { now: 1000 }), { iat: 1, url: '/' });
+test('an access token cannot be redeemed as an authorization code', () => {
+  const token = signToken('secret', { ...ACCESS, sub: 'u1', ttl: 900 });
+  assert.equal(verifyToken('secret', token, { ...ACCESS, use: 'code' }), null);
 });
 
-test('the oidc login state is refused when forged, stale or off-site', () => {
-  const now = 1_700_000_000_000;
-  const state = createState('secret', '/', { now });
-
-  assert.equal(verifyState('other-secret', state, { now }), null, 'a wrong secret');
-  assert.equal(verifyState('secret', `${state}x`, { now }), null, 'a tampered signature');
-  assert.equal(verifyState('secret', state, { now: now + 301_000 }), null, 'older than five minutes');
-  assert.equal(verifyState('secret', 'garbage', { now }), null, 'malformed');
-  assert.equal(verifyState('secret', createState('secret', '//evil.example', { now }), { now }), null, 'off-site');
+test('a token minted for another issuer or client is refused', () => {
+  const token = signToken('secret', { ...ACCESS, sub: 'u1', ttl: 900 });
+  assert.equal(verifyToken('secret', token, { ...ACCESS, iss: 'https://evil.example' }), null);
+  assert.equal(verifyToken('secret', token, { ...ACCESS, aud: 'other-client' }), null);
 });
 
 test('oidc roles are collected from the usual claim shapes', () => {

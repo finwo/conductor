@@ -1,0 +1,92 @@
+/* src/conductor/auth/login.css - the built-in login page */
+
+:root {
+  color-scheme: light dark;
+  --bg: #f6f7f9;
+  --fg: #1c1f23;
+  --card: #ffffff;
+  --line: #d6dae0;
+  --accent: #2f6feb;
+  --bad: #b42318;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181c;
+    --fg: #e7e9ea;
+    --card: #1e2126;
+    --line: #333940;
+    --accent: #4d8bf5;
+    --bad: #f97066;
+  }
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+  color: var(--fg);
+  font: 15px/1.5 system-ui, sans-serif;
+}
+
+main {
+  width: min(22rem, calc(100vw - 2rem));
+  padding: 2rem;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+h1 {
+  margin: 0 0 1.5rem;
+  font-size: 1.25rem;
+}
+
+label {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-weight: 500;
+}
+
+input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 1rem;
+  padding: 0.55rem 0.7rem;
+  background: var(--bg);
+  color: inherit;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+}
+
+input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+button {
+  width: 100%;
+  padding: 0.6rem;
+  background: var(--accent);
+  color: #fff;
+  border: 0;
+  border-radius: 6px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.error {
+  margin: 0 0 1rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--bad);
+  border-radius: 6px;
+  color: var(--bad);
+}
+
+[hidden] {
+  display: none;
+}
