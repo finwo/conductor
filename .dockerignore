@@ -1,7 +1,9 @@
-# Build context: only what the images actually need.
+# Build context: only what the images actually need. web/ stays: the bundle
+# is built in its own stage from these sources.
 .git/
 node_modules/
 data/
+web/dist/
 test/
 docs/
 examples/

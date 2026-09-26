@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 
 const execFileAsync = promisify(execFile);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const SKIP = new Set(['.git', 'node_modules', 'data', 'tmp']);
+const SKIP = new Set(['.git', 'node_modules', 'dist']);
 
 async function* walk(dir) {
   for (const entry of await fs.readdir(dir, { withFileTypes: true })) {

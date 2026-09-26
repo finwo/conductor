@@ -128,17 +128,18 @@ export default async function jobRoutes(fastify, { cfg, auth, db, projects, sche
     return canManageProject(user, project);
   }
 
-  fastify.get('/projects/:project/jobs', async (req, reply) => {
-    const project = await projects.get(req.params.project);
-    if (!project) throw new UnknownProject();
-
+  async function listJobs(req, reply, { project = null } = {}) {
     const user = await auth.identify(req).catch(() => null);
-    const scope = await mayRead(req, project)
+    const scope = project && await mayRead(req, project)
       ? { sql: '1 = 1', params: {} }
       : visible(user, { project: 'p', job: 'j' });
 
-    const filters = [scope.sql, 'j.project_id = {project}'];
-    const params = { ...scope.params, project: project.id };
+    const filters = [scope.sql];
+    const params = { ...scope.params };
+    if (project) {
+      filters.push('j.project_id = {project}');
+      params.project = project.id;
+    }
     if (typeof req.query.state === 'string') {
       filters.push('j.state = {state}');
       params.state = req.query.state;
@@ -155,6 +156,14 @@ export default async function jobRoutes(fastify, { cfg, auth, db, projects, sche
     });
 
     return ok(reply, window.rows, pageBlock({ ...window, url: base + req.url }));
+  }
+
+  fastify.get('/jobs', async (req, reply) => listJobs(req, reply));
+
+  fastify.get('/projects/:project/jobs', async (req, reply) => {
+    const project = await projects.get(req.params.project);
+    if (!project) throw new UnknownProject();
+    return listJobs(req, reply, { project });
   });
 
   // A job id is unique on its own, so it is addressable with or without its

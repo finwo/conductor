@@ -13,10 +13,9 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-// Vendored third party files are excluded. The rule is about code we
-// write; rewriting someone else's minified build or their licence text to
-// satisfy our own house style would be both pointless and wrong.
-const SKIP_DIRS = new Set(['.git', 'node_modules', 'data', 'tmp', 'vendor']);
+// The rule is about code we write, not about a build output or a
+// dependency. This walks the filesystem, so .gitignore does not apply.
+const SKIP_DIRS = new Set(['.git', 'node_modules', 'dist']);
 const CHECK_EXT = new Set([
   '.js', '.mjs', '.cjs', '.json', '.md', '.sql', '.yml', '.yaml',
   '.html', '.css', '.sh', '.txt',

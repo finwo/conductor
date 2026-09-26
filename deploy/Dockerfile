@@ -30,6 +30,22 @@ COPY package.json ./
 RUN npm install --omit=dev --no-audit --no-fund \
     && npm cache clean --force
 
+# The bundle is the same bytes on every architecture, so it is built once on
+# whatever is doing the building. esbuild has no riscv64 release, and
+# emulating one to produce an identical file would be slow for nothing.
+FROM --platform=$BUILDPLATFORM alpine:${ALPINE_VERSION} AS web
+
+RUN apk add --no-cache nodejs npm
+
+WORKDIR /app
+
+# The dev dependencies the deps stage deliberately skipped.
+COPY package.json ./
+RUN npm install --no-audit --no-fund
+
+COPY web/ ./web/
+RUN node web/build.cjs
+
 FROM alpine:${ALPINE_VERSION}
 
 # git is needed for the mirrors the conductor reads pipelines and source
@@ -46,7 +62,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
 COPY src/ ./src/
 COPY migrations/ ./migrations/
-COPY assets/ ./assets/
+COPY --from=web /app/web/dist ./web/dist
 
 # Paths point into the volume rather than at the defaults, which are
 # relative to the working directory.

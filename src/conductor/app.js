@@ -24,7 +24,7 @@ import { createRetention } from './retention.js';
 import apiRoutes from './routes/api.js';
 import { ok } from './routes/envelope.js';
 import authRoutes from './auth/index.js';
-import staticRoutes from '../lib/static.js';
+import staticRoutes, { contentSecurityPolicy } from '../lib/static.js';
 
 export async function createServices(cfg, options = {}) {
   ensureStateDirs(cfg);
@@ -91,7 +91,12 @@ export async function buildServer(services, options = {}) {
   await fastify.register(authRoutes, { ...services });
 
   if (options.ui !== false) {
-    await fastify.register(staticRoutes, {});
+    // The application talks to the provider directly, so its origin has to
+    // be reachable from the page.
+    const provider = cfg.auth.oidc.discovery_url ? new URL(cfg.auth.oidc.discovery_url).origin : null;
+    await fastify.register(staticRoutes, {
+      csp: contentSecurityPolicy(provider ? [provider] : []),
+    });
   }
 
   return fastify;

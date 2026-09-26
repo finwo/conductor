@@ -59,14 +59,17 @@ test('a url under the api that matches no route is enveloped too', async () => {
   });
 });
 
-// The handlers are installed on the API plugin alone. Were they installed at
-// the root they would answer for the interface as well, and a mistyped page
-// url would return JSON to somebody holding a browser.
-test('a url outside the api is left to the interface', async () => {
+// The envelope handlers sit on the api plugin alone, or a browser asking
+// for a page would be handed JSON.
+test('a page request outside the api is answered with the application', async () => {
   await withApi({ visibility: 'public' }, async (h) => {
-    const res = await h.app.inject({ method: 'GET', url: '/no/such/page' });
+    const res = await h.app.inject({
+      method: 'GET',
+      url: '/no/such/page',
+      headers: { accept: 'text/html' },
+    });
 
-    assert.ok(!res.body.includes('"ok":false'), 'the interface must not answer in the api envelope');
+    assert.ok(!res.body.includes('"ok":false'), 'a browser must not be handed the api envelope');
   });
 });
 

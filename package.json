@@ -9,6 +9,7 @@
     "dev": "node --watch src/conductor/index.js",
     "worker": "node src/worker/agent.js",
     "migrate": "node src/lib/db/migrate-cli.js",
+    "build": "node web/build.cjs",
     "test": "node --test \"test/**/*.test.js\""
   },
   "dependencies": {
@@ -21,6 +22,11 @@
   "optionalDependencies": {
     "mysql2": "^3.24.4",
     "pg": "^8.16.3"
+  },
+  "devDependencies": {
+    "cpy": "11.1.0",
+    "esbuild": "0.25.10",
+    "mithril": "2.2.15"
   },
   "engines": {
     "node": ">=24.0.0"

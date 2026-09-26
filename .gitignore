@@ -2,6 +2,9 @@
 /node_modules/
 /package-lock.json
 
+# the built application bundle
+/web/dist/
+
 # runtime state: sqlite db, mirrors, log spool, artifact storage
 /data/
 
