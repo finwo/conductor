@@ -71,7 +71,23 @@ export default async function authRoutes(fastify, { cfg, auth, users, refreshTok
     done(null, out);
   });
 
-  const allowed = (uri) => cfg.auth.local.redirect_uris.some((entry) => sameOrigin(uri, entry));
+  const registered = cfg.auth.local.redirect_uris;
+  const anywhere = registered.includes('*');
+
+  function allowed(uri) {
+    if (typeof uri !== 'string' || uri.length === 0) return false;
+    if (anywhere) return /^https?:/.test(uri);
+    return registered.some((entry) => sameOrigin(uri, entry));
+  }
+
+  function refuse(reply, what, given) {
+    return reply.code(400).type('text/plain; charset=utf-8').send(
+      `${what} ${JSON.stringify(given ?? null)} is not registered for this conductor.\n`
+      + `Registered: ${registered.join(', ')}\n`
+      + 'Set auth.local.redirect_uris, or CONDUCTOR_LOCAL_REDIRECT_URIS, to a comma separated\n'
+      + 'list of origins. Use * to allow any, which is for local testing only.\n'
+    );
+  }
 
   function oauthError(reply, status, error, description) {
     return reply.code(status).send({ error, error_description: description });
@@ -83,9 +99,8 @@ export default async function authRoutes(fastify, { cfg, auth, users, refreshTok
     const { client_id: clientId, redirect_uri: redirectUri, response_type: responseType } = req.query;
     const { code_challenge: challenge, code_challenge_method: method, state } = req.query;
 
-    if (typeof redirectUri !== 'string' || !allowed(redirectUri)) {
-      reply.code(400).type('text/plain; charset=utf-8')
-        .send('redirect_uri is not registered for this conductor');
+    if (!allowed(redirectUri)) {
+      refuse(reply, 'redirect_uri', redirectUri);
       return null;
     }
 
@@ -233,10 +248,7 @@ export default async function authRoutes(fastify, { cfg, auth, users, refreshTok
   fastify.get('/auth/logout', async (req, reply) => {
     const target = req.query.post_logout_redirect_uri;
     if (typeof target === 'string' && target.length > 0) {
-      if (!allowed(target)) {
-        return reply.code(400).type('text/plain; charset=utf-8')
-          .send('post_logout_redirect_uri is not registered for this conductor');
-      }
+      if (!allowed(target)) return refuse(reply, 'post_logout_redirect_uri', target);
       return reply.redirect(target, 303);
     }
     return reply.redirect(issuer, 303);

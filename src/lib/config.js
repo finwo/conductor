@@ -207,7 +207,8 @@ function deepFreeze(obj) {
 function redirectUris(value, publicUrl) {
   const given = Array.isArray(value) ? value : String(value ?? '').split(',');
   const uris = given.map((u) => String(u).trim().replace(/\/+$/, '')).filter(Boolean);
-  return uris.length > 0 ? uris : [publicUrl.replace(/\/+$/, '')];
+  if (uris.length === 0) return [publicUrl.replace(/\/+$/, '')];
+  return uris.includes('*') ? ['*'] : uris;
 }
 
 // Reads a 32 byte key given as hex or base64. Returns a Buffer, or null.
@@ -260,6 +261,22 @@ function validate(cfg) {
     }
   } else if (cfg.auth.local.enabled === false) {
     errors.push('auth.local.enabled is false and no auth.oidc.discovery_url is set, so nobody could sign in');
+  }
+
+  // A bare host:port parses with a nonsense scheme and would match nothing.
+  for (const uri of redirectUris(cfg.auth.local.redirect_uris, cfg.server.public_url)) {
+    if (uri === '*') continue;
+    let parsed = null;
+    try {
+      parsed = new URL(uri);
+    } catch { /* reported below */ }
+
+    if (!parsed || !parsed.protocol.startsWith('http')) {
+      errors.push(
+        `auth.local.redirect_uris entry ${JSON.stringify(uri)} must be an absolute http or https URL, `
+        + 'such as https://ci.example.com, or * to allow any origin'
+      );
+    }
   }
 
   try {

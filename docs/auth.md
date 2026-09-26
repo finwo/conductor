@@ -126,11 +126,20 @@ id derived from the code's own id, so redeeming it twice collides on the
 primary key and is refused. Codes are single use without a table of spent
 codes.
 
-`auth.local.redirect_uris` is where the browser may be sent back to. It
-defaults to `server.public_url` and is compared by origin, so an
-application served from somewhere else needs its origin listed. A redirect
-uri that is not listed is refused outright rather than redirected to, or
-this would be an open redirect.
+`auth.local.redirect_uris` is where the browser may be sent back to. It is
+a comma separated list of absolute URLs, compared by origin, and defaults
+to `server.public_url`. A redirect uri that is not listed is refused
+outright rather than redirected to, or this would be an open redirect. The
+refusal names what is registered, because `localhost` and `127.0.0.1` are
+different origins and that is otherwise a long afternoon.
+
+```sh
+CONDUCTOR_LOCAL_REDIRECT_URIS=http://127.0.0.1:8080,http://localhost:8080
+```
+
+An entry without a scheme is refused at startup rather than silently
+matching nothing. `*` allows any http or https origin, which is meant for
+local testing and should not be anywhere near a deployment.
 
 Using an external provider
 --------------------------

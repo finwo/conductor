@@ -108,6 +108,9 @@ export async function startHarness(options = {}) {
       : []),
     'auth:',
     '  session_secret: test-session-secret-not-for-real-use',
+    ...(options.redirectUris
+      ? ['  local:', `    redirect_uris: ${JSON.stringify(options.redirectUris)}`]
+      : []),
     ...(options.oidcDiscoveryUrl
       ? [
         '  oidc:',

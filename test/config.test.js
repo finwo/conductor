@@ -122,6 +122,20 @@ test('redirect uris are split on commas and lose trailing slashes', async () => 
   });
 });
 
+test('a star allows any origin, and absorbs anything listed beside it', async () => {
+  await withEnv({ CONDUCTOR_LOCAL_REDIRECT_URIS: 'https://app.example.com,*' }, () => {
+    assert.deepEqual(loadConfig().auth.local.redirect_uris, ['*']);
+  });
+});
+
+// A bare host:port parses as a URL with a nonsense scheme, so it would
+// silently match nothing rather than failing.
+test('a redirect uri without a scheme is rejected at startup', async () => {
+  await withEnv({ CONDUCTOR_LOCAL_REDIRECT_URIS: '127.0.0.1:18080,localhost:18080' }, () => {
+    assert.throws(() => loadConfig(), /must be an absolute http or https URL/);
+  });
+});
+
 test('token lifetimes are read from the environment as integers', async () => {
   await withEnv({
     CONDUCTOR_ACCESS_TTL: '300',

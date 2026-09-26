@@ -52,8 +52,9 @@ auth:
   # setting it true uses the built-in one even with a provider configured.
   local:
     enabled: null
-    # Where the app is allowed to be sent back to, when it is not served
-    # from server.public_url. Comma separated.
+    # Where the app may be sent back to, when it is not served from
+    # server.public_url. Comma separated absolute URLs, compared by origin.
+    # "*" allows any, which is for local testing only.
     redirect_uris: null
   # Setting a discovery url switches authentication to the provider. Built-in
   # accounts are used when it is unset. Everything else about the provider,

@@ -148,6 +148,63 @@ test('an unregistered redirect uri is refused without redirecting', async () => 
   });
 });
 
+// localhost and 127.0.0.1 are different origins, which is the mistake this
+// message has to be able to explain.
+test('a refused redirect uri names what is registered', async () => {
+  await withConductor(async (c) => {
+    const query = authorizeQuery({ redirect_uri: 'http://localhost:8080/' });
+    const res = await c.app.inject({ method: 'GET', url: `/auth/authorize?${query}` });
+
+    assert.equal(res.statusCode, 400);
+    assert.match(res.body, /localhost:8080/);
+    assert.match(res.body, /Registered: http:\/\/conductor\.test/);
+    assert.match(res.body, /CONDUCTOR_LOCAL_REDIRECT_URIS/);
+  });
+});
+
+test('several origins may be registered at once', async () => {
+  const c = await startHarness({
+    bootstrap: true,
+    publicUrl: PUBLIC_URL,
+    redirectUris: 'http://127.0.0.1:18080,http://localhost:18080',
+  });
+  try {
+    for (const origin of ['http://127.0.0.1:18080', 'http://localhost:18080']) {
+      const query = authorizeQuery({ redirect_uri: `${origin}/` });
+      const res = await c.app.inject({ method: 'GET', url: `/auth/authorize?${query}` });
+      assert.equal(res.statusCode, 200, `${origin} should be registered`);
+    }
+
+    // Anything outside the list is still refused.
+    for (const origin of ['http://127.0.0.1:19999', 'https://evil.example']) {
+      const query = authorizeQuery({ redirect_uri: `${origin}/` });
+      const res = await c.app.inject({ method: 'GET', url: `/auth/authorize?${query}` });
+      assert.equal(res.statusCode, 400, `${origin} should be refused`);
+    }
+  } finally {
+    await c.stop();
+  }
+});
+
+test('a star registration allows any origin but still refuses nonsense', async () => {
+  const c = await startHarness({ bootstrap: true, publicUrl: PUBLIC_URL, redirectUris: '*' });
+  try {
+    for (const uri of ['http://localhost:3000/', 'https://anything.example/callback']) {
+      const query = authorizeQuery({ redirect_uri: uri });
+      const res = await c.app.inject({ method: 'GET', url: `/auth/authorize?${query}` });
+      assert.equal(res.statusCode, 200, `${uri} should be allowed`);
+    }
+
+    for (const uri of ['javascript:alert(1)', 'data:text/html,x', '']) {
+      const query = authorizeQuery({ redirect_uri: uri });
+      const res = await c.app.inject({ method: 'GET', url: `/auth/authorize?${query}` });
+      assert.equal(res.statusCode, 400, `${JSON.stringify(uri)} must still be refused`);
+    }
+  } finally {
+    await c.stop();
+  }
+});
+
 test('a bad request with a good redirect uri comes back as an oauth error', async () => {
   await withConductor(async (c) => {
     for (const [override, error] of [
