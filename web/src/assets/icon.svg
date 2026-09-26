@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <style>:root{color:#1c1f23}@media(prefers-color-scheme:dark){:root{color:#e7e9ea}}</style>
+  <mask id="m" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+    <polygon points="872,318 674,120 350,120 152,318 152,706 350,904 674,904 872,706" fill="#fff"/>
+    <polygon points="760,368.4 623.6,232 400.4,232 264,368.4 264,655.6 400.4,792 623.6,792 760,655.6" fill="#000"/>
+    <rect x="512" y="368.4" width="512" height="287.2" fill="#000"/>
+    <rect x="841.2" y="0" width="512" height="1024" fill="#000"/>
+    <rect x="544" y="456" width="408" height="112" fill="#fff"/>
+  </mask>
+  <rect width="1024" height="1024" fill="currentColor" mask="url(#m)"/>
+</svg>

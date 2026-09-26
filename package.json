@@ -10,6 +10,7 @@
     "worker": "node src/worker/agent.js",
     "migrate": "node src/lib/db/migrate-cli.js",
     "build": "node web/build.cjs",
+    "icon": "node util/icon.js",
     "test": "node --test \"test/**/*.test.js\""
   },
   "dependencies": {

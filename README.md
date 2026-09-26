@@ -251,6 +251,13 @@ container image builds it in its own stage:
 npm run build
 ```
 
+The icon is geometry rather than an image, drawn at each size it ships in.
+Rerun after changing `util/icon.js`, then rebuild:
+
+```sh
+npm run icon
+```
+
 With docker available the suite starts what it needs and cleans up after
 itself:
 

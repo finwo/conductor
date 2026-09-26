@@ -61,9 +61,8 @@ esbuild
   .build(config)
   .then(async () => {
     try { fs.mkdirSync('./dist/assets'); } catch { /* empty */ }
-    // Nothing in src/assets yet, and cpy throws on a glob that matches none.
-    // await cpy(__dirname + '/src/assets/*', __dirname + '/dist/assets');
-    // await cpy(__dirname + '/src/assets/**/*', __dirname + '/dist/assets');
+    // Already rendered at every size by util/icon.js, so only copied here.
+    await cpy(__dirname + '/src/assets/**/*', __dirname + '/dist/assets');
 //     try { fs.mkdirSync('./dist/AppModule'); } catch { /* empty */ }
     fs.copyFileSync(__dirname + `/src/global.css`, config.outdir + `/global.css`);
     for(const name of Object.keys(entryPoints)) {
@@ -82,11 +81,11 @@ esbuild
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=0">
     <title>conductor</title>
-    <!-- <link rel="icon" href="/assets/favicon.ico"> -->
-    <!-- <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png"> -->
-    <!-- <link rel="icon" type="image/png" sizes="192x192" href="/assets/icon-192x192.png"> -->
-    <!-- <link rel="icon" type="image/png" sizes="512x512" href="/assets/icon-512x512.png"> -->
-    <!-- <link rel="manifest" href="/assets/manifest.json"/> -->
+    <link rel="icon" type="image/svg+xml" href="assets/icon.svg">
+    <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32-dark.png" media="(prefers-color-scheme: dark)">
+    <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+    <link rel="manifest" href="assets/manifest.json"/>
     <!-- <link rel="stylesheet" href="/assets/fonts/karla/karla.css"/> -->
     ${styles.map(name => `<link rel="stylesheet" href="${name}"/>`).join('\n    ')}
   </head>
@@ -95,23 +94,6 @@ esbuild
   </body>
 </html>
 `);
-
-    // Build favicons
-    // await new Promise(done => {
-    //   exec(`ffmpeg -n -i ${config.outdir}/assets/icon.png -vf scale=32:32 -sws_flags area ${config.outdir}/assets/favicon.ico`, done);
-    // });
-    // await new Promise(done => {
-    //   exec(`ffmpeg -n -i ${config.outdir}/assets/icon.png -vf scale=180:180 -sws_flags area ${config.outdir}/assets/apple-touch-icon.png`, done);
-    // });
-
-    // Build app icons
-    // const manifest = require(__dirname+'/dist/assets/manifest.json');
-    // for(const format of manifest.icons) {
-    //   const scale = format.sizes.split('x').join(':');
-    //   await new Promise(done => {
-    //     exec(`ffmpeg -n -i ${config.outdir}/assets/icon.png -vf scale=${scale} -sws_flags area ${config.outdir}${format.src}`, done);
-    //   });
-    // }
 
     // const files = await new Promise(done => {
     //   exec(`find ${config.outdir} -type f`, (err,stdout, stderr) => {
