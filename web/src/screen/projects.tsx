@@ -2,7 +2,7 @@
 
 import m from 'mithril';
 import { page, post, Page } from '../util/api';
-import { Empty, Failed, Loading, Pager, When } from '../component/layout';
+import { Empty, Failed, Loading, Pager, When, session } from '../component/layout';
 
 const LIMIT = 25;
 
@@ -78,7 +78,7 @@ export const Projects: m.Component = {
         )
         : null,
 
-      vnode.state.creating
+      !session.user ? null : vnode.state.creating
         ? (
           <form class="panel" onsubmit={create}>
             {field('id', 'id')}

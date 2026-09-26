@@ -2,7 +2,7 @@
 
 import m from 'mithril';
 import * as auth from './util/auth';
-import { get } from './util/api';
+import { ApiError, get } from './util/api';
 import { Chrome, Failed, session } from './component/layout';
 import { Jobs } from './screen/jobs';
 import { Job } from './screen/job';
@@ -44,17 +44,17 @@ async function start() {
     return;
   }
 
-  if (!auth.signedIn()) {
-    await auth.signIn();
-    return;
-  }
-
-  try {
-    session.user = await get('/users/me');
-  } catch (e) {
-    auth.forget();
-    fail(e);
-    return;
+  if (auth.signedIn()) {
+    try {
+      session.user = await get('/users/me');
+    } catch (e) {
+      if ((e as ApiError).status === 401) auth.forget();
+      // Still holding a credential means the conductor itself is unhappy.
+      if (auth.signedIn()) {
+        fail(e);
+        return;
+      }
+    }
   }
 
   m.route.prefix = '#!';

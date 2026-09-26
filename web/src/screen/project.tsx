@@ -2,7 +2,7 @@
 
 import m from 'mithril';
 import { get, page, patch, post, put, del, ApiError } from '../util/api';
-import { Badge, Empty, Failed, Gone, Loading, When } from '../component/layout';
+import { Badge, Empty, Failed, Gone, Loading, When, manages } from '../component/layout';
 import { duration, shortSha } from '../util/format';
 
 // Empty means follow the server default, zero means keep forever. They are
@@ -28,12 +28,9 @@ export const Project: m.Component = {
       try {
         vnode.state.project = await get<any>(`/projects/${id}`);
         vnode.state.jobs = (await page<any>(`/projects/${id}/jobs`, { query: { limit: 10 } })).rows;
-        try {
-          vnode.state.variables = await get<any[]>(`/projects/${id}/variables`);
-        } catch {
-          // Readable without being manageable, which is not an error here.
-          vnode.state.variables = null;
-        }
+        vnode.state.variables = manages(vnode.state.project)
+          ? await get<any[]>(`/projects/${id}/variables`)
+          : null;
         vnode.state.error = null;
       } catch (e) {
         if ((e as ApiError).status === 404) vnode.state.gone = true;
@@ -92,6 +89,8 @@ export const Project: m.Component = {
       </label>
     );
 
+    const mine = manages(project);
+
     return [
       <h1>{project.name}</h1>,
       error ? <Failed error={error} /> : null,
@@ -103,44 +102,52 @@ export const Project: m.Component = {
           <dt>branch</dt><dd class="ref">{project.default_branch}</dd>
           <dt>config</dt><dd class="mono">{project.config_path}</dd>
         </dl>
-        <label>
-          <span>visibility</span>
-          <select value={project.visibility} onchange={(e: any) => save({ visibility: e.target.value })}>
-            <option value="private">private</option>
-            <option value="public">public</option>
-          </select>
-        </label>
-        <label class="check">
-          <input
-            type="checkbox"
-            checked={project.enabled === 1}
-            onchange={(e: any) => save({ enabled: e.target.checked })}
-          />
-          <span>enabled</span>
-        </label>
+        {mine ? (
+          <label>
+            <span>visibility</span>
+            <select value={project.visibility} onchange={(e: any) => save({ visibility: e.target.value })}>
+              <option value="private">private</option>
+              <option value="public">public</option>
+            </select>
+          </label>
+        ) : null}
+        {mine ? (
+          <label class="check">
+            <input
+              type="checkbox"
+              checked={project.enabled === 1}
+              onchange={(e: any) => save({ enabled: e.target.checked })}
+            />
+            <span>enabled</span>
+          </label>
+        ) : null}
       </section>,
 
-      <section class="panel">
-        <h2>retention</h2>
-        <p class="muted">Empty follows the server default. Zero keeps forever.</p>
-        {retention('artifact_keep_jobs', 'artifact jobs')}
-        {retention('artifact_keep_days', 'artifact days')}
-        {retention('log_keep_days', 'log days')}
-      </section>,
+      mine ? (
+        <section class="panel">
+          <h2>retention</h2>
+          <p class="muted">Empty follows the server default. Zero keeps forever.</p>
+          {retention('artifact_keep_jobs', 'artifact jobs')}
+          {retention('artifact_keep_days', 'artifact days')}
+          {retention('log_keep_days', 'log days')}
+        </section>
+      ) : null,
 
-      <section class="panel">
-        <h2>trigger secret</h2>
-        {vnode.state.secret
-          ? (
-            <div class="reveal">
-              <p class="muted">Copy it now. It cannot be shown again.</p>
-              <code class="mono">{vnode.state.secret}</code>
-              <button onclick={() => { vnode.state.secret = null; }}>done</button>
-            </div>
-          )
-          : <p class="muted">{project.has_trigger_secret ? 'A secret is set.' : 'No secret set.'}</p>}
-        <button onclick={rotate}>generate a new secret</button>
-      </section>,
+      mine ? (
+        <section class="panel">
+          <h2>trigger secret</h2>
+          {vnode.state.secret
+            ? (
+              <div class="reveal">
+                <p class="muted">Copy it now. It cannot be shown again.</p>
+                <code class="mono">{vnode.state.secret}</code>
+                <button onclick={() => { vnode.state.secret = null; }}>done</button>
+              </div>
+            )
+            : <p class="muted">{project.has_trigger_secret ? 'A secret is set.' : 'No secret set.'}</p>}
+          <button onclick={rotate}>generate a new secret</button>
+        </section>
+      ) : null,
 
       vnode.state.variables === null ? null : (
         <section class="panel">

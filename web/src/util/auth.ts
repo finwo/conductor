@@ -102,6 +102,15 @@ export async function completeSignIn(): Promise<string | null> {
   return pending.at || null;
 }
 
+export class GrantError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
 async function exchange(doc: Discovery, body: Record<string, string>): Promise<void> {
   const res = await fetch(doc.token_endpoint, {
     method: 'POST',
@@ -114,7 +123,7 @@ async function exchange(doc: Discovery, body: Record<string, string>): Promise<v
       const payload = await res.json();
       detail = payload.error_description || payload.error || detail;
     } catch { /* the status is all there is */ }
-    throw new Error(detail);
+    throw new GrantError(res.status, detail);
   }
 
   const grant = await res.json();
@@ -138,16 +147,28 @@ export async function refresh(): Promise<void> {
     grant_type: 'refresh_token',
     refresh_token: token,
     client_id: doc.client_id,
+  }).catch((e) => {
+    // A refused grant is final, unlike a provider that is merely unwell.
+    if (e instanceof GrantError && e.status < 500) forget();
+    throw e;
   }).finally(() => { refreshing = null; });
 
   return refreshing;
 }
 
 // Renewed a little early, so a request is not sent with a token that dies
-// on the way.
+// on the way. A credential refused along the way leaves the caller
+// anonymous rather than stuck.
 export async function bearer(): Promise<string | null> {
   if (!refreshToken()) return null;
-  if (!accessToken || Date.now() > expiresAt - 10_000) await refresh();
+  if (!accessToken || Date.now() > expiresAt - 10_000) {
+    try {
+      await refresh();
+    } catch (e) {
+      if (refreshToken()) throw e;
+      return null;
+    }
+  }
   return accessToken;
 }
 

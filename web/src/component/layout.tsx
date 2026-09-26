@@ -9,9 +9,18 @@ export const session = {
   user: null as { id: string; username: string; role: string } | null,
 };
 
-const Link = (href: string, label: string) => (
-  <m.route.Link href={href} class={m.route.get().startsWith(href) ? 'active' : ''}>{label}</m.route.Link>
-);
+// Mirrors canManageProject on the server.
+export function manages(project: { owner_id?: string | null } | null): boolean {
+  const user = session.user;
+  if (!user || !project) return false;
+  if (user.role === 'admin') return true;
+  return project.owner_id != null && project.owner_id === user.id;
+}
+
+const Link = (href: string, label: string) => {
+  const at = m.route.get() ?? '';
+  return <m.route.Link href={href} class={at.startsWith(href) ? 'active' : ''}>{label}</m.route.Link>;
+};
 
 export const Chrome: m.Component = {
   view(vnode) {
@@ -21,9 +30,9 @@ export const Chrome: m.Component = {
           <span class="brand">conductor</span>
           {Link('/jobs', 'jobs')}
           {Link('/projects', 'projects')}
-          {Link('/workers', 'workers')}
+          {session.user ? Link('/workers', 'workers') : null}
           {session.user?.role === 'admin' ? Link('/users', 'users') : null}
-          {Link('/sessions', 'sessions')}
+          {session.user ? Link('/sessions', 'sessions') : null}
         </nav>
         <div class="who">
           {session.user

@@ -198,6 +198,56 @@ test('a task reports its artifacts as a page', async () => {
   });
 });
 
+// --- what an anonymous reader sees ---
+
+test('the lists an anonymous reader lands on hold only public rows', async () => {
+  await withApi({ visibility: 'public' }, async (h) => {
+    await h.services.projects.create({
+      id: 'hidden',
+      name: 'Hidden',
+      repo_url: h.repoDir,
+      visibility: 'private',
+      owner_id: null,
+    });
+    const job = data(await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).job_id;
+    await h.waitForJob(job);
+
+    const projects = await h.app.inject({ method: 'GET', url: '/api/v1/projects' });
+    assert.equal(projects.statusCode, 200, projects.body);
+    assert.deepEqual(data(projects).map((p) => p.id), ['demo']);
+
+    const jobs = await h.app.inject({ method: 'GET', url: '/api/v1/jobs' });
+    assert.equal(jobs.statusCode, 200, jobs.body);
+    assert.ok(data(jobs).every((j) => j.project_id === 'demo'));
+    assert.ok(data(jobs).some((j) => j.id === job));
+  });
+});
+
+test('a private project is absent rather than refused', async () => {
+  await withApi({ visibility: 'public' }, async (h) => {
+    await h.services.projects.create({
+      id: 'hidden',
+      name: 'Hidden',
+      repo_url: h.repoDir,
+      visibility: 'private',
+      owner_id: null,
+    });
+
+    const res = await h.app.inject({ method: 'GET', url: '/api/v1/projects/hidden' });
+    assert.equal(res.statusCode, 404, res.body);
+  });
+});
+
+test('the endpoints behind an account say so, rather than emptying out', async () => {
+  await withApi({ visibility: 'public' }, async (h) => {
+    for (const url of ['/api/v1/workers', '/api/v1/users/me', '/api/v1/sessions']) {
+      const res = await h.app.inject({ method: 'GET', url });
+      assert.equal(res.statusCode, 401, `${url}: ${res.body}`);
+      assert.equal(apiError(res).name, 'NotAuthenticated', url);
+    }
+  });
+});
+
 // --- the helpers underneath ---
 
 test('a limit is clamped to the cap, and a missing one defaults', () => {

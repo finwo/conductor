@@ -4,7 +4,7 @@ import m from 'mithril';
 import { get, post, ApiError } from '../util/api';
 import { poll } from '../util/poll';
 import { settled, duration, shortSha, stamp } from '../util/format';
-import { Badge, Failed, Gone, Loading, When } from '../component/layout';
+import { Badge, Failed, Gone, Loading, When, session } from '../component/layout';
 
 type Task = {
   id: string; name: string; base_name: string; state: string; arch: string | null;
@@ -112,12 +112,14 @@ export const Job: m.Component = {
 
       job.error ? <div class="error"><p>{job.error}</p></div> : null,
 
-      <div class="actions">
-        {job.state === 'running'
-          ? <button disabled={vnode.state.busy} onclick={() => act('cancel')}>cancel</button>
-          : null}
-        <button disabled={vnode.state.busy} onclick={() => act('retry')}>retry</button>
-      </div>,
+      session.user ? (
+        <div class="actions">
+          {job.state === 'running'
+            ? <button disabled={vnode.state.busy} onclick={() => act('cancel')}>cancel</button>
+            : null}
+          <button disabled={vnode.state.busy} onclick={() => act('retry')}>retry</button>
+        </div>
+      ) : null,
 
       vnode.state.stages.map((stage: Task[], at: number) => (
         <section class="stage">
