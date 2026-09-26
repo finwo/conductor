@@ -4,241 +4,119 @@ conductor
 A stand-alone CI system. Pipelines live in the repository, tasks run in
 containers, and workers pull work rather than being pushed to.
 
-Summary
--------
+```yaml
+# .conductor.yml
+version: 1
 
-The conductor accepts a push notification, reads `.conductor.yml` at the
-pushed commit, and turns it into a graph of tasks. Workers poll for work,
-advertising the architectures and features they can offer. Any task whose
-dependencies have succeeded is eligible, so a wide graph runs wide.
+defaults:
+  image: debian:bookworm-slim
 
-Workers need no repository credentials: the conductor serves the source tree
-for the exact commit a task was handed. A worker on someone else's hardware
-can therefore build for you without being able to read anything else.
+tasks:
+  test:
+    script: [make test]
 
-Nothing has to be set up before it will run. With no configuration it uses
-sqlite on disk, stores artifacts on the local filesystem, and manages its own
-user accounts. Point it at a database url, an S3 bucket or an OIDC discovery
-url and it uses those instead.
+  version:
+    script:
+      - echo "::set-output tag=$(cat VERSION)::public"
 
-Status
-------
+  build:
+    needs: [version]
+    arch: [x86_64, aarch64]
+    script:
+      - ./build.sh $ARCH ${{ tasks.version.outputs.tag }}
 
-Under construction. Working today:
+  publish:
+    needs: [build, test]
+    script: [./publish.sh]
+```
 
-  - configuration, with sqlite, mysql/tidb and postgres backends
-  - local and S3 compatible object storage
-  - pipeline parsing, matrix and architecture expansion, dependency graphs
-  - triggers, job scheduling, the worker API, live logs, artifacts, reaping
-  - the worker: containerised tasks, services, features, caches, cleanup
-  - accounts, OIDC, project ownership, visibility and project variables
-  - a JSON API, and a single page application that is a client of it
-  - container images for amd64, arm64 and riscv64, published on release
+`arch` and `matrix` fan a task out into one task per combination. A dependent
+sharing a dimension is matched on it; `publish` has no architecture of its
+own, so it waits for every build.
 
-Installation
-------------
+A script hands a value to a later task with `::set-output`, read back as
+`${{ tasks.<task>.outputs.<name> }}`, which is itself a reason to wait for
+that task. Outputs are masked unless marked `::public`, so a token passed
+between tasks stays out of the logs.
 
-With docker:
+Quick start
+-----------
 
 ```sh
 docker compose -f deploy/docker-compose.yml up -d conductor
 ```
 
-Images are published as `finwo/conductor` and `finwo/conductor-worker`
-for amd64, arm64 and riscv64.
-
-From source, requiring node 24 or newer and no native modules:
+Or from source, needing node 24 or newer and no native modules:
 
 ```sh
-npm install
-cp conductor.example.yaml conductor.yaml
-npm start
+npm install && npm start
 ```
 
-On first start an administrator account is created and its generated
-password written to the log once. Open the port and sign in.
-
-`mysql2` and `pg` are optional and only needed when `database.url` points at
-one of those servers.
-
-Configuration
--------------
-
-Every setting has a default, so an empty config file is valid. Values are
-read from defaults, then `conductor.yaml`, then the environment. See
-`conductor.example.yaml` for the annotated list.
-
-Three capabilities switch on when configured and fall back when not:
-
-| Setting                 | Configured           | Not configured        |
-| ----------------------- | -------------------- | --------------------- |
-| `database.url`          | mysql/tidb, postgres | sqlite at a file path |
-| `storage.s3.bucket`     | S3 compatible store  | local filesystem      |
-| `auth.oidc.discovery_url` | that provider      | the built-in login page |
-
-Authentication is an authorization code flow either way, and the
-application cannot tell the two apart: it reads
-`/.well-known/openid-configuration` from this conductor and uses whatever
-that names. Only one provider is ever advertised.
-
-With a provider configured it owns identity. Register conductor as a
-**public** client with PKCE; there is no client secret, because the
-application redeems the code itself and the conductor never does. An
-account is created locally the first time someone signs in, keyed on issuer
-and subject, so they can own projects and workers. The role in the token
-wins on every request, and disabling the local account locks them out
-regardless of what the provider says.
-
-`docs/auth.md` has the whole of it, including the Keycloak setup and the
-audience claim that catches everyone out.
-
-Usage
------
-
-Register a project and mint a worker token:
+Either way an administrator account is created on first start and its
+password written to the log once. Then register a project and a worker:
 
 ```sh
 node src/admin-cli.js project:add demo https://git.example.com/demo.git
 node src/admin-cli.js token:add builder-1
-```
-
-Both print a secret once. Put the trigger secret in the git hook and the
-worker token in the worker configuration.
-
-Install `hooks/post-receive` into the bare repository:
-
-```sh
-cp hooks/post-receive /srv/git/demo.git/hooks/
-chmod +x /srv/git/demo.git/hooks/post-receive
-```
-
-and set `CONDUCTOR_URL`, `CONDUCTOR_PROJECT` and `CONDUCTOR_SECRET` for it.
-GitHub, Gitea and GitLab webhooks are accepted at the same endpoint, so a
-forge can drive it instead.
-
-Then run a worker, on this machine or any other:
-
-```sh
 node src/worker/agent.js --config worker.json
 ```
 
-See [docs/worker.md](docs/worker.md), and `examples/worker.json`.
+Both commands print a secret once. The trigger secret goes in the git hook
+(`hooks/post-receive`), the worker token in the worker configuration.
+GitHub, Gitea and GitLab webhooks are accepted at the same endpoint.
 
-Who sees what
--------------
-
-Everything is private by default. A job is visible to an anonymous visitor
-only when its project is public:
-
-```sh
-curl -X PATCH "$CONDUCTOR/api/v1/projects/demo" \
-  -H "authorization: Bearer $TOKEN" \
-  -d '{"visibility":"public"}'
-```
-
-The setting is copied onto each job as it is created, so turning a project
-private stops exposing future jobs without rewriting past ones. A repository
-cannot set this: a pipeline that could publish its own results would let
-anyone who can land a commit read a private project's logs and artifacts.
-
-Users register their own projects and their own workers. A worker someone
-registers is only ever offered tasks from that person's projects, which is
-what makes it safe to accept build capacity from people you do not
-otherwise trust. A worker created by an administrator with no owner is
-shared, and runs anything.
-
-Administrators see and manage everything, and manage accounts. Deleting an
-account deletes the projects and workers it owned, along with their job
-history: leaving them behind would turn a personal worker into a shared one.
-
-Pipelines
----------
-
-```yaml
-version: 1
-
-defaults:
-  image: debian:bookworm-slim
-  timeout: 30m
-
-tasks:
-  test:
-    script:
-      - make test
-
-  build:
-    arch: [x86_64, aarch64]
-    script:
-      - ./build.sh $ARCH
-    artifacts:
-      paths: [dist/**]
-
-  package:
-    needs: [build]
-    arch: [x86_64, aarch64]
-    matrix:
-      pkg: [musl, busybox]
-    requires: [sign-key]
-    script:
-      - ./package.sh $MATRIX_PKG $ARCH
-
-  publish:
-    needs: [package, test]
-    script:
-      - ./publish.sh
-      - echo "::set-output url=https://dl.example.com/$VERSION::public"
-
-  report:
-    after: [publish]
-    script:
-      - ./report.sh ${{ tasks.publish.outputs.url }}
-```
-
-`arch` and `matrix` fan a task out into one task per combination. A dependency
-that shares a dimension is matched on it, so the aarch64 package waits for
-the aarch64 build rather than for every build, while `publish`, which has no
-architecture of its own, waits for all of them.
-
-`needs` waits for a task to succeed. `after` waits only for it to finish, so
-`report` runs whether the run went well or badly, which is usually when a
-report is worth having.
-
-A script hands a value to a later task by writing `::set-output` on its own
-output, and reads one back with `${{ tasks.<task>.outputs.<name> }}`, which
-is itself a reason to wait for that task. Outputs are masked unless marked
-`::public`, so a token passed between tasks stays out of both logs. A script
-can also write `::set-state success|failed|skipped` to decide its own
-outcome regardless of what it exited with; a skip is not a failure, and what
-came after it still runs.
-
-`requires` names features a worker must offer. A worker holding a signing key
-advertises `sign-key`, and only tasks asking for it are sent there. The key
-stays on the worker and is never known to the conductor.
-
-See [docs/pipeline.md](docs/pipeline.md) for the full reference,
-[docs/worker.md](docs/worker.md) for running a worker,
-[docs/deployment.md](docs/deployment.md) for deploying, and
-[docs/api.md](docs/api.md) for the HTTP API.
-
-Architecture
+How it works
 ------------
 
-```
-git push -> post-receive -> conductor -> task graph in the database
-                                |
-                          worker polls
-                                |
-             source tarball, container, log stream, artifacts
-```
+The conductor reads `.conductor.yml` at the pushed commit and turns it into
+a graph of tasks. Workers poll for work, advertising the architectures and
+features they offer; any task whose dependencies have succeeded is eligible,
+so a wide graph runs wide.
 
-  - `src/conductor` triggers, scheduling, the API, the login provider
-  - `src/worker`    the agent that runs tasks, with no npm dependencies
-  - `src/lib`       configuration, database, storage, pipelines, git
-  - `web`           the application, a mithril client of the API
+Workers need no repository credentials. The conductor serves the source tree
+for the exact commit a task was handed, so someone else's hardware can build
+for you without being able to read anything else.
 
-Queries are written once against all three databases using named `{key}`
-markers, which each driver compiles to its own placeholder syntax.
-Timestamps are epoch milliseconds everywhere.
+Projects and workers have owners. A worker you register is only ever offered
+tasks from your own projects, which is what makes it safe to accept build
+capacity from people you do not otherwise trust.
+
+Configuration
+-------------
+
+Nothing has to be configured; every setting has a default, so an empty file
+is valid. Three capabilities switch on when configured and fall back when
+not:
+
+| Setting                   | Configured           | Not configured          |
+| ------------------------- | -------------------- | ----------------------- |
+| `database.url`            | mysql/tidb, postgres | sqlite at a file path   |
+| `storage.s3.bucket`       | S3 compatible store  | local filesystem        |
+| `auth.oidc.discovery_url` | that provider        | the built-in login page |
+
+See `conductor.example.yaml` for the annotated list.
+
+Documentation
+-------------
+
+| Document                                   | Covers                                |
+| ------------------------------------------ | ------------------------------------- |
+| [pipeline.md](docs/pipeline.md)            | the `.conductor.yml` reference        |
+| [worker.md](docs/worker.md)                | running a worker                      |
+| [auth.md](docs/auth.md)                    | accounts, OIDC, who may see what      |
+| [deployment.md](docs/deployment.md)        | images, state, production settings    |
+| [api.md](docs/api.md)                      | the HTTP API                          |
+| [contributing.md](docs/contributing.md)    | layout, testing, building             |
+
+Status
+------
+
+Under construction, and usable. Working today: sqlite, mysql/tidb and
+postgres; local and S3 compatible storage; pipeline parsing with matrix and
+architecture expansion; triggers, scheduling, live logs, artifacts and
+reaping; containerised tasks with services, features and caches; accounts,
+OIDC, ownership and project variables; a JSON API with a single page
+application in front of it; images for amd64, arm64 and riscv64.
 
 Testing
 -------
@@ -247,53 +125,11 @@ Testing
 npm test
 ```
 
-That is the whole setup. The application is built separately, and the
-container image builds it in its own stage:
+With docker present the suite starts MinIO, an OIDC provider and real task
+containers, and cleans up after itself. See
+[docs/contributing.md](docs/contributing.md).
 
-```sh
-npm run build
-```
-
-The icon is geometry rather than an image, drawn at each size it ships in.
-Rerun after changing `util/icon.js`, then rebuild:
-
-```sh
-npm run icon
-```
-
-With docker available the suite starts what it needs and cleans up after
-itself:
-
-| Dependency          | Used for                                     |
-| ------------------- | -------------------------------------------- |
-| `alpine`            | containers for the worker to actually run tasks in |
-| MinIO               | object storage, artifacts and archived logs  |
-| mock-oauth2-server  | a real OIDC provider to authenticate against |
-
-Nothing is stubbed, because the failures worth catching live in the parts a
-stub would replace. Hand written SigV4 signing is only meaningfully tested
-by a server that rejects a bad signature, and the JWKS path was wrong
-against every provider except the one it was written for.
-
-Without docker those tests skip and the rest still run:
-
-```sh
-CONDUCTOR_TEST_NO_DOCKER=1 npm test
-```
-
-To test against a different object store, such as Garage or AWS, point the
-same tests at it instead of starting MinIO:
-
-```sh
-docker run -d -p 9000:9000 -e MINIO_ROOT_USER=testkey \
-  -e MINIO_ROOT_PASSWORD=testsecret123 quay.io/minio/minio server /data
-
-CONDUCTOR_TEST_S3_ENDPOINT=http://127.0.0.1:9000 \
-CONDUCTOR_TEST_S3_KEY=testkey \
-CONDUCTOR_TEST_S3_SECRET=testsecret123 npm test
-```
-
-LICENSE
+License
 -------
 
 See [LICENSE.md](LICENSE.md).
