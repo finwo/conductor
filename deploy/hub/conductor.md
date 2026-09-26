@@ -10,7 +10,7 @@ Source and issues: https://github.com/finwo/conductor
 | Tag              | What it is                                 |
 | ---------------- | ------------------------------------------ |
 | `latest`         | the most recent release                    |
-| `0.9.0`          | an exact version                           |
+| `0.9.1`          | an exact version                           |
 | `0.9`            | the latest patch of that minor series      |
 | `main`           | the tip of the default branch              |
 
