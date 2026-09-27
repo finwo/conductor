@@ -23,6 +23,7 @@ import { createStorage } from '../src/lib/storage/index.js';
 import { createLogStore } from '../src/lib/log.js';
 import { createRetention } from '../src/conductor/retention.js';
 import { createWorkerTokens } from '../src/lib/workers.js';
+import { createRefreshTokens } from '../src/lib/auth/refresh.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = 1_800_000_000_000;
@@ -156,7 +157,9 @@ for (const dialect of ['postgres', 'mysql']) {
         { then: NOW - 1000 }
       );
 
-      const retention = createRetention({ cfg, db, storage, logs, logger: {} });
+      const retention = createRetention({
+        cfg, db, storage, logs, refreshTokens: createRefreshTokens({ db }), logger: {},
+      });
 
       const first = await retention.sweep({ now: NOW });
 

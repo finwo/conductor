@@ -15,8 +15,7 @@ export function ok(reply, data, pagination = null) {
   return reply.send(body);
 }
 
-// Installed on the API plugin alone, so a mistyped page url still reaches
-// the interface and gets HTML rather than being answered in JSON.
+// API plugin only; page urls must not be answered in JSON.
 export function envelopeFailures(fastify) {
   fastify.setNotFoundHandler((req, reply) => fail(req, reply, new NotFound()));
   fastify.setErrorHandler((e, req, reply) => fail(req, reply, e));

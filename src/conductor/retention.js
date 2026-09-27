@@ -33,7 +33,7 @@ function setting(projectValue, fallback) {
   return projectValue === null || projectValue === undefined ? fallback : projectValue;
 }
 
-export function createRetention({ cfg, db, storage, logs, logger = {} }) {
+export function createRetention({ cfg, db, storage, logs, refreshTokens, logger = {} }) {
   const defaults = cfg.retention;
 
   async function deleteObject(key, what) {
@@ -183,14 +183,9 @@ export function createRetention({ cfg, db, storage, logs, logger = {} }) {
     return res.changes ?? 0;
   }
 
-  // A session nobody can present any more, expired rather than revoked, so
-  // there is a window in which it can still be listed as ended.
+  // A day past expiry, so a session stays listable as ended for a while.
   async function sweepRefreshTokens(now) {
-    const res = await db.run(
-      'DELETE FROM refresh_tokens WHERE expires_at < {cutoff}',
-      { cutoff: now - DAY }
-    );
-    return res.changes ?? 0;
+    return (await refreshTokens.sweep(now - DAY)) ?? 0;
   }
 
   return {

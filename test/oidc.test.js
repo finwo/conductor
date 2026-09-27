@@ -34,10 +34,6 @@ function dockerAvailableSync() {
 const available = dockerAvailableSync();
 const opts = { skip: available ? false : 'docker is not available' };
 
-// These exercised the JSON API, which has been removed. Kept until the
-// suite is rebuilt against the interface.
-const apiGone = { skip: 'the JSON API was removed' };
-
 // One provider for the whole file; each test gets a fresh conductor.
 let oidc = null;
 

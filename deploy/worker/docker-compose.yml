@@ -4,8 +4,8 @@
 # worker needs no inbound connectivity, so this works from behind NAT.
 #
 # Setup:
-#   1. Ask for a worker token, or mint one yourself in the interface under
-#      Workers. It is shown once.
+#   1. Ask for a worker token, or mint one yourself on the Workers page.
+#      It is shown once.
 #   2. Put it in .env next to this file:
 #        CONDUCTOR_URL=https://ci.example.com
 #        CONDUCTOR_WORKER_TOKEN=...

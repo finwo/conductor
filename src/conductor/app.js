@@ -48,7 +48,7 @@ export async function createServices(cfg, options = {}) {
   const auth = createAuth({ cfg, users, logger });
 
   const scheduler = createScheduler({ cfg, db, git, logs, storage, projects, secrets, variables, logger });
-  const retention = createRetention({ cfg, db, storage, logs, logger });
+  const retention = createRetention({ cfg, db, storage, logs, refreshTokens, logger });
 
   // Without a first administrator there is no way into the admin surface.
   // Only done for local accounts; with a provider it owns identity.
