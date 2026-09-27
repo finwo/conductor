@@ -103,6 +103,22 @@ test('a trigger secret does not read a private job', async () => {
   });
 });
 
+test('listing the jobs of a private project does not confirm it exists', async () => {
+  await withHarness({ visibility: 'private', bootstrap: true }, async (h) => {
+    const missing = await h.app.inject({ method: 'GET', url: '/api/v1/projects/nope/jobs' });
+    const hidden = await h.app.inject({ method: 'GET', url: '/api/v1/projects/demo/jobs' });
+
+    assert.equal(hidden.statusCode, 404, hidden.body);
+    assert.equal(apiError(hidden).name, 'UnknownProject');
+    assert.equal(hidden.statusCode, missing.statusCode);
+    assert.equal(apiError(hidden).name, apiError(missing).name);
+
+    const { headers } = await h.login();
+    const seen = await h.app.inject({ method: 'GET', url: '/api/v1/projects/demo/jobs', headers });
+    assert.equal(seen.statusCode, 200, seen.body);
+  });
+});
+
 // --- repo_url ---
 
 test('assertRepoUrl refuses transports that are not a repository', async () => {

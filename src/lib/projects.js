@@ -16,6 +16,7 @@ import { newProjectId, slugify } from './ids.js';
 import { paginateOffset } from './page.js';
 import { parseWorkdir } from './pipeline/parse.js';
 import { Problems } from './pipeline/schema.js';
+import { canManage, canView, visibleSql } from './visibility.js';
 
 export const VISIBILITIES = ['public', 'private'];
 
@@ -81,36 +82,16 @@ export function createProjects({ db, secrets }) {
       return db.all(`SELECT ${COLUMNS} FROM projects ORDER BY name`);
     },
 
-    // What a given user is allowed to see. Administrators see everything;
-    // everyone else sees what they own plus anything public.
-    async listVisible(user) {
-      if (user && user.role === 'admin') return this.list();
-      if (user) {
-        return db.all(
-          `SELECT ${COLUMNS} FROM projects
-            WHERE owner_id = {owner} OR visibility = 'public'
-            ORDER BY name`,
-          { owner: user.id }
-        );
-      }
-      return db.all(`SELECT ${COLUMNS} FROM projects WHERE visibility = 'public' ORDER BY name`);
-    },
-
     async listOwnedBy(ownerId) {
       return db.all(`SELECT ${COLUMNS} FROM projects WHERE owner_id = {owner} ORDER BY name`, { owner: ownerId });
     },
 
-    // One page of what this user may see: everything for an administrator,
-    // their own plus anything public otherwise.
     async pageVisible(user, { offset, limit }) {
-      const admin = user && user.role === 'admin';
-      const mine = user ? "(owner_id = {owner} OR visibility = 'public')" : "visibility = 'public'";
       return paginateOffset(db, {
         select: COLUMNS,
         from: 'projects',
-        where: admin ? '1 = 1' : mine,
+        ...visibleSql(user, { visibility: 'visibility', owner: 'owner_id' }),
         order: 'name',
-        params: user && !admin ? { owner: user.id } : {},
         offset,
         limit,
       });
@@ -242,16 +223,12 @@ export function createProjects({ db, secrets }) {
   };
 }
 
-// An unowned project is administered centrally; an owned one is the
-// owner's, and administrators may act on either.
 export function canManageProject(user, project) {
-  if (!user || !project) return false;
-  if (user.role === 'admin') return true;
-  return project.owner_id !== null && project.owner_id === user.id;
+  if (!project) return false;
+  return canManage(user, project.owner_id);
 }
 
 export function canViewProject(user, project) {
   if (!project) return false;
-  if (project.visibility === 'public') return true;
-  return canManageProject(user, project);
+  return canView(user, { visibility: project.visibility, ownerId: project.owner_id });
 }

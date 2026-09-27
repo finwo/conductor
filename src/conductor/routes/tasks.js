@@ -14,6 +14,7 @@
 
 import { canManageProject } from '../../lib/projects.js';
 import { ok } from './envelope.js';
+import { identifies } from './guard.js';
 import { UnknownTask } from '../../lib/errors.js';
 import { outputAad } from '../../lib/outputs.js';
 import { limitOf, offsetOfQuery, pageBlock, paginateOffset } from '../../lib/page.js';
@@ -36,14 +37,7 @@ export default async function taskRoutes(fastify, { cfg, db, logs, storage, proj
       FROM tasks t
       JOIN jobs j ON j.id = t.job_id`;
 
-  async function currentUser(req) {
-    if (!auth) return null;
-    try {
-      return await auth.identify(req);
-    } catch {
-      return null;
-    }
-  }
+  identifies(fastify, auth);
 
   // Names always, values only where the task said they could be shown.
   function readOutput(row) {
@@ -108,7 +102,7 @@ export default async function taskRoutes(fastify, { cfg, db, logs, storage, proj
 
     if (row.visibility !== 'public') {
       const project = await projects.get(row.project_id);
-      if (!canManageProject(await currentUser(req), project)) throw new UnknownTask();
+      if (!canManageProject(req.user, project)) throw new UnknownTask();
     }
     return row;
   }

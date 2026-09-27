@@ -10,10 +10,11 @@
 // Read:   session only. A trigger secret is not a read credential.
 
 import { SHA_PATTERN } from '../../lib/git.js';
-import { canManageProject } from '../../lib/projects.js';
+import { canManageProject, canViewProject } from '../../lib/projects.js';
 import { verifySignature } from '../../lib/signature.js';
+import { visibleSql } from '../../lib/visibility.js';
 import { ok } from './envelope.js';
-import { visible } from './guard.js';
+import { identifies } from './guard.js';
 import {
   Conflict, InvalidSha, InvalidSignature, MalformedJson, NoCommitInPayload,
   NotPermitted, ProjectDisabled, ShaRequired, UnknownJob, UnknownProject,
@@ -24,7 +25,7 @@ const ZERO_SHA = '0'.repeat(40);
 
 export default async function jobRoutes(fastify, { cfg, auth, db, projects, scheduler }) {
   const base = cfg.server.public_url.replace(/\/+$/, '');
-  const identify = (req) => auth.identify(req).catch(() => null);
+  identifies(fastify, auth);
 
   // A signature over the body, or a session that may manage the project.
   async function authorizedProject(req) {
@@ -35,7 +36,7 @@ export default async function jobRoutes(fastify, { cfg, auth, db, projects, sche
     const secret = projects.triggerSecret(project);
     if (secret && verifySignature(req, secret)) return project;
 
-    if (canManageProject(await identify(req), project)) return project;
+    if (canManageProject(req.user, project)) return project;
 
     throw new InvalidSignature();
   }
@@ -98,12 +99,9 @@ export default async function jobRoutes(fastify, { cfg, auth, db, projects, sche
     j.created_at, j.started_at, j.finished_at`;
 
   async function listJobs(req, reply, { project = null } = {}) {
-    const user = await identify(req);
-    const scope = project && canManageProject(user, project)
-      ? { sql: '1 = 1', params: {} }
-      : visible(user, { project: 'p', job: 'j' });
+    const scope = visibleSql(req.user, { visibility: 'j.visibility', owner: 'p.owner_id' });
 
-    const filters = [scope.sql];
+    const filters = [scope.where];
     const params = { ...scope.params };
     if (project) {
       filters.push('j.project_id = {project}');
@@ -129,9 +127,11 @@ export default async function jobRoutes(fastify, { cfg, auth, db, projects, sche
 
   fastify.get('/jobs', async (req, reply) => listJobs(req, reply));
 
+  // Naming a project you may not see answers the same as naming one that is
+  // not there, or the list would confirm it exists.
   fastify.get('/projects/:project/jobs', async (req, reply) => {
     const project = await projects.get(req.params.project);
-    if (!project) throw new UnknownProject();
+    if (!canViewProject(req.user, project)) throw new UnknownProject();
     return listJobs(req, reply, { project });
   });
 
@@ -144,7 +144,7 @@ export default async function jobRoutes(fastify, { cfg, auth, db, projects, sche
 
   // Missing rather than refused, so an id cannot be probed by status code.
   async function readableJob(req) {
-    const user = await identify(req);
+    const user = req.user;
     const job = await db.get(
       `SELECT ${JOB_COLUMNS} FROM jobs j WHERE j.id = {id}`,
       { id: req.params.job }

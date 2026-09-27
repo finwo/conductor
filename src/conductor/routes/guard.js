@@ -19,16 +19,3 @@ export function requireAdmin(req) {
   if (user.role !== 'admin') throw new NotPermitted();
   return user;
 }
-
-// In SQL rather than in javascript, so a count and its rows cannot disagree.
-export function visible(user, { project = 'p', job = null } = {}) {
-  const column = job ? `${job}.visibility` : `${project}.visibility`;
-  if (user?.role === 'admin') return { sql: '1 = 1', params: {} };
-  if (user) {
-    return {
-      sql: `(${column} = 'public' OR ${project}.owner_id = {viewerId})`,
-      params: { viewerId: user.id },
-    };
-  }
-  return { sql: `${column} = 'public'`, params: {} };
-}
