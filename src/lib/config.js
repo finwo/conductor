@@ -110,7 +110,7 @@ const DEFAULTS = {
     heartbeat_timeout: 120,
     reap_interval: 30,
     default_task_timeout: 3600,
-    max_attempts: 3,
+    max_attempts: 1,
   },
 };
 

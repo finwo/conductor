@@ -164,7 +164,7 @@ export function createScheduler({
       const pipeline = compilePipeline(found.text, {
         source: found.path,
         defaultTimeout: cfg.scheduler.default_task_timeout,
-        defaultAttempts: 1,
+        defaultAttempts: cfg.scheduler.max_attempts,
         ref: ref ?? '',
       });
 
