@@ -315,7 +315,7 @@ test('worker ownership follows the OIDC identity', opts, async () => {
       method: 'POST',
       url: '/api/v1/projects',
       headers: json(bob),
-      payload: JSON.stringify({ id: 'bob-proj', repo_url: h.repoDir }),
+      payload: JSON.stringify({ id: 'bob-proj', repo_url: 'https://git.example.com/bob.git' }),
     });
     assert.equal(project.statusCode, 201, project.body);
 

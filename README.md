@@ -123,10 +123,12 @@ Testing
 
 ```sh
 npm test
+npm run build
 ```
 
 With docker present the suite starts MinIO, an OIDC provider and real task
-containers, and cleans up after itself. See
+containers, and cleans up after itself. `npm run build` compiles the
+frontend, which the test suite does not cover. See
 [docs/contributing.md](docs/contributing.md).
 
 License
