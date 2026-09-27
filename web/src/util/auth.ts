@@ -17,6 +17,10 @@ export type Discovery = {
   scopes?: string;
 };
 
+export const session = {
+  user: null as { id: string; username: string; role: string } | null,
+};
+
 let discovery: Discovery | null = null;
 let accessToken: string | null = null;
 let expiresAt = 0;
@@ -175,6 +179,7 @@ export async function bearer(): Promise<string | null> {
 export function forget(): void {
   accessToken = null;
   expiresAt = 0;
+  session.user = null;
   localStorage.removeItem(STORE);
   localStorage.removeItem(IDENTITY);
 }

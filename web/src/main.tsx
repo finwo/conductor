@@ -14,8 +14,11 @@ import { Users, Sessions } from './screen/users';
 
 const root = document.body;
 
-function wrap(screen: m.Component): m.RouteResolver {
-  return { render: () => m(Chrome, m(screen)) };
+function wrap(screen: m.Component, needsUser = false): m.RouteResolver {
+  return {
+    onmatch: () => (needsUser && !session.user ? auth.signIn() : undefined),
+    render: () => m(Chrome, m(screen)),
+  };
 }
 
 const routes: m.RouteDefs = {
@@ -25,10 +28,10 @@ const routes: m.RouteDefs = {
   '/projects': wrap(Projects),
   '/projects/:project': wrap(Project),
   '/projects/:project/jobs': wrap(Jobs),
-  '/workers': wrap(Workers),
-  '/workers/:worker': wrap(Worker),
-  '/users': wrap(Users),
-  '/sessions': wrap(Sessions),
+  '/workers': wrap(Workers, true),
+  '/workers/:worker': wrap(Worker, true),
+  '/users': wrap(Users, true),
+  '/sessions': wrap(Sessions, true),
 };
 
 function fail(error: unknown) {
@@ -60,6 +63,8 @@ async function start() {
   m.route.prefix = '#!';
   m.route(root, '/jobs', routes);
   if (resume) m.route.set(resume.replace(/^#!/, ''));
+
+  setInterval(() => { if (!document.hidden) m.redraw(); }, 1000);
 }
 
 start();

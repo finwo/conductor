@@ -5,13 +5,11 @@ import * as auth from '../util/auth';
 import { ApiError } from '../util/api';
 import { ago, stamp } from '../util/format';
 
-export const session = {
-  user: null as { id: string; username: string; role: string } | null,
-};
+export { session } from '../util/auth';
 
 // Mirrors canManageProject on the server.
 export function manages(project: { owner_id?: string | null } | null): boolean {
-  const user = session.user;
+  const user = auth.session.user;
   if (!user || !project) return false;
   if (user.role === 'admin') return true;
   return project.owner_id != null && project.owner_id === user.id;
@@ -30,14 +28,14 @@ export const Chrome: m.Component = {
           <span class="brand">conductor</span>
           {Link('/jobs', 'jobs')}
           {Link('/projects', 'projects')}
-          {session.user ? Link('/workers', 'workers') : null}
-          {session.user?.role === 'admin' ? Link('/users', 'users') : null}
-          {session.user ? Link('/sessions', 'sessions') : null}
+          {auth.session.user ? Link('/workers', 'workers') : null}
+          {auth.session.user?.role === 'admin' ? Link('/users', 'users') : null}
+          {auth.session.user ? Link('/sessions', 'sessions') : null}
         </nav>
         <div class="who">
-          {session.user
+          {auth.session.user
             ? [
-              <span>{session.user.username}</span>,
+              <span>{auth.session.user.username}</span>,
               <button class="link" onclick={() => auth.signOut()}>sign out</button>,
             ]
             : <button class="link" onclick={() => auth.signIn()}>sign in</button>}

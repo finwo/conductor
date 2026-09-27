@@ -43,20 +43,21 @@ async function send(url: string, options: Options, token: string | null): Promis
   });
 }
 
+async function authorized(url: string, options: Options): Promise<Response> {
+  const res = await send(url, options, await bearer());
+  if (res.status !== 401 || !signedIn()) return res;
+
+  try {
+    await refresh();
+  } catch {
+    forget();
+  }
+  return send(url, options, await bearer());
+}
+
 export async function request<T>(path: string, options: Options = {}): Promise<T> {
   const url = path.startsWith('http') ? path : urlFor(path, options.query);
-  let res = await send(url, options, await bearer());
-
-  // One retry: the token may have been accepted a moment ago and expired
-  // since, and that is not worth showing anyone.
-  if (res.status === 401 && signedIn()) {
-    try {
-      await refresh();
-      res = await send(url, options, await bearer());
-    } catch {
-      forget();
-    }
-  }
+  const res = await authorized(url, options);
 
   if (res.status === 204) return undefined as T;
 
@@ -74,16 +75,7 @@ export async function request<T>(path: string, options: Options = {}): Promise<T
 // The envelope's pagination, flattened onto the rows it describes.
 export async function page<T>(path: string, options: Options = {}): Promise<Page<T>> {
   const url = path.startsWith('http') ? path : urlFor(path, options.query);
-  let res = await send(url, options, await bearer());
-
-  if (res.status === 401 && signedIn()) {
-    try {
-      await refresh();
-      res = await send(url, options, await bearer());
-    } catch {
-      forget();
-    }
-  }
+  const res = await authorized(url, options);
 
   const body = await res.json().catch(() => ({}));
   if (!res.ok || body.ok === false) throw new ApiError(res.status, body.error ?? {});
