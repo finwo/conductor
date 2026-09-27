@@ -274,6 +274,38 @@ test('refreshing returns a new access token and keeps the refresh token', async 
   });
 });
 
+async function refreshedDeadline(sliding) {
+  const c = await startHarness({
+    bootstrap: true,
+    publicUrl: PUBLIC_URL,
+    refreshSliding: sliding,
+    refreshTtl: 3600,
+  });
+  try {
+    const grant = await c.login();
+    const before = await c.services.refreshTokens.claim(grant.refresh_token);
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const res = await c.token({ grant_type: 'refresh_token', refresh_token: grant.refresh_token });
+    assert.equal(res.statusCode, 200, res.body);
+
+    const after = await c.services.refreshTokens.claim(grant.refresh_token);
+    return { before: before.expires_at, after: after.expires_at };
+  } finally {
+    await c.stop();
+  }
+}
+
+test('a sliding session has its deadline extended by refreshing', async () => {
+  const { before, after } = await refreshedDeadline(true);
+  assert.ok(after > before, `${after} should be past ${before}`);
+});
+
+test('an absolute session keeps its deadline when refreshed', async () => {
+  const { before, after } = await refreshedDeadline(false);
+  assert.equal(after, before);
+});
+
 test('an unknown grant type or refresh token is refused', async () => {
   await withConductor(async (c) => {
     const bad = await c.token({ grant_type: 'password', username: 'admin', password: 'bootstrap-password' });

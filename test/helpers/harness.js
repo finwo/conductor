@@ -108,6 +108,9 @@ export async function startHarness(options = {}) {
       : []),
     'auth:',
     '  session_secret: test-session-secret-not-for-real-use',
+    ...(options.accessTtl ? [`  access_ttl: ${options.accessTtl}`] : []),
+    ...(options.refreshTtl ? [`  refresh_ttl: ${options.refreshTtl}`] : []),
+    ...(options.refreshSliding === undefined ? [] : [`  refresh_sliding: ${options.refreshSliding}`]),
     ...(options.redirectUris
       ? ['  local:', `    redirect_uris: ${JSON.stringify(options.redirectUris)}`]
       : []),
