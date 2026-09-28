@@ -2,7 +2,7 @@
 
 import { ok } from './envelope.js';
 import { identifies, requireUser, requireAdmin } from './guard.js';
-import { BadRequest, Conflict, NotFound, NotPermitted } from '../../lib/errors.js';
+import { BadRequest, Conflict, InternalError, NotFound, NotPermitted } from '../../lib/errors.js';
 import { canManageProject, canViewProject, VISIBILITIES } from '../../lib/projects.js';
 import { limitOf, offsetOfQuery, pageBlock } from '../../lib/page.js';
 import { newToken } from '../../lib/ids.js';
@@ -14,7 +14,7 @@ function present(project) {
   return { ...rest, has_trigger_secret: secret !== null };
 }
 
-export default async function projectRoutes(fastify, { cfg, auth, projects, variables }) {
+export default async function projectRoutes(fastify, { cfg, auth, projects, variables, logger = console }) {
   const base = cfg.server.public_url.replace(/\/+$/, '');
   identifies(fastify, auth);
 
@@ -107,6 +107,19 @@ export default async function projectRoutes(fastify, { cfg, auth, projects, vari
   fastify.get('/projects/:id/variables', async (req, reply) => {
     const project = await manageable(req);
     return ok(reply, await variables.list(project.id));
+  });
+
+  fastify.get('/projects/:id/variables/:name/value', async (req, reply) => {
+    const project = await manageable(req);
+    let revealed;
+    try {
+      revealed = await variables.reveal(project.id, req.params.name);
+    } catch (e) {
+      throw new InternalError(e.message);
+    }
+    if (!revealed) throw new NotFound();
+    logger.info?.(`${req.user.username} read variable ${revealed.name} of project ${project.id}`);
+    return ok(reply, revealed);
   });
 
   fastify.put('/projects/:id/variables/:name', async (req, reply) => {

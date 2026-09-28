@@ -302,13 +302,20 @@ forever:
 PATCH /api/v1/projects/:id   { "artifact_keep_days": null, "log_keep_days": 0 }
 ```
 
-Variables are per project, and a value is never read back:
+Variables are per project. The listing carries names and flags only; a value
+comes back one at a time, from its own endpoint, and every read is logged:
 
 ```
 GET    /api/v1/projects/:id/variables
+GET    /api/v1/projects/:id/variables/:name/value
 PUT    /api/v1/projects/:id/variables/:name   { "value": "...", "masked": true }
 DELETE /api/v1/projects/:id/variables/:name
 ```
+
+All four are restricted to the project's owner and to administrators, so
+being able to see a public project does not mean being able to read its
+credentials. `masked` decides whether a value is redacted from job logs; it
+does not decide who may read it.
 
 A worker's machines and its recent tasks hang off it:
 

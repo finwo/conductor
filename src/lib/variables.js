@@ -40,6 +40,18 @@ export function createVariables({ db, secrets, ttl = 30000 }) {
       }));
     },
 
+    // Unlike resolve, a value that cannot be opened throws rather than
+    // reading as absent, or a rotated key would look like a missing variable.
+    async reveal(projectId, name) {
+      const row = await db.get(
+        `SELECT project_id, name, value, masked FROM project_variables
+          WHERE project_id = {project} AND name = {name}`,
+        { project: projectId, name }
+      );
+      if (!row) return null;
+      return { name: row.name, masked: row.masked === 1, value: open(row) };
+    },
+
     async set(projectId, name, value, { masked = true } = {}) {
       if (!NAME_PATTERN.test(String(name))) {
         throw new Error(`variable name ${JSON.stringify(name)} is not a valid environment variable name`);

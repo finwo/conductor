@@ -296,6 +296,11 @@ shows as `[masked]` in the UI. Both kinds are encrypted at rest, exactly as
 project variables are; `public` decides what may be shown again, not how it
 is stored.
 
+Masking is stricter here than it is for a project variable. A commit decides
+what an output says, so a masked output is not readable back by anyone. A
+project variable is set by the people who own the project, and they can read
+it back.
+
 Values are stored per task, and a value is only reachable through a reference
 to the task that produced it, so two tasks may use the same output name
 without colliding. A reference may be read anywhere `${{ }}` works except

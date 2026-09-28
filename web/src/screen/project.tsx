@@ -23,11 +23,15 @@ export const Project: m.Component = {
     vnode.state.gone = false;
     vnode.state.secret = null;
     vnode.state.newVar = { name: '', value: '', masked: true };
+    vnode.state.values = {};
+    vnode.state.shown = {};
 
     vnode.state.load = async () => {
       try {
         vnode.state.project = await get<any>(`/projects/${id}`);
         vnode.state.jobs = (await page<any>(`/projects/${id}/jobs`, { query: { limit: 10 } })).rows;
+        vnode.state.values = {};
+        vnode.state.shown = {};
         vnode.state.variables = manages(vnode.state.project)
           ? await get<any[]>(`/projects/${id}/variables`)
           : null;
@@ -73,6 +77,39 @@ export const Project: m.Component = {
         await vnode.state.load();
       } catch (err) {
         vnode.state.error = err;
+      }
+    };
+
+    const valueOf = async (name: string): Promise<string> => {
+      if (vnode.state.values[name] === undefined) {
+        const got = await get<any>(`/projects/${id}/variables/${encodeURIComponent(name)}/value`);
+        vnode.state.values[name] = got.value;
+      }
+      return vnode.state.values[name];
+    };
+
+    const toggleValue = async (name: string) => {
+      if (vnode.state.shown[name]) {
+        vnode.state.shown[name] = false;
+        return;
+      }
+      try {
+        await valueOf(name);
+        vnode.state.shown[name] = true;
+      } catch (e) {
+        vnode.state.error = e;
+      }
+    };
+
+    const copyValue = async (name: string) => {
+      try {
+        const value = await valueOf(name);
+        // Undefined outside a secure context, so show the value instead of
+        // failing on a plain http deployment.
+        if (!navigator.clipboard) vnode.state.shown[name] = true;
+        else await navigator.clipboard.writeText(value);
+      } catch (e) {
+        vnode.state.error = e;
       }
     };
 
@@ -154,12 +191,27 @@ export const Project: m.Component = {
           <h2>variables</h2>
           {vnode.state.variables.length === 0 ? <Empty what="variables" /> : (
             <table>
+              <thead>
+                <tr>
+                  <th>name</th>
+                  <th>in logs</th>
+                  <th>value</th>
+                  <th />
+                </tr>
+              </thead>
               <tbody>
                 {vnode.state.variables.map((v: any) => (
                   <tr key={v.name}>
                     <td class="mono">{v.name}</td>
                     <td>{v.masked ? 'masked' : 'visible'}</td>
+                    <td class="mono">
+                      {vnode.state.shown[v.name] ? vnode.state.values[v.name] : '***'}
+                    </td>
                     <td>
+                      <button class="link" onclick={() => toggleValue(v.name)}>
+                        {vnode.state.shown[v.name] ? 'hide' : 'view'}
+                      </button>
+                      <button class="link" onclick={() => copyValue(v.name)}>copy</button>
                       <button
                         class="link"
                         onclick={async () => {

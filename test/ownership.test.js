@@ -216,3 +216,95 @@ test('a worker token does not outlive its owner and become shared capacity', asy
     assert.equal(apiError(claimed).name, 'InvalidWorkerToken');
   });
 });
+
+const valueUrl = (project, name) => `/api/v1/projects/${project}/variables/${name}/value`;
+
+test('an owner reads back a variable whether or not it is masked in logs', async () => {
+  await withHarness({}, async (h) => {
+    const { headers: admin } = await h.login();
+    const alice = await addUser(h, admin, 'alice');
+    await h.services.projects.setOwner('demo', alice.user.id);
+
+    await h.services.variables.set('demo', 'HIDDEN', 'hidden-value', { masked: true });
+    await h.services.variables.set('demo', 'SHOWN', 'shown-value', { masked: false });
+
+    const hidden = await h.app.inject({ url: valueUrl('demo', 'HIDDEN'), headers: alice.headers });
+    assert.equal(hidden.statusCode, 200, hidden.body);
+    assert.equal(data(hidden).value, 'hidden-value');
+    assert.equal(data(hidden).masked, true);
+
+    const shown = await h.app.inject({ url: valueUrl('demo', 'SHOWN'), headers: alice.headers });
+    assert.equal(data(shown).value, 'shown-value');
+    assert.equal(data(shown).masked, false);
+  });
+});
+
+test('the listing still withholds what the value endpoint hands over', async () => {
+  await withHarness({}, async (h) => {
+    const { headers: admin } = await h.login();
+    await h.services.variables.set('demo', 'TOKEN', 'listing-secret-value', { masked: true });
+
+    const listed = await h.app.inject({ url: '/api/v1/projects/demo/variables', headers: admin });
+    assert.ok(!listed.body.includes('listing-secret-value'));
+    assert.equal(data(listed)[0].name, 'TOKEN');
+
+    const revealed = await h.app.inject({ url: valueUrl('demo', 'TOKEN'), headers: admin });
+    assert.equal(data(revealed).value, 'listing-secret-value');
+  });
+});
+
+test('an administrator reads a variable of a project they do not own', async () => {
+  await withHarness({}, async (h) => {
+    const { headers: admin } = await h.login();
+    const alice = await addUser(h, admin, 'alice');
+    await h.services.projects.setOwner('demo', alice.user.id);
+    await h.services.variables.set('demo', 'TOKEN', 'admin-readable-value');
+
+    const res = await h.app.inject({ url: valueUrl('demo', 'TOKEN'), headers: admin });
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(data(res).value, 'admin-readable-value');
+  });
+});
+
+test('a public project does not hand its variables to every signed in user', async () => {
+  await withHarness({ visibility: 'public' }, async (h) => {
+    const { headers: admin } = await h.login();
+    const alice = await addUser(h, admin, 'alice');
+    const bob = await addUser(h, admin, 'bob');
+    await h.services.projects.setOwner('demo', alice.user.id);
+    await h.services.variables.set('demo', 'TOKEN', 'not-for-bob-value');
+
+    const refused = await h.app.inject({ url: valueUrl('demo', 'TOKEN'), headers: bob.headers });
+    assert.equal(refused.statusCode, 403, refused.body);
+    assert.equal(apiError(refused).name, 'NotPermitted');
+    assert.ok(!refused.body.includes('not-for-bob-value'));
+
+    const anonymous = await h.app.inject({ url: valueUrl('demo', 'TOKEN') });
+    assert.equal(anonymous.statusCode, 403, anonymous.body);
+    assert.ok(!anonymous.body.includes('not-for-bob-value'));
+  });
+});
+
+test('a private project answers a variable read as though it were not there', async () => {
+  await withHarness({ visibility: 'private' }, async (h) => {
+    const { headers: admin } = await h.login();
+    const alice = await addUser(h, admin, 'alice');
+    const bob = await addUser(h, admin, 'bob');
+    await h.services.projects.setOwner('demo', alice.user.id);
+    await h.services.variables.set('demo', 'TOKEN', 'not-for-bob-value');
+
+    const stranger = await h.app.inject({ url: valueUrl('demo', 'TOKEN'), headers: bob.headers });
+    assert.equal(stranger.statusCode, 404, stranger.body);
+
+    const anonymous = await h.app.inject({ url: valueUrl('demo', 'TOKEN') });
+    assert.equal(anonymous.statusCode, 404, anonymous.body);
+  });
+});
+
+test('reading a variable that was never set is a miss, not an empty value', async () => {
+  await withHarness({}, async (h) => {
+    const { headers: admin } = await h.login();
+    const res = await h.app.inject({ url: valueUrl('demo', 'ABSENT'), headers: admin });
+    assert.equal(res.statusCode, 404, res.body);
+  });
+});

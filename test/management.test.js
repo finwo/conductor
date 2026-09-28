@@ -155,6 +155,33 @@ test('a variable is encrypted at rest and bound to its project and name', async 
   });
 });
 
+test('a value that will not open is reported as broken rather than absent', async () => {
+  await withAdmin({}, async (h, admin) => {
+    await h.app.inject({
+      method: 'PUT',
+      url: '/api/v1/projects/demo/variables/TOKEN',
+      headers: json(admin),
+      payload: JSON.stringify({ value: 'unopenable-secret-value' }),
+    });
+
+    const row = await h.services.db.get(
+      'SELECT value FROM project_variables WHERE project_id = {p} AND name = {n}',
+      { p: 'demo', n: 'TOKEN' }
+    );
+    await h.services.db.run(
+      `INSERT INTO project_variables (project_id, name, value, masked, created_at)
+       VALUES ({p}, {n}, {v}, 1, {t})`,
+      { p: 'demo', n: 'MOVED', v: row.value, t: Date.now() }
+    );
+
+    const res = await h.app.inject({
+      url: '/api/v1/projects/demo/variables/MOVED/value', headers: admin,
+    });
+    assert.equal(res.statusCode, 500, res.body);
+    assert.ok(!res.body.includes('unopenable-secret-value'));
+  });
+});
+
 test('a pipeline setting wins over a project variable of the same name', async () => {
   const pipeline = `
 version: 1
