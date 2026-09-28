@@ -114,17 +114,19 @@ export const Users: m.Component = {
               <td><When at={u.last_login_at} /></td>
               <td>
                 {admin && u.id !== session.user?.id
-                  ? [
-                    <button class="link" onclick={() => change(u.id, { disabled: !u.disabled })}>
-                      {u.disabled ? 'enable' : 'disable'}
-                    </button>,
-                    <button
-                      class="link"
-                      onclick={async () => { await del(`/users/${u.id}`); await vnode.state.load(); }}
-                    >
-                      remove
-                    </button>,
-                  ]
+                  ? (
+                    <div class="rowactions">
+                      <button class="quiet" onclick={() => change(u.id, { disabled: !u.disabled })}>
+                        {u.disabled ? 'enable' : 'disable'}
+                      </button>
+                      <button
+                        class="quiet"
+                        onclick={async () => { await del(`/users/${u.id}`); await vnode.state.load(); }}
+                      >
+                        remove
+                      </button>
+                    </div>
+                  )
                   : null}
               </td>
             </tr>
@@ -185,7 +187,7 @@ export const Sessions: m.Component = {
                 <td><When at={s.expires_at} /></td>
                 <td>
                   <button
-                    class="link"
+                    class="quiet"
                     onclick={async () => { await del(`/sessions/${s.id}`); await vnode.state.load(); }}
                   >
                     revoke

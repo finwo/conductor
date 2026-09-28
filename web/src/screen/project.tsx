@@ -208,19 +208,21 @@ export const Project: m.Component = {
                       {vnode.state.shown[v.name] ? vnode.state.values[v.name] : '***'}
                     </td>
                     <td>
-                      <button class="link" onclick={() => toggleValue(v.name)}>
-                        {vnode.state.shown[v.name] ? 'hide' : 'view'}
-                      </button>
-                      <button class="link" onclick={() => copyValue(v.name)}>copy</button>
-                      <button
-                        class="link"
-                        onclick={async () => {
-                          await del(`/projects/${id}/variables/${encodeURIComponent(v.name)}`);
-                          await vnode.state.load();
-                        }}
-                      >
-                        remove
-                      </button>
+                      <div class="rowactions">
+                        <button class="quiet" onclick={() => toggleValue(v.name)}>
+                          {vnode.state.shown[v.name] ? 'hide' : 'view'}
+                        </button>
+                        <button class="quiet" onclick={() => copyValue(v.name)}>copy</button>
+                        <button
+                          class="quiet"
+                          onclick={async () => {
+                            await del(`/projects/${id}/variables/${encodeURIComponent(v.name)}`);
+                            await vnode.state.load();
+                          }}
+                        >
+                          remove
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

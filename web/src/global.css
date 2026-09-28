@@ -165,6 +165,17 @@ button.link {
   text-decoration: underline;
 }
 
+button.quiet {
+  padding: 0.3rem 0.7rem;
+  background: none;
+  color: var(--fg);
+  border: 1px solid var(--line);
+}
+
+button.quiet:hover { border-color: var(--accent); color: var(--accent); }
+
+.rowactions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+
 .actions { display: flex; align-items: center; gap: 0.75rem; margin: 1rem 0; }
 
 .pager { display: flex; align-items: center; gap: 1rem; margin-top: 1rem; color: var(--muted); }
