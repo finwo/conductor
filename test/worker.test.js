@@ -9,11 +9,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { EventEmitter } from 'node:events';
+import { PassThrough, Readable } from 'node:stream';
+import { gzipSync } from 'node:zlib';
+import { createServer } from 'node:http';
 import { loadWorkerConfig, featureNames } from '../src/worker/config.js';
 import { buildScript, shellQuote } from '../src/worker/script.js';
 import { containerName, createRuntime } from '../src/worker/docker.js';
 import { createLogStream } from '../src/worker/logstream.js';
-import { resolveFeatures, patternPrefix, copyOutPaths } from '../src/worker/task.js';
+import { resolveFeatures, patternPrefix, copyOutPaths, runTask } from '../src/worker/task.js';
 import { collectArtifacts, shouldCollect } from '../src/worker/artifacts.js';
 
 async function tempDir(prefix = 'conductor-worker-') {
@@ -459,4 +463,143 @@ test('a failing conductor does not break the task', async () => {
   log.write('some output\n');
   await log.close();
   assert.match(log.error.message, /unreachable/);
+});
+
+const quiet = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
+
+function setupTask(overrides = {}) {
+  return {
+    id: 'task-setup',
+    name: 'build',
+    image: 'busybox',
+    sha: 'a'.repeat(40),
+    attempt: 1,
+    script: 'true',
+    env: {},
+    masked: [],
+    timeout: 600,
+    heartbeat_interval: 5,
+    workdir: '/workspace',
+    endpoints: {
+      log: 'http://x/log',
+      source: 'http://x/source.tar.gz',
+      heartbeat: 'http://x/heartbeat',
+      done: 'http://x/done',
+      artifact: 'http://x/artifacts',
+    },
+    ...overrides,
+  };
+}
+
+function exitingChild(code = 0) {
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  setImmediate(() => {
+    child.stdout.end();
+    child.stderr.end();
+    child.emit('close', code);
+  });
+  return child;
+}
+
+test('a heartbeat goes out while a task is still being set up', async () => {
+  const beats = [];
+  const client = {
+    async appendLog(url, chunk, offset) { return { size: offset + chunk.length }; },
+    async heartbeat() { beats.push(Date.now()); return { cancelled: false }; },
+    async source() { return Readable.from([gzipSync(Buffer.alloc(0))]); },
+    async done() { return {}; },
+  };
+
+  // Stands in for an image pull that outlasts the conductor's reaper clock.
+  const runtime = {
+    async createNetwork() {},
+    async removeNetwork() {},
+    async create() {
+      const until = Date.now() + 8000;
+      while (Date.now() < until && beats.length === 0) {
+        await new Promise((r) => { setTimeout(r, 25); });
+      }
+    },
+    async copyStreamIn(name, stream) {
+      stream.resume();
+      await new Promise((r) => { stream.on('end', r); stream.on('error', r); });
+    },
+    async copyIn() {},
+    async copyOut() {},
+    async kill() {},
+    async remove() {},
+    startCreated: () => ({ child: exitingChild(0), args: [] }),
+  };
+
+  const result = await runTask({
+    cfg: { name: 'w', shell: 'sh', default_timeout: 600, features: {} },
+    client,
+    runtime,
+    task: setupTask(),
+    logger: quiet,
+  });
+
+  assert.ok(beats.length > 0, 'the conductor heard nothing while the image was pulling');
+  assert.equal(result.success, true);
+});
+
+test('a task claimed as the worker stops is handed back, not started', async () => {
+  const events = [];
+  let task = null;
+  const server = createServer((req, res) => {
+    events.push(req.url);
+    res.setHeader('content-type', 'application/json');
+    if (req.url === '/api/v1/tasks/claim') {
+      // Slow enough that the signal lands while the claim is in flight.
+      setTimeout(() => res.end(JSON.stringify({ ok: true, data: { task } })), 1200);
+      return;
+    }
+    res.end(JSON.stringify({ ok: true, data: {} }));
+  });
+
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const port = server.address().port;
+  const at = (p) => `http://127.0.0.1:${port}${p}`;
+  task = setupTask({
+    endpoints: {
+      log: at('/log'),
+      source: at('/source.tar.gz'),
+      heartbeat: at('/heartbeat'),
+      done: at('/done'),
+      artifact: at('/artifacts'),
+    },
+  });
+
+  const dir = await tempDir();
+  const config = path.join(dir, 'worker.json');
+  await fs.writeFile(config, JSON.stringify({
+    conductor_url: `http://127.0.0.1:${port}`,
+    token: 'irrelevant',
+    poll_interval: 60,
+    docker: 'true',
+  }));
+
+  const agent = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/worker/agent.js');
+  const child = spawn(process.execPath, [agent, '--config', config], { stdio: 'ignore' });
+
+  await new Promise((r) => { setTimeout(r, 700); });
+  child.kill('SIGTERM');
+
+  const code = await new Promise((resolve) => {
+    const timer = setTimeout(() => resolve('timed out'), 10000);
+    child.on('exit', (c) => { clearTimeout(timer); resolve(c); });
+  });
+  child.kill('SIGKILL');
+  server.close();
+
+  assert.equal(code, 0, 'should still exit cleanly');
+  assert.ok(events.includes('/done'), `expected the task to be handed back, saw ${events.join(', ')}`);
+  assert.ok(
+    !events.includes('/source.tar.gz'),
+    `the task was started despite the signal, saw ${events.join(', ')}`
+  );
+
+  await fs.rm(dir, { recursive: true, force: true });
 });

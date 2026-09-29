@@ -97,6 +97,19 @@ export async function main(argv = process.argv.slice(2)) {
   };
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => shutdown(signal));
 
+  async function handBack(task) {
+    try {
+      await client.done(task.endpoints.done, {
+        success: false,
+        state: 'failed',
+        exitCode: null,
+        error: 'worker shut down before the task started',
+      });
+    } catch (e) {
+      logger.warn(`could not hand back ${task.name}: ${e.message}`);
+    }
+  }
+
   // One loop per concurrency slot. Each polls independently, so a slow task
   // in one slot does not stall the others.
   async function slot(index) {
@@ -120,6 +133,12 @@ export async function main(argv = process.argv.slice(2)) {
         if (args.once) return;
         await sleep(cfg.poll_interval * 1000);
         continue;
+      }
+
+      // Signal landed mid-claim; starting it would orphan it until the reaper.
+      if (stopping) {
+        await handBack(task);
+        return;
       }
 
       running.add(task.id);

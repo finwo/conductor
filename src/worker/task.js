@@ -110,6 +110,22 @@ export async function runTask({ cfg, client, runtime, task, logger = console }) 
   let failure = null;
   let flushScanners = null;
 
+  // Before setup: the reaper clock starts at claim, and a pull can outrun it.
+  const beatEvery = Math.max(5, Number(task.heartbeat_interval) || 30) * 1000;
+  heartbeat = setInterval(async () => {
+    try {
+      const result = await client.heartbeat(task.endpoints.heartbeat);
+      if (result.cancelled && !cancelled) {
+        cancelled = true;
+        log.note('[conductor] cancelled, stopping the container');
+        if (containerCreated) await runtime.kill(taskContainer);
+      }
+    } catch (e) {
+      logger.warn?.(`heartbeat failed for ${task.name}: ${e.message}`);
+    }
+  }, beatEvery);
+  heartbeat.unref?.();
+
   try {
     scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'conductor-task-'));
 
@@ -165,6 +181,8 @@ export async function runTask({ cfg, client, runtime, task, logger = console }) 
     await fs.writeFile(scriptPath, buildScript(task.script), { mode: 0o755 });
     await runtime.copyIn(taskContainer, scriptPath, SCRIPT_PATH);
 
+    if (cancelled) throw new Error('cancelled during setup');
+
     const { child } = runtime.startCreated(taskContainer);
 
     // One per stream; the two interleave.
@@ -174,22 +192,6 @@ export async function runTask({ cfg, client, runtime, task, logger = console }) 
     flushScanners = () => {
       for (const scanner of scanners) log.write(scanner.end());
     };
-
-    // Report in, and find out whether the run was cancelled underneath us.
-    const beatEvery = Math.max(5, Number(task.heartbeat_interval) || 30) * 1000;
-    heartbeat = setInterval(async () => {
-      try {
-        const result = await client.heartbeat(task.endpoints.heartbeat);
-        if (result.cancelled && !cancelled) {
-          cancelled = true;
-          log.note('[conductor] cancelled, stopping the container');
-          await runtime.kill(taskContainer);
-        }
-      } catch (e) {
-        logger.warn?.(`heartbeat failed for ${task.name}: ${e.message}`);
-      }
-    }, beatEvery);
-    heartbeat.unref?.();
 
     const limit = (Number(task.timeout) || cfg.default_timeout) * 1000;
     timeoutTimer = setTimeout(async () => {
