@@ -113,6 +113,9 @@ export function startReaper(services) {
     running = true;
     try {
       await scheduler.reap();
+      for (const job of await scheduler.settleStalled()) {
+        logger.warn?.(`settled stalled job ${job.id} as ${job.state}`);
+      }
     } catch (e) {
       logger.error?.(`reaper failed: ${e.message}`);
     } finally {

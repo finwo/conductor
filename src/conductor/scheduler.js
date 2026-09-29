@@ -119,7 +119,8 @@ export function createScheduler({
     return found[0] ?? null;
   }
 
-  // Marks the job finished once nothing is left to do.
+  // Needs a transaction opened after the task outcome committed: a REPEATABLE
+  // READ snapshot older than a sibling's commit still sees it running.
   async function settleJob(tx, jobId) {
     const outstanding = await tx.get(
       "SELECT COUNT(*) AS c FROM tasks WHERE job_id = {job} AND state IN ('queued', 'running')",
@@ -135,12 +136,15 @@ export function createScheduler({
       { job: jobId }
     );
     const state = bad.c > 0 ? 'failed' : 'success';
-    await tx.run(
+    const moved = await tx.run(
       "UPDATE jobs SET state = {state}, finished_at = {now} WHERE id = {job} AND state = 'running'",
       { state, job: jobId, now: Date.now() }
     );
-    return state;
+    // Only the completion that moved the row reports it: settle fires once.
+    return moved.changes === 1 ? state : null;
   }
+
+  const settle = (jobId) => db.transaction((tx) => settleJob(tx, jobId));
 
   // Background compilation: git sync, pipeline read/compile, task creation.
   // Updates the job from 'pending' to either 'running' (with tasks) or
@@ -436,7 +440,7 @@ export function createScheduler({
       outputs = [], tokenId = null,
     }) {
       const outcome = reported ?? (success ? 'success' : 'failed');
-      return db.transaction(async (tx) => {
+      const result = await db.transaction(async (tx) => {
         const task = await tx.get(
           `SELECT id, job_id, name, state, attempt, max_attempts, allow_failure, worker_token_id
              FROM tasks WHERE id = {id}`,
@@ -460,8 +464,7 @@ export function createScheduler({
             { id: taskId, state: outcome, code: exitCode, now }
           );
           await writeOutputs(tx, taskId, outputs);
-          const jobState = await settleJob(tx, task.job_id);
-          return { ok: true, state: outcome, jobState };
+          return { ok: true, state: outcome, settleJobId: task.job_id };
         }
 
         // Transient failure with attempts left: back to the queue rather
@@ -492,15 +495,22 @@ export function createScheduler({
           skipped = await skipDependents(tx, task.job_id, [taskId], now);
         }
 
-        const jobState = await settleJob(tx, task.job_id);
-        return { ok: true, state: 'failed', skipped, jobState };
+        return { ok: true, state: 'failed', skipped, settleJobId: task.job_id };
       });
+
+      if (result.settleJobId === undefined) return result;
+      const { settleJobId, ...rest } = result;
+      return { ...rest, jobState: await settle(settleJobId) };
     },
 
     // Every task reachable from the failed ones, not just their immediate
     // dependents.
     async skipDependents(jobId, fromTaskIds) {
-      return db.transaction((tx) => skipDependents(tx, jobId, fromTaskIds, Date.now()));
+      const skipped = await db.transaction(
+        (tx) => skipDependents(tx, jobId, fromTaskIds, Date.now())
+      );
+      await settle(jobId);
+      return skipped;
     },
 
     // Requeues or fails tasks whose worker stopped reporting.
@@ -526,6 +536,26 @@ export function createScheduler({
         }
       }
       return results;
+    },
+
+    // Recovers jobs whose settle was lost to a crash between the outcome and
+    // the settle transaction.
+    async settleStalled() {
+      const stalled = await db.all(
+        `SELECT id FROM jobs j
+          WHERE j.state = 'running'
+            AND NOT EXISTS (
+                  SELECT 1 FROM tasks t
+                   WHERE t.job_id = j.id AND t.state IN ('queued', 'running')
+                )`
+      );
+
+      const settled = [];
+      for (const job of stalled) {
+        const state = await settle(job.id);
+        if (state !== null) settled.push({ id: job.id, state });
+      }
+      return settled;
     },
 
     async cancelJob(jobId, reason = 'cancelled by request') {
@@ -624,17 +654,18 @@ export function createScheduler({
 
   // Never claimed, so it never ran: failed straight from queued.
   async function failUnclaimable(candidate, message) {
-    await db.transaction(async (tx) => {
+    const claimed = await db.transaction(async (tx) => {
       const now = Date.now();
       const marked = await tx.run(
         `UPDATE tasks SET state = 'failed', error = {error}, finished_at = {now}
           WHERE id = {id} AND state = 'queued'`,
         { id: candidate.id, error: message, now }
       );
-      if (marked.changes !== 1) return;
+      if (marked.changes !== 1) return false;
       await skipDependents(tx, candidate.job_id, [candidate.id], now);
-      await settleJob(tx, candidate.job_id);
+      return true;
     });
+    if (claimed) await settle(candidate.job_id);
     logger.warn?.(`task ${candidate.name} cannot run: ${message}`);
   }
 

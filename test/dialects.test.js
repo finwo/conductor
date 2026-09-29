@@ -24,6 +24,7 @@ import { createLogStore } from '../src/lib/log.js';
 import { createRetention } from '../src/conductor/retention.js';
 import { createWorkerTokens } from '../src/lib/workers.js';
 import { createRefreshTokens } from '../src/lib/auth/refresh.js';
+import { createScheduler } from '../src/conductor/scheduler.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = 1_800_000_000_000;
@@ -191,6 +192,64 @@ for (const dialect of ['postgres', 'mysql']) {
     } finally {
       await db?.close().catch(() => {});
       await fs.rm(root, { recursive: true, force: true });
+      await server.stop();
+    }
+  });
+
+  // Snapshot-at-first-read dialects only; sqlite serialises and cannot reach this.
+  test(`simultaneous completions settle the job on ${dialect}`, { skip: !dialectAvailable(dialect) }, async () => {
+    const server = await startDatabase(dialect);
+    const cfg = { database: { url: server.url, dialect: dialectFromUrl(server.url) } };
+    const width = 8;
+
+    let db;
+    try {
+      db = await openDatabase(cfg);
+      await runMigrations(db, { logger: () => {} });
+
+      await db.run(
+        `INSERT INTO projects (id, name, repo_url, enabled, job_counter, created_at, updated_at)
+         VALUES ('demo', 'Demo', '/tmp/repo', 1, 0, {now}, {now})`,
+        { now: NOW }
+      );
+      await db.run(
+        `INSERT INTO jobs (id, project_id, number, head_sha, trigger_type, state,
+                           visibility, created_at, started_at)
+         VALUES ('j1', 'demo', 1, {sha}, 'push', 'running', 'public', {now}, {now})`,
+        { sha: 'a'.repeat(40), now: NOW }
+      );
+      for (let i = 0; i < width; i += 1) {
+        await db.run(
+          `INSERT INTO tasks (id, job_id, name, base_name, image, requires, spec, state,
+                              allow_failure, attempt, max_attempts, timeout, log_size, created_at)
+           VALUES ({id}, 'j1', {name}, {name}, 'alpine:3', '[]', '{}', 'running',
+                   0, 1, 1, 3600, 0, {now})`,
+          { id: `t${i}`, name: `build-${i}`, now: NOW }
+        );
+      }
+
+      const scheduler = createScheduler({
+        cfg: { ...cfg, scheduler: {} },
+        db,
+        git: {}, logs: {}, storage: {}, projects: {}, secrets: {},
+        logger: { warn() {}, error() {}, info() {}, debug() {} },
+      });
+
+      // Started together so every snapshot predates every commit; sequential
+      // completion hides the bug.
+      const outcomes = await Promise.all(
+        Array.from({ length: width }, (_, i) => scheduler.complete(`t${i}`, { success: true }))
+      );
+      assert.ok(outcomes.every((o) => o.ok), 'every completion should be accepted');
+
+      const job = await db.get("SELECT state FROM jobs WHERE id = 'j1'", {});
+      assert.equal(job.state, 'success', 'the last completion has to settle the job');
+      assert.equal(
+        outcomes.filter((o) => o.jobState === 'success').length, 1,
+        'exactly one completion should report the settle'
+      );
+    } finally {
+      await db?.close().catch(() => {});
       await server.stop();
     }
   });

@@ -59,8 +59,8 @@ test('a restricted task is left out of jobs for other refs', () => {
 });
 
 test('it is left out rather than recorded as skipped', () => {
-  // The scheduler reads a skipped task as a reason to fail the job, so a
-  // publish step that was never meant to run here must not appear at all.
+  // A skipped task satisfies needs, so recording it that way would let the
+  // steps below a never-intended publish run anyway.
   const { tasks } = compilePipeline(PIPELINE, { ref: 'refs/heads/feature' });
   assert.ok(!tasks.some((j) => j.name === 'publish'));
 });

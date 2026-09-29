@@ -116,9 +116,9 @@ A `*` stands for any run of characters; everything else is literal, so a
 dot is a dot rather than any character.
 
 A task that does not match is left out of the job entirely, not recorded
-as skipped. A skipped task means a dependency collapsed and fails the job,
-which is the wrong reading for a publish step that was never meant to run
-on this branch.
+as skipped. A skipped task still satisfies `needs`, so everything below it
+runs anyway, which is the wrong reading for a publish step that was never
+meant to run on this branch.
 
 Anything depending on an excluded task is excluded with it. Dropping the
 dependency instead would let a task run without something it declared it

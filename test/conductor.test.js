@@ -1631,6 +1631,63 @@ tasks:
   });
 });
 
+// Regression: settling inside the completing transaction stranded jobs.
+test('a job whose settle was lost is recovered by the sweep', async () => {
+  const pipeline = `
+version: 1
+defaults:
+  image: alpine
+tasks:
+  build:
+    script: ['true']
+`;
+  await withHarness({ pipeline }, async (h) => {
+    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().data.job_id;
+    await h.waitForJob(job);
+
+    const build = await claimNamed(h, 'build', {});
+    assert.equal((await finish(h, build.id, { success: true })).job_state, 'success');
+
+    await h.services.db.run(
+      "UPDATE jobs SET state = 'running', finished_at = NULL WHERE id = {id}",
+      { id: job }
+    );
+
+    const settled = await h.services.scheduler.settleStalled();
+    assert.deepEqual(settled, [{ id: job, state: 'success' }]);
+
+    const row = await h.services.db.get('SELECT state, finished_at FROM jobs WHERE id = {id}',
+      { id: job });
+    assert.equal(row.state, 'success');
+    assert.ok(row.finished_at > 0, 'the recovered job gets a finish time');
+  });
+});
+
+test('the sweep leaves a job that still has work to do alone', async () => {
+  const pipeline = `
+version: 1
+defaults:
+  image: alpine
+tasks:
+  build:
+    script: ['true']
+  publish:
+    script: ['true']
+    needs: [build]
+`;
+  await withHarness({ pipeline }, async (h) => {
+    const job = (await h.trigger({ sha: h.sha, ref: 'refs/heads/main' })).json().data.job_id;
+    await h.waitForJob(job);
+
+    const build = await claimNamed(h, 'build', {});
+    await finish(h, build.id, { success: true });
+
+    assert.deepEqual(await h.services.scheduler.settleStalled(), []);
+    const row = await h.services.db.get('SELECT state FROM jobs WHERE id = {id}', { id: job });
+    assert.equal(row.state, 'running');
+  });
+});
+
 test('a skipped task that owed a value fails the one that needed it', async () => {
   const pipeline = `
 version: 1
