@@ -7,6 +7,10 @@ const ADMIN = 'admin';
 const USER_ROLE = 'user';
 const DISCOVERY_TIMEOUT = 10000;
 
+function isCompactJws(token) {
+  return typeof token === 'string' && token.split('.').length === 3;
+}
+
 export function collectRoles(claims) {
   const roles = new Set();
   const add = (value) => {
@@ -51,10 +55,12 @@ export async function fetchDiscovery(url, { fetchImpl = fetch } = {}) {
   return document;
 }
 
-export function createOidc(cfg) {
+export function createOidc(cfg, options = {}) {
+  const fetchImpl = options.fetchImpl ?? cfg?.fetchImpl ?? fetch;
   const {
     discovery_url: discoveryUrl,
     client_id: clientId,
+    client_secret: clientSecret,
     scopes,
     admin_role: adminRole,
   } = cfg.auth.oidc;
@@ -76,7 +82,7 @@ export function createOidc(cfg) {
         } catch (e) {
           throw new Error('auth.oidc.discovery_url is set but the jose package is not installed', { cause: e });
         }
-        const document = await fetchDiscovery(discoveryUrl);
+        const document = await fetchDiscovery(discoveryUrl, { fetchImpl });
         jwtVerify = jose.jwtVerify;
         jwks = jose.createRemoteJWKSet(new URL(document.jwks_uri));
         metadata = document;
@@ -97,6 +103,70 @@ export function createOidc(cfg) {
     };
   }
 
+  function checkAudience(claims) {
+    const azp = claims.azp ?? claims.client_id;
+    const audRaw = claims.aud;
+    const aud = audRaw == null ? [] : Array.isArray(audRaw) ? audRaw : [audRaw];
+    if (azp === undefined && aud.length === 0) return;
+    if (azp !== clientId && !aud.includes(clientId)) {
+      throw new Error(`token was issued to ${azp ?? aud.join(', ')}, not ${clientId}`);
+    }
+  }
+
+  async function verifyJwt(token, document) {
+    const { payload } = await jwtVerify(token, jwks, { issuer: document.issuer });
+    const aud = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+    if (payload.azp !== clientId && !aud.includes(clientId)) {
+      throw new Error(`token was issued to ${payload.azp ?? aud.join(', ')}, not ${clientId}`);
+    }
+    return profileFrom(payload, document.issuer);
+  }
+
+  async function introspect(token, endpoint, issuer) {
+    const headers = { 'content-type': 'application/x-www-form-urlencoded' };
+    const body = new URLSearchParams();
+    body.set('token', token);
+    body.set('client_id', clientId);
+    if (clientSecret) body.set('client_secret', clientSecret);
+    if (clientSecret) {
+      headers.authorization = 'Basic ' + Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+    }
+
+    let res;
+    try {
+      res = await fetchImpl(endpoint, { method: 'POST', headers, body });
+    } catch (e) {
+      throw new Error(`could not reach the OIDC introspection endpoint at ${endpoint}: ${e.message}`, { cause: e });
+    }
+
+    const text = await res.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch { data = null; }
+
+    if (!res.ok) {
+      // A public client that the provider does not recognise as such: fall
+      // back to local verification when the token is a compact JWS.
+      if (!clientSecret && /invalid_client/i.test(text)) {
+        return null;
+      }
+      throw new Error(`OIDC introspection failed: ${endpoint} returned ${res.status} ${res.statusText}`);
+    }
+
+    if (!data || data.active !== true) {
+      if (data && data.active === false) throw new Error('token is not active');
+      throw new Error('OIDC introspection did not confirm the token is active');
+    }
+
+    if (!data.sub) {
+      // Claims incomplete; callers fall back to local verification if the
+      // token is a JWT.
+      return { __incomplete: true, ...data };
+    }
+
+    checkAudience(data);
+    return profileFrom(data, issuer);
+  }
+
   return {
     mode: 'oidc',
 
@@ -108,18 +178,50 @@ export function createOidc(cfg) {
     clientId,
     scopes,
 
-    // An access token names the client in azp; aud is the resource server,
-    // which for Keycloak is "account" rather than us.
+    // An access token is verified by introspection when the provider
+    // advertises an endpoint, and by local signature verification otherwise.
     async verify(token) {
       const document = await load();
-      const { payload } = await jwtVerify(token, jwks, { issuer: document.issuer });
+      const endpoint = document.introspection_endpoint;
 
-      const aud = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
-      if (payload.azp !== clientId && !aud.includes(clientId)) {
-        throw new Error(`token was issued to ${payload.azp ?? aud.join(', ')}, not ${clientId}`);
+      if (typeof endpoint === 'string' && endpoint.length > 0) {
+        let result = null;
+        let introspectionFailed = false;
+        try {
+          result = await introspect(token, endpoint, document.issuer);
+        } catch (e) {
+          if (e.message === 'token is not active' || /did not confirm/i.test(e.message)) throw e;
+          introspectionFailed = true;
+        }
+
+        if (result && !result.__incomplete) {
+          // issuer from discovery is authoritative.
+          const profile = result;
+          // Rebuild with discovery issuer to be safe.
+          return profile;
+        }
+
+        if (result && result.__incomplete) {
+          // If the token is a JWT, recover claims locally.
+          if (isCompactJws(token) && jwtVerify && jwks) {
+            return verifyJwt(token, document);
+          }
+          throw new Error('OIDC introspection response did not include a subject');
+        }
+
+        if (!introspectionFailed) {
+          // result === null (invalid_client fallback) or thrown handled
+        }
+
+        if (introspectionFailed || result === null) {
+          if (isCompactJws(token) && jwtVerify && jwks) {
+            return verifyJwt(token, document);
+          }
+          throw new Error('OIDC introspection could not verify the token');
+        }
       }
 
-      return profileFrom(payload, document.issuer);
+      return verifyJwt(token, document);
     },
   };
 }

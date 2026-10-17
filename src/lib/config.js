@@ -59,7 +59,8 @@ const DEFAULTS = {
       // endpoint are read from here rather than configured separately.
       discovery_url: null,
       client_id: null,
-      scopes: 'openid profile email',
+      client_secret: null,
+      scopes: 'openid profile email groups',
       admin_role: 'conductor-admin',
     },
     // Created on first boot when the users table is empty.
@@ -141,6 +142,7 @@ const ENV_MAP = [
   ['CONDUCTOR_LOCAL_REDIRECT_URIS',  'auth.local.redirect_uris',    String],
   ['CONDUCTOR_OIDC_DISCOVERY_URL',   'auth.oidc.discovery_url',     String],
   ['CONDUCTOR_OIDC_CLIENT_ID',       'auth.oidc.client_id',         String],
+  ['CONDUCTOR_OIDC_CLIENT_SECRET',   'auth.oidc.client_secret',     String],
   ['CONDUCTOR_OIDC_SCOPES',          'auth.oidc.scopes',            String],
   ['CONDUCTOR_OIDC_ADMIN_ROLE',      'auth.oidc.admin_role',        String],
   ['CONDUCTOR_ADMIN_USERNAME',       'auth.bootstrap_admin.username', String],
