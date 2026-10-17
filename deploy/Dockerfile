@@ -53,8 +53,10 @@ FROM alpine:${ALPINE_VERSION}
 # built in, so there is no database client to install.
 RUN apk add --no-cache ca-certificates git nodejs
 
-# Alpine has no unprivileged user to borrow, unlike the node image.
-RUN addgroup -S conductor && adduser -S -G conductor -h /app conductor
+# Fixed uid/gid so a mounted volume keeps working across rebuilds and
+# hosts, where an automatic id would drift.
+RUN addgroup -S -g 1000 conductor \
+    && adduser -S -u 1000 -G conductor -h /app conductor
 
 WORKDIR /app
 
