@@ -61,14 +61,29 @@ export function createUsers({ db, logger = console }) {
           { externalId }
         );
 
-        if (existing) {
-          if (existing.role !== desired) {
-            await tx.run('UPDATE users SET role = {role} WHERE id = {id}', { id: existing.id, role: desired });
-          }
-          await tx.run('UPDATE users SET last_login_at = {now} WHERE id = {id}',
-            { id: existing.id, now: Date.now() });
-          return { ...existing, role: desired };
-        }
+         if (existing) {
+           if (existing.role !== desired) {
+             await tx.run('UPDATE users SET role = {role} WHERE id = {id}', { id: existing.id, role: desired });
+           }
+
+           const base = sanitizeUsername(username);
+           if (base) {
+             let candidate = base;
+             for (let i = 1; await tx.get('SELECT id FROM users WHERE username = {u} AND id <> {id}', { u: candidate, id: existing.id }); i += 1) {
+               candidate = `${base}-${i}`;
+               if (i > 50) throw new Error(`could not find a free username for ${base}`);
+             }
+             if (candidate !== existing.username) {
+               await tx.run('UPDATE users SET username = {username} WHERE id = {id}',
+                 { id: existing.id, username: candidate });
+             }
+             existing.username = candidate;
+           }
+
+           await tx.run('UPDATE users SET last_login_at = {now} WHERE id = {id}',
+             { id: existing.id, now: Date.now() });
+           return { ...existing, role: desired };
+         }
 
         // Display names come from the provider and are not guaranteed
         // unique, so a clash is resolved rather than allowed to fail.
