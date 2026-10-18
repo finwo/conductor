@@ -144,8 +144,6 @@ export function createOidc(cfg, options = {}) {
     try { data = text ? JSON.parse(text) : null; } catch { data = null; }
 
     if (!res.ok) {
-      // A public client that the provider does not recognise as such: fall
-      // back to local verification when the token is a compact JWS.
       if (!clientSecret && /invalid_client/i.test(text)) {
         return null;
       }
@@ -157,14 +155,36 @@ export function createOidc(cfg, options = {}) {
       throw new Error('OIDC introspection did not confirm the token is active');
     }
 
-    if (!data.sub) {
-      // Claims incomplete; callers fall back to local verification if the
-      // token is a JWT.
-      return { __incomplete: true, ...data };
+    return data;
+  }
+
+  async function fetchUserinfo(token, endpoint) {
+    let res;
+    try {
+      res = await fetchImpl(endpoint, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+    } catch (e) {
+      throw new Error(`could not reach the OIDC userinfo endpoint at ${endpoint}: ${e.message}`, { cause: e });
     }
 
-    checkAudience(data);
-    return profileFrom(data, issuer);
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) throw new Error('token is not active');
+      throw new Error(`OIDC userinfo failed: ${endpoint} returned ${res.status} ${res.statusText}`);
+    }
+
+    let data;
+    try {
+      data = await res.json();
+    } catch {
+      throw new Error(`OIDC userinfo at ${endpoint} did not return JSON`);
+    }
+
+    if (!data || typeof data.sub !== 'string' || data.sub.length === 0) {
+      throw new Error('OIDC userinfo did not include a subject');
+    }
+
+    return data;
   }
 
   return {
@@ -178,50 +198,55 @@ export function createOidc(cfg, options = {}) {
     clientId,
     scopes,
 
-    // An access token is verified by introspection when the provider
-    // advertises an endpoint, and by local signature verification otherwise.
     async verify(token) {
       const document = await load();
-      const endpoint = document.introspection_endpoint;
+      const introspectionEndpoint = typeof document.introspection_endpoint === 'string' && document.introspection_endpoint.length > 0
+        ? document.introspection_endpoint
+        : null;
+      const userinfoEndpoint = typeof document.userinfo_endpoint === 'string' && document.userinfo_endpoint.length > 0
+        ? document.userinfo_endpoint
+        : null;
 
-      if (typeof endpoint === 'string' && endpoint.length > 0) {
-        let result = null;
-        let introspectionFailed = false;
+      let introspectionData = null;
+      let introspectionFailed = false;
+
+      if (introspectionEndpoint) {
         try {
-          result = await introspect(token, endpoint, document.issuer);
+          introspectionData = await introspect(token, introspectionEndpoint);
         } catch (e) {
           if (e.message === 'token is not active' || /did not confirm/i.test(e.message)) throw e;
           introspectionFailed = true;
         }
+      }
 
-        if (result && !result.__incomplete) {
-          // issuer from discovery is authoritative.
-          const profile = result;
-          // Rebuild with discovery issuer to be safe.
-          return profile;
-        }
-
-        if (result && result.__incomplete) {
-          // If the token is a JWT, recover claims locally.
-          if (isCompactJws(token) && jwtVerify && jwks) {
+      let userinfoData = null;
+      if (userinfoEndpoint) {
+        try {
+          userinfoData = await fetchUserinfo(token, userinfoEndpoint);
+        } catch (e) {
+          if (introspectionData) throw e;
+          if (introspectionEndpoint && !introspectionFailed && introspectionData === null && isCompactJws(token) && jwtVerify && jwks) {
             return verifyJwt(token, document);
           }
-          throw new Error('OIDC introspection response did not include a subject');
-        }
-
-        if (!introspectionFailed) {
-          // result === null (invalid_client fallback) or thrown handled
-        }
-
-        if (introspectionFailed || result === null) {
-          if (isCompactJws(token) && jwtVerify && jwks) {
-            return verifyJwt(token, document);
-          }
-          throw new Error('OIDC introspection could not verify the token');
+          throw e;
         }
       }
 
-      return verifyJwt(token, document);
+      const merged = { ...(introspectionData || {}), ...(userinfoData || {}) };
+
+      if (merged.sub) {
+        checkAudience(merged);
+        return profileFrom(merged, document.issuer);
+      }
+
+      if (isCompactJws(token) && jwtVerify && jwks) {
+        return verifyJwt(token, document);
+      }
+
+      if (introspectionData === null && userinfoData === null && !introspectionFailed) {
+        throw new Error('OIDC provider did not verify the token');
+      }
+      throw new Error('OIDC response did not include a subject');
     },
   };
 }
